@@ -1,0 +1,6 @@
+backend/.env
+backend/node_modules/
+.dart_tool/
+build/
+.vscode/
+*.zip

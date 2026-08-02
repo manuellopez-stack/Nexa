@@ -1,0 +1,15 @@
+# Flutter
+.dart_tool/
+build/
+
+# Node
+backend/node_modules/
+
+# Secretos
+backend/.env
+
+# VS Code
+.vscode/
+
+# Otros
+*.zip

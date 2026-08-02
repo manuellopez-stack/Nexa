@@ -65,4 +65,51 @@ class ApiService {
 
     return answer.trim();
   }
+
+  static Future<Map<String, dynamic>> getPatient(int id) async {
+    final http.Response response;
+
+    try {
+      response = await http
+          .get(
+            Uri.parse('$_baseUrl/patients/$id'),
+            headers: const {
+              'Accept': 'application/json',
+            },
+          )
+          .timeout(const Duration(seconds: 30));
+    } catch (_) {
+      throw const ApiException(
+        'No fue posible conectar con el backend de Nexa.',
+      );
+    }
+
+    final dynamic decodedBody;
+
+    try {
+      decodedBody = jsonDecode(response.body);
+    } on FormatException {
+      throw const ApiException(
+        'El servidor entregó una ficha que Nexa no pudo interpretar.',
+      );
+    }
+
+    if (decodedBody is! Map<String, dynamic>) {
+      throw const ApiException(
+        'La ficha del paciente tiene un formato inválido.',
+      );
+    }
+
+    if (response.statusCode != 200) {
+      final error = decodedBody['error'];
+
+      throw ApiException(
+        error is String && error.trim().isNotEmpty
+            ? error.trim()
+            : 'No fue posible obtener la ficha del paciente.',
+      );
+    }
+
+    return decodedBody;
+  }
 }

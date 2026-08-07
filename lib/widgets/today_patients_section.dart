@@ -1,5 +1,6 @@
 import 'dart:convert';
 
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 
@@ -235,6 +236,10 @@ class _PatientDialogState extends State<_PatientDialog> {
   String? _answer;
   String? _error;
   bool _isLoading = false;
+  bool _isAnalyzingDocument = false;
+  String? _documentAnalysis;
+  Map<String, dynamic>? _documentData;
+  String? _documentError;
 
   @override
   void dispose() {
@@ -310,6 +315,86 @@ Riesgo registrado: ${patient['risk'] ?? 'Sin evaluar'}
 HISTORIAL
 $historyText
 '''.trim();
+  }
+
+
+  Future<void> _analyzePdfDocument() async {
+    if (_isAnalyzingDocument) return;
+
+    final result = await FilePicker.pickFiles(
+      type: FileType.custom,
+      allowedExtensions: const ['pdf'],
+      withData: true,
+    );
+
+    if (result == null || result.files.isEmpty) return;
+
+    final file = result.files.single;
+    final bytes = file.bytes;
+
+    if (bytes == null) {
+      setState(() {
+        _documentError = 'No fue posible leer el archivo seleccionado.';
+      });
+      return;
+    }
+
+    if (bytes.length > 10 * 1024 * 1024) {
+      setState(() {
+        _documentError = 'El PDF supera el máximo permitido de 10 MB.';
+      });
+      return;
+    }
+
+    final patientId = widget.patient['id'];
+
+    if (patientId is! int) {
+      setState(() {
+        _documentError = 'El paciente no tiene un identificador válido.';
+      });
+      return;
+    }
+
+    setState(() {
+      _isAnalyzingDocument = true;
+      _documentAnalysis = null;
+      _documentData = null;
+      _documentError = null;
+    });
+
+    try {
+      final result = await ApiService.analyzePatientPdf(
+        patientId: patientId,
+        filename: file.name,
+        base64Data: base64Encode(bytes),
+      );
+
+      if (!mounted) return;
+
+      setState(() {
+        _documentAnalysis = result['analysis']?.toString();
+        final data = result['documentData'];
+        _documentData = data is Map<String, dynamic> ? data : null;
+      });
+    } on ApiException catch (error) {
+      if (!mounted) return;
+
+      setState(() {
+        _documentError = error.message;
+      });
+    } catch (_) {
+      if (!mounted) return;
+
+      setState(() {
+        _documentError = 'Ocurrió un error al analizar el PDF.';
+      });
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isAnalyzingDocument = false;
+        });
+      }
+    }
   }
 
   Future<void> _askNexa() async {
@@ -510,6 +595,77 @@ $historyText
                       .map((document) => _DocumentChip(name: document))
                       .toList(),
                 ),
+              const SizedBox(height: 14),
+              OutlinedButton.icon(
+                onPressed:
+                    _isAnalyzingDocument ? null : _analyzePdfDocument,
+                icon: _isAnalyzingDocument
+                    ? const SizedBox(
+                        width: 17,
+                        height: 17,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.upload_file_outlined),
+                label: Text(
+                  _isAnalyzingDocument
+                      ? 'Analizando PDF...'
+                      : 'Adjuntar y analizar PDF',
+                ),
+              ),
+              if (_documentError != null) ...[
+                const SizedBox(height: 12),
+                Text(
+                  _documentError!,
+                  style: const TextStyle(
+                    color: Color(0xFFB91C1C),
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ],
+              if (_documentData != null) ...[
+                const SizedBox(height: 14),
+                _DocumentDataCard(data: _documentData!),
+              ],
+              if (_documentAnalysis != null) ...[
+                const SizedBox(height: 14),
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFFFFBEB),
+                    borderRadius: BorderRadius.circular(14),
+                    border: Border.all(
+                      color: const Color(0xFFFDE68A),
+                    ),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Row(
+                        children: [
+                          Icon(
+                            Icons.document_scanner_outlined,
+                            color: Color(0xFFB45309),
+                          ),
+                          SizedBox(width: 8),
+                          Text(
+                            'Análisis del documento',
+                            style: TextStyle(
+                              color: Color(0xFF92400E),
+                              fontWeight: FontWeight.w800,
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 10),
+                      Text(
+                        _documentAnalysis!,
+                        style: const TextStyle(height: 1.5),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
               const SizedBox(height: 20),
               const Divider(),
               const SizedBox(height: 12),
@@ -537,6 +693,122 @@ $historyText
           child: const Text('Cerrar'),
         ),
       ],
+    );
+  }
+}
+
+class _DocumentDataCard extends StatelessWidget {
+  const _DocumentDataCard({required this.data});
+
+  final Map<String, dynamic> data;
+
+  String value(String key) {
+    final result = data[key]?.toString().trim();
+    if (result == null || result.isEmpty || result == 'null') {
+      return 'Sin información';
+    }
+    return result;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final isClinical = data['isClinical'] == true;
+
+    final fields = <MapEntry<String, String>>[
+      MapEntry('Tipo de documento', value('documentType')),
+      MapEntry('Paciente', value('patientName')),
+      MapEntry('RUT', value('patientRut')),
+      MapEntry('Examen', value('exam')),
+      MapEntry('Médico', value('doctor')),
+      MapEntry('Prioridad', value('priority')),
+      MapEntry('Fecha', value('date')),
+      MapEntry('Motivo', value('reason')),
+      MapEntry('Equipo', value('equipment')),
+    ];
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: const Color(0xFFE2E8F0)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(
+                isClinical
+                    ? Icons.medical_information_outlined
+                    : Icons.description_outlined,
+                color: isClinical
+                    ? const Color(0xFF15803D)
+                    : const Color(0xFFB45309),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  isClinical
+                      ? 'Documento clínico detectado'
+                      : 'Documento no clínico detectado',
+                  style: const TextStyle(
+                    fontWeight: FontWeight.w800,
+                    fontSize: 16,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 14),
+          Wrap(
+            spacing: 12,
+            runSpacing: 12,
+            children: fields
+                .map(
+                  (item) => SizedBox(
+                    width: 285,
+                    child: Container(
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFF8FAFC),
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            item.key,
+                            style: const TextStyle(
+                              color: Color(0xFF64748B),
+                              fontSize: 12,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                          const SizedBox(height: 4),
+                          Text(
+                            item.value,
+                            style: const TextStyle(
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                )
+                .toList(),
+          ),
+          const SizedBox(height: 14),
+          const Text(
+            'Resumen extraído',
+            style: TextStyle(fontWeight: FontWeight.w800),
+          ),
+          const SizedBox(height: 6),
+          Text(value('summary'), style: const TextStyle(height: 1.45)),
+        ],
+      ),
     );
   }
 }

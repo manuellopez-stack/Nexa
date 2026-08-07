@@ -16,19 +16,9 @@ class ApiService {
 
   static const String _baseUrl = 'http://localhost:3000';
 
-  static Future<String> sendMessage(String message) async {
-    final response = await http
-        .post(
-          Uri.parse('$_baseUrl/chat'),
-          headers: const {
-            'Content-Type': 'application/json',
-          },
-          body: jsonEncode({
-            'message': message,
-          }),
-        )
-        .timeout(const Duration(seconds: 60));
-
+  static Future<Map<String, dynamic>> _decodeMap(
+    http.Response response,
+  ) async {
     final dynamic decodedBody;
 
     try {
@@ -45,7 +35,7 @@ class ApiService {
       );
     }
 
-    if (response.statusCode != 200) {
+    if (response.statusCode < 200 || response.statusCode >= 300) {
       final error = decodedBody['error'];
 
       throw ApiException(
@@ -55,6 +45,19 @@ class ApiService {
       );
     }
 
+    return decodedBody;
+  }
+
+  static Future<String> sendMessage(String message) async {
+    final response = await http
+        .post(
+          Uri.parse('$_baseUrl/chat'),
+          headers: const {'Content-Type': 'application/json'},
+          body: jsonEncode({'message': message}),
+        )
+        .timeout(const Duration(seconds: 60));
+
+    final decodedBody = await _decodeMap(response);
     final answer = decodedBody['respuesta'];
 
     if (answer is! String || answer.trim().isEmpty) {
@@ -73,43 +76,63 @@ class ApiService {
       response = await http
           .get(
             Uri.parse('$_baseUrl/patients/$id'),
-            headers: const {
-              'Accept': 'application/json',
-            },
+            headers: const {'Accept': 'application/json'},
           )
-          .timeout(const Duration(seconds: 30));
+          .timeout(const Duration(seconds: 60));
     } catch (_) {
       throw const ApiException(
         'No fue posible conectar con el backend de Nexa.',
       );
     }
 
-    final dynamic decodedBody;
+    return _decodeMap(response);
+  }
+
+  static Future<Map<String, dynamic>> analyzePatientPdf({
+    required int patientId,
+    required String filename,
+    required String base64Data,
+  }) async {
+    final http.Response response;
 
     try {
-      decodedBody = jsonDecode(response.body);
-    } on FormatException {
+      response = await http
+          .post(
+            Uri.parse(
+              '$_baseUrl/patients/$patientId/documents/analyze',
+            ),
+            headers: const {'Content-Type': 'application/json'},
+            body: jsonEncode({
+              'filename': filename,
+              'base64Data': base64Data,
+            }),
+          )
+          .timeout(const Duration(minutes: 2));
+    } catch (_) {
       throw const ApiException(
-        'El servidor entregó una ficha que Nexa no pudo interpretar.',
+        'No fue posible enviar el PDF al backend de Nexa.',
       );
     }
 
-    if (decodedBody is! Map<String, dynamic>) {
+    final decodedBody = await _decodeMap(response);
+    final analysis = decodedBody['analysis'];
+    final documentData = decodedBody['documentData'];
+
+    if (analysis is! String || analysis.trim().isEmpty) {
       throw const ApiException(
-        'La ficha del paciente tiene un formato inválido.',
+        'El backend no entregó un análisis válido.',
       );
     }
 
-    if (response.statusCode != 200) {
-      final error = decodedBody['error'];
-
-      throw ApiException(
-        error is String && error.trim().isNotEmpty
-            ? error.trim()
-            : 'No fue posible obtener la ficha del paciente.',
+    if (documentData is! Map) {
+      throw const ApiException(
+        'El backend no entregó los datos estructurados del documento.',
       );
     }
 
-    return decodedBody;
+    return {
+      'analysis': analysis.trim(),
+      'documentData': Map<String, dynamic>.from(documentData),
+    };
   }
 }

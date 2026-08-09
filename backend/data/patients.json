@@ -120,7 +120,7 @@
         "exam": "Ecografía abdominal"
       }
     ],
-    "aiSummary": null
+    "aiSummary": "Paciente: Carlos Díaz (RUT 9.876.543-2), 61 años. Examen: Ecografía Doppler programada en Sala 1. Médico: Dra. Paula Silva, Tel: +56 9 8765 4321.  \nMotivo del examen: dolor y edema en extremidad inferior derecha.  \nAntecedentes registrados: nivel de riesgo MEDIO; prioridad, fecha del documento, equipo y resumen del documento: sin información.  \nHistorial relevante: Ecografía Doppler venosa el 22/04/2026; Ecografía abdominal el 30/09/2025."
   },
   {
     "id": 5,
@@ -139,9 +139,27 @@
       "MANUEL LOPEZ  ROMERO-  INFORME..pdf"
     ],
     "history": [],
-    "aiSummary": "Paciente: LOPEZ ROMERO, MANUEL, 57 años (RUT 10.603.307-2). Examen: Polisomnografía basal (DG: SAHOS). Fecha: 07/10/2026.  \nPrincipales hallazgos del sueño: TTS 440.5 min, eficiencia 90%, N3 0 min (ausencia de sueño profundo), REM 64.5 min (15%), índice de microdespertares 19.3/h.  \nRespiratorio: IAH total 4.5 e/h (2 apneas obstructivas, 31 hipoapneas); IAH REM 13.0 e/h; IAH NREM 3.0 e/h; IAH supino 20.2 e/h.  \nOximetría y conclusión: SatO2 promedio 92%, mínima 84–85%, CT90 ≈ 8.7%. Conclusión: alteración severa de la estructura del sueño por ausencia de sueño profundo; el informe recomienda encuesta e higiene de sueño y evaluar factores externos.  \nAntecedentes: Sin historial registrado. Datos faltantes/pendientes: teléfono vacío, sala sin asignar, nivel de riesgo SIN EVALUAR, prioridad sin información, estado pendiente de validación.",
+    "aiSummary": "Paciente: LOPEZ ROMERO, MANUEL (RUT 10.603.307-2), 57 años — Examen: Polisomnografía basal realizada 7/10/2026.  \nMotivo del examen: DG consignado como SAHOS (sospecha de síndrome de apneas-hipopneas obstructivas).  \nAntecedentes registrados: Nivel de riesgo SIN EVALUAR; historial: Sin historial registrado; teléfono y prioridad no informados.  \nHallazgos principales: TTS 440.5 min, eficiencia 90%, N3 0.0 min, REM 64.5 min (15%), índice microdespertares 19.3/h.  \nÍndices respiratorios y saturación: IAH TST 4.5 e/h (NREM 3.0, REM 13.0), 2 apneas obstructivas y 31 hipoapneas; IAH supino 20.2 e/h vs no supino 2.3 e/h; Sat media 92%, mínima 85%, CT90 ≈8.7%. Conclusión reportada: ausencia de sueño profundo y alteración de la estructura del sueño.",
     "documentDate": "7/10/2026",
     "equipment": "Estudio polisomnográfico digital con monitoreo de electroencefalograma, electrooculograma, electromiograma de mentón y tibiales anteriores, flujo aéreo naso-bucal (temperatura), movimientos respiratorios torácicos y abdominales, registro electrocardiográfico, oximetría de pulso, registro de posición y cámara de video infrarrojo.",
-    "documentSummary": "Polisomnografía basal realizada el 7/10/2026 en paciente masculino de 57 años. Tiempo total de sueño 440.5 min, eficiencia 90%, N3 0 min (no hay sueño profundo), REM 64.5 min (15%). Índice de microdespertares 19.3 /h. IAH total 4.5 e/h (2 apneas obstructivas y 31 hipoapneas); IAH REM 13.0 e/h, IAH NREM 3.0 e/h; IAH supino 20.2 e/h. Saturación promedio 92%, mínima 84-85%, CT90 ≈ 8.7%. Conclusión: alteración severa de la estructura del sueño por ausencia de sueño profundo; recomienda encuesta e higiene de sueño y evaluación de factores externos."
+    "documentSummary": "Informe de polisomnografía basal realizado el 7/10/2026 en paciente Manuel Lopez Romero (RUT 10603307-2), 57 años. Tiempo total de sueño 440.5 min, eficiencia 90%, N3 0.0 min, REM 64.5 min (15%). Índice de microdespertares 19.3/h. IAH TST 4.5 e/h (IAH NREM 3.0 e/h, IAH REM 13.0 e/h), compuesto por 2 apneas obstructivas y 31 hipoapneas. IAH en supino 20.2 e/h; no supino 2.3 e/h. Saturación promedio durante sueño 92%, mínima 85%, CT90 ~8.7%. Conclusión: ausencia de sueño profundo y alteración de la estructura del sueño; se sugieren encuesta de sueño, higiene del sueño y evaluar factores externos que afectan el descanso.",
+    "documentRecords": [
+      {
+        "filename": "MANUEL LOPEZ  ROMERO-  INFORME..pdf",
+        "incorporatedAt": "2026-08-09T20:44:46.891Z",
+        "isClinical": true,
+        "documentType": "Polisomnografía Basal",
+        "patientName": "LOPEZ ROMERO, MANUEL",
+        "patientRut": "10603307-2",
+        "patientAge": 57,
+        "exam": "Polisomnografía basal",
+        "doctor": "Dr. Ludwig Plate B.",
+        "reason": null,
+        "priority": null,
+        "date": "7/10/2026",
+        "equipment": null,
+        "summary": "Informe de polisomnografía basal realizado el 7/10/2026 en paciente Manuel Lopez Romero (RUT 10603307-2), 57 años. Tiempo total de sueño 440.5 min, eficiencia 90%, N3 0.0 min, REM 64.5 min (15%). Índice de microdespertares 19.3/h. IAH TST 4.5 e/h (IAH NREM 3.0 e/h, IAH REM 13.0 e/h), compuesto por 2 apneas obstructivas y 31 hipoapneas. IAH en supino 20.2 e/h; no supino 2.3 e/h. Saturación promedio durante sueño 92%, mínima 85%, CT90 ~8.7%. Conclusión: ausencia de sueño profundo y alteración de la estructura del sueño; se sugieren encuesta de sueño, higiene del sueño y evaluar factores externos que afectan el descanso."
+      }
+    ]
   }
 ]

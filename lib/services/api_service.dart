@@ -130,9 +130,36 @@ class ApiService {
       );
     }
 
+    final existingPatient = decodedBody['existingPatient'];
+
     return {
       'analysis': analysis.trim(),
       'documentData': Map<String, dynamic>.from(documentData),
+      'existingPatient': existingPatient is Map ? Map<String, dynamic>.from(existingPatient) : null,
     };
+  }
+
+  static Future<Map<String, dynamic>> incorporateDocumentData({
+    required int patientId,
+    required Map<String, dynamic> documentData,
+    required String filename,
+    int? targetPatientId,
+  }) async {
+    final http.Response response;
+    try {
+      response = await http.patch(
+        Uri.parse('$_baseUrl/patients/$patientId/from-document'),
+        headers: const {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'documentData': documentData,
+          'filename': filename,
+          if (targetPatientId != null) 'targetPatientId': targetPatientId,
+        }),
+      ).timeout(const Duration(seconds: 30));
+    } catch (_) { throw const ApiException('No fue posible actualizar la ficha del paciente.'); }
+    final decodedBody = await _decodeMap(response);
+    final patient = decodedBody['patient'];
+    if (patient is! Map) throw const ApiException('El backend no entregó la ficha actualizada.');
+    return {...decodedBody, 'patient': Map<String, dynamic>.from(patient)};
   }
 }

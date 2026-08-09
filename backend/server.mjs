@@ -2,12 +2,19 @@ import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
 import OpenAI from "openai";
+import fs from "fs";
+import path from "path";
+import { fileURLToPath } from "url";
 
 dotenv.config({ quiet: true });
 
 const app = express();
 const port = 3000;
 const model = process.env.OPENAI_MODEL || "gpt-5-mini";
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const dataDirectory = path.join(__dirname, "data");
+const patientsFile = path.join(dataDirectory, "patients.json");
 
 app.use(cors());
 app.use(express.json({ limit: "20mb" }));
@@ -23,7 +30,7 @@ const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
-const patients = [
+const defaultPatients = [
   {
     id: 1,
     time: "08:30",
@@ -122,8 +129,101 @@ const patients = [
   },
 ];
 
+
+function cloneDefaultPatients() {
+  return JSON.parse(JSON.stringify(defaultPatients));
+}
+
+function ensureDataDirectory() {
+  if (!fs.existsSync(dataDirectory)) {
+    fs.mkdirSync(dataDirectory, { recursive: true });
+  }
+}
+
+function savePatients() {
+  ensureDataDirectory();
+  fs.writeFileSync(
+    patientsFile,
+    JSON.stringify(patients, null, 2),
+    "utf8",
+  );
+}
+
+function loadPatients() {
+  ensureDataDirectory();
+
+  if (!fs.existsSync(patientsFile)) {
+    const initialPatients = cloneDefaultPatients();
+    fs.writeFileSync(
+      patientsFile,
+      JSON.stringify(initialPatients, null, 2),
+      "utf8",
+    );
+    return initialPatients;
+  }
+
+  try {
+    const raw = fs.readFileSync(patientsFile, "utf8");
+    const savedPatients = JSON.parse(raw);
+
+    if (!Array.isArray(savedPatients)) {
+      throw new Error("patients.json no contiene una lista válida.");
+    }
+
+    return savedPatients;
+  } catch (error) {
+    console.error("No fue posible leer patients.json:", error);
+    console.error("Nexa continuará con los pacientes iniciales.");
+    return cloneDefaultPatients();
+  }
+}
+
+let patients = loadPatients();
+
 function getPatientById(id) {
   return patients.find((patient) => patient.id === Number(id));
+}
+
+function normalizeRut(value) {
+  return typeof value === "string" ? value.toUpperCase().replace(/[^0-9K]/g, "") : "";
+}
+
+function findPatientsByRut(rut, excludeId = null) {
+  const normalized = normalizeRut(rut);
+  if (!normalized) return [];
+  return patients.filter(
+    (patient) =>
+      patient.id !== Number(excludeId) &&
+      normalizeRut(patient.rut) === normalized,
+  );
+}
+
+function findPatientByRut(rut, excludeId = null) {
+  const matches = findPatientsByRut(rut, excludeId);
+  return matches.length === 1 ? matches[0] : null;
+}
+
+function getDuplicateRutGroups() {
+  const groups = new Map();
+
+  for (const patient of patients) {
+    const rut = normalizeRut(patient.rut);
+    if (!rut) continue;
+
+    if (!groups.has(rut)) groups.set(rut, []);
+    groups.get(rut).push(patient);
+  }
+
+  return [...groups.entries()]
+    .filter(([, group]) => group.length > 1)
+    .map(([rut, group]) => ({
+      rut,
+      patients: group.map((patient) => ({
+        id: patient.id,
+        name: patient.name,
+        time: patient.time,
+      })),
+    }));
 }
 
 function buildPatientContext(patient) {
@@ -145,6 +245,10 @@ Sala: ${patient.room}
 Estado: ${patient.status}
 Observaciones: ${patient.observations}
 Nivel de riesgo registrado: ${patient.risk}
+Prioridad: ${patient.priority ?? "Sin información"}
+Fecha del documento: ${patient.documentDate ?? "Sin información"}
+Equipo: ${patient.equipment ?? "Sin información"}
+Resumen del documento incorporado: ${patient.documentSummary ?? "Sin información"}
 
 Historial:
 ${historyText}
@@ -211,6 +315,7 @@ app.get("/patients/:id", async (request, response) => {
   try {
     if (!patient.aiSummary) {
       patient.aiSummary = await generatePatientSummary(patient);
+      savePatients();
     }
 
     return response.json(patient);
@@ -237,6 +342,7 @@ app.post("/patients/:id/summary", async (request, response) => {
 
   try {
     patient.aiSummary = await generatePatientSummary(patient);
+    savePatients();
 
     return response.json({
       patientId: patient.id,
@@ -255,6 +361,102 @@ app.post("/patients/:id/summary", async (request, response) => {
   }
 });
 
+
+app.patch("/patients/:id/from-document", async (request, response) => {
+  const sourcePatient = getPatientById(request.params.id);
+  if (!sourcePatient) return response.status(404).json({ error: "Paciente de origen no encontrado" });
+  const documentData = request.body?.documentData;
+  const requestedTargetId = request.body?.targetPatientId;
+  const filename =
+    typeof request.body?.filename === "string"
+      ? request.body.filename.trim()
+      : "";
+  if (!documentData || typeof documentData !== "object") return response.status(400).json({ error: "No se recibieron datos válidos del documento." });
+  if (documentData.isClinical !== true) return response.status(400).json({ error: "Solo se pueden incorporar datos desde documentos clínicos." });
+  const cleanValue = (value) => { if (typeof value !== "string") return null; const c=value.trim(); return !c || c.toLowerCase()==="sin información" ? null : c; };
+  const parseAge = (value) => { if (Number.isInteger(value) && value>=0 && value<=130) return value; if (typeof value==="string") { const m=value.match(/\d{1,3}/); if(m){const n=Number(m[0]); if(n>=0&&n<=130)return n;} } return null; };
+  const patientName=cleanValue(documentData.patientName), patientRut=cleanValue(documentData.patientRut), patientAge=parseAge(documentData.patientAge), exam=cleanValue(documentData.exam), doctor=cleanValue(documentData.doctor), reason=cleanValue(documentData.reason), priority=cleanValue(documentData.priority), date=cleanValue(documentData.date), equipment=cleanValue(documentData.equipment), summary=cleanValue(documentData.summary);
+  const incomingRut=normalizeRut(patientRut), sourceRut=normalizeRut(sourcePatient.rut);
+  const identityDiffers=incomingRut && sourceRut && incomingRut!==sourceRut;
+  let targetPatient=sourcePatient; let routedToExistingPatient=false;
+  if (identityDiffers) {
+    const matches = findPatientsByRut(patientRut, sourcePatient.id);
+
+    if (matches.length === 0) {
+      return response.status(409).json({
+        error:
+          "El documento corresponde a otro RUT y no existe una ficha coincidente. Nexa no modificó la ficha original.",
+      });
+    }
+
+    if (matches.length > 1) {
+      return response.status(409).json({
+        error:
+          "Nexa encontró más de una ficha con el mismo RUT. Debes corregir los duplicados antes de incorporar el documento.",
+      });
+    }
+
+    const existingPatient = matches[0];
+
+    if (Number(requestedTargetId) !== existingPatient.id) {
+      return response.status(409).json({
+        error:
+          "Este paciente ya existe. Debes confirmar la incorporación a su ficha existente.",
+      });
+    }
+
+    targetPatient = existingPatient;
+    routedToExistingPatient = true;
+  }
+  if(patientName)targetPatient.name=patientName; if(patientRut)targetPatient.rut=patientRut; if(patientAge!==null)targetPatient.age=patientAge; if(exam)targetPatient.exam=exam; if(doctor)targetPatient.doctor=doctor; if(reason)targetPatient.observations=reason; if(priority)targetPatient.priority=priority; if(date)targetPatient.documentDate=date; if(equipment)targetPatient.equipment=equipment; if(summary)targetPatient.documentSummary=summary;
+
+  // V4.1: el PDF queda registrado únicamente en la ficha de destino.
+  // Si una versión anterior lo dejó por error en la ficha de origen,
+  // al volver a incorporarlo lo retiramos de allí.
+  if (filename) {
+    if (!Array.isArray(targetPatient.documents)) targetPatient.documents = [];
+
+    const normalizeDocumentName = (value) =>
+      typeof value === "string"
+        ? value
+            .trim()
+            .toLowerCase()
+            .replace(/\.pdf$/i, "")
+            .replace(/[^a-z0-9áéíóúüñ]+/gi, "")
+        : "";
+
+    const normalizedFilename = normalizeDocumentName(filename);
+
+    // V4.3: limpieza robusta. Compara el nombre ignorando espacios,
+    // guiones, puntos, dobles espacios y mayúsculas/minúsculas.
+    // Así también elimina asociaciones antiguas con pequeñas variaciones
+    // del mismo nombre de archivo.
+    for (const otherPatient of patients) {
+      if (otherPatient.id === targetPatient.id) continue;
+      if (!Array.isArray(otherPatient.documents)) continue;
+
+      otherPatient.documents = otherPatient.documents.filter((documentName) => {
+        if (typeof documentName !== "string") return true;
+        return normalizeDocumentName(documentName) !== normalizedFilename;
+      });
+    }
+
+    const alreadyInTarget = targetPatient.documents.some(
+      (documentName) =>
+        typeof documentName === "string" &&
+        normalizeDocumentName(documentName) === normalizedFilename,
+    );
+
+    if (!alreadyInTarget) {
+      targetPatient.documents.push(filename);
+    }
+  }
+
+  targetPatient.aiSummary=null;
+  try{targetPatient.aiSummary=await generatePatientSummary(targetPatient);}catch(error){console.error("No fue posible regenerar el resumen:",error);}
+  savePatients();
+  return response.json({ok:true,routedToExistingPatient,sourcePatientId:sourcePatient.id,targetPatientId:targetPatient.id,message:routedToExistingPatient?`Documento incorporado a la ficha existente de ${targetPatient.name}. La ficha original no fue modificada.`:"Información incorporada y guardada correctamente en la ficha.",patient:targetPatient});
+});
 
 app.post("/patients/:id/documents/analyze", async (request, response) => {
   const patient = getPatientById(request.params.id);
@@ -301,6 +503,7 @@ Devuelve SOLO un objeto JSON válido, sin Markdown ni texto adicional, con estas
   "isClinical": true,
   "patientName": "string o Sin información",
   "patientRut": "string o Sin información",
+  "patientAge": 0,
   "exam": "string o Sin información",
   "doctor": "string o Sin información",
   "priority": "string o Sin información",
@@ -312,6 +515,7 @@ Devuelve SOLO un objeto JSON válido, sin Markdown ni texto adicional, con estas
   "differences": ["diferencia con la ficha 1"]
 }
 
+Para "patientAge", devuelve un número entero SOLO si la edad aparece explícitamente en el documento; si no aparece, usa null.
 Si el documento no es clínico, usa isClinical=false y extrae igualmente la información útil disponible.
       `.trim(),
       input: [
@@ -364,11 +568,20 @@ Si el documento no es clínico, usa isClinical=false y extrae igualmente la info
       ? documentData.differences
       : [];
 
+    const matchingPatients =
+      documentData.isClinical === true
+        ? findPatientsByRut(documentData.patientRut, patient.id)
+        : [];
+
+    const existingPatientMatch =
+      matchingPatients.length === 1 ? matchingPatients[0] : null;
+
     const analysisLines = [
       `Tipo de documento: ${documentData.documentType ?? "Sin información"}`,
       `Documento clínico: ${documentData.isClinical === true ? "Sí" : "No"}`,
       `Paciente: ${documentData.patientName ?? "Sin información"}`,
       `RUT: ${documentData.patientRut ?? "Sin información"}`,
+      `Edad: ${documentData.patientAge ?? "Sin información"}`,
       `Examen: ${documentData.exam ?? "Sin información"}`,
       `Médico: ${documentData.doctor ?? "Sin información"}`,
       `Prioridad: ${documentData.priority ?? "Sin información"}`,
@@ -382,15 +595,21 @@ Si el documento no es clínico, usa isClinical=false y extrae igualmente la info
       `Diferencias con la ficha: ${differences.length ? differences.join(" | ") : "No se informaron diferencias"}`,
     ];
 
-    if (!patient.documents.includes(filename)) {
-      patient.documents.push(filename);
-    }
-
+    // El análisis por sí solo no asocia el archivo a ninguna ficha.
+    // La asociación se realiza únicamente al confirmar "Incorporar datos a la ficha".
     return response.json({
       patientId: patient.id,
       filename,
       analysis: analysisLines.join("\n"),
       documentData,
+      existingPatient: existingPatientMatch
+        ? {
+            id: existingPatientMatch.id,
+            name: existingPatientMatch.name,
+            rut: existingPatientMatch.rut,
+          }
+        : null,
+      duplicateRutCount: matchingPatients.length > 1 ? matchingPatients.length : 0,
     });
   } catch (error) {
     console.error("Error al analizar PDF:", error);
@@ -483,6 +702,15 @@ Reglas:
 });
 
 app.listen(port, () => {
+  const duplicateRutGroups = getDuplicateRutGroups();
+
+  if (duplicateRutGroups.length > 0) {
+    console.warn("");
+    console.warn("ADVERTENCIA: se detectaron RUT duplicados en patients.json:");
+    console.warn(JSON.stringify(duplicateRutGroups, null, 2));
+    console.warn("");
+  }
+
   console.log("");
   console.log("========================================");
   console.log("Nexa Backend iniciado correctamente");

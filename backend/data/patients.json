@@ -1,0 +1,147 @@
+[
+  {
+    "id": 1,
+    "time": "08:30",
+    "name": "María Soto",
+    "rut": "15.234.567-8",
+    "age": 46,
+    "doctor": "Dr. Juan Pérez",
+    "phone": "+56 9 9876 5432",
+    "observations": "Paciente diabética. Ayuno confirmado.",
+    "exam": "Ecografía abdominal",
+    "room": "Sala 1",
+    "status": "En atención",
+    "risk": "BAJO",
+    "documents": [
+      "Orden médica.pdf",
+      "Consentimiento.pdf",
+      "Informe anterior.pdf"
+    ],
+    "history": [
+      {
+        "date": "15/07/2026",
+        "exam": "Ecografía abdominal"
+      },
+      {
+        "date": "12/03/2026",
+        "exam": "Control médico"
+      },
+      {
+        "date": "21/11/2025",
+        "exam": "Radiografía de tórax"
+      }
+    ],
+    "aiSummary": null
+  },
+  {
+    "id": 2,
+    "time": "08:45",
+    "name": "Juan Pérez",
+    "rut": "12.345.678-5",
+    "age": 52,
+    "doctor": "Dra. Carolina Muñoz",
+    "phone": "+56 9 6543 2109",
+    "observations": "Control anual. Sin antecedentes relevantes registrados.",
+    "exam": "Mamografía",
+    "room": "Sala 2",
+    "status": "Esperando",
+    "risk": "BAJO",
+    "documents": [
+      "Orden médica.pdf",
+      "Consentimiento.pdf"
+    ],
+    "history": [
+      {
+        "date": "10/06/2026",
+        "exam": "Mamografía"
+      },
+      {
+        "date": "08/05/2025",
+        "exam": "Control médico"
+      }
+    ],
+    "aiSummary": "Motivo: Mamografía por control anual; estado: Esperando (Sala 2).  \nAntecedentes registrados: Sin antecedentes relevantes; nivel de riesgo BAJO.  \nHistorial relevante: Mamografía 10/06/2026; Control médico 08/05/2025.  \nDatos paciente/consulta: Juan Pérez, 52 años; Dra. Carolina Muñoz, +56 9 6543 2109.  \nFaltantes: Prioridad, fecha del documento, equipo y resumen del documento no informados."
+  },
+  {
+    "id": 3,
+    "time": "09:00",
+    "name": "Ana Rojas",
+    "rut": "18.765.432-1",
+    "age": 39,
+    "doctor": "Dr. Felipe Morales",
+    "phone": "+56 9 7654 3210",
+    "observations": "Derivada por tos persistente.",
+    "exam": "Rayos X de tórax",
+    "room": "Sala 3",
+    "status": "Programado",
+    "risk": "BAJO",
+    "documents": [
+      "Orden médica.pdf",
+      "Consentimiento.pdf",
+      "Informe anterior.pdf"
+    ],
+    "history": [
+      {
+        "date": "18/01/2026",
+        "exam": "Radiografía de tórax"
+      },
+      {
+        "date": "02/08/2025",
+        "exam": "Control respiratorio"
+      }
+    ],
+    "aiSummary": null
+  },
+  {
+    "id": 4,
+    "time": "09:15",
+    "name": "Carlos Díaz",
+    "rut": "9.876.543-2",
+    "age": 61,
+    "doctor": "Dra. Paula Silva",
+    "phone": "+56 9 8765 4321",
+    "observations": "Dolor y edema en extremidad inferior derecha.",
+    "exam": "Ecografía Doppler",
+    "room": "Sala 1",
+    "status": "Programado",
+    "risk": "MEDIO",
+    "documents": [
+      "Orden médica.pdf",
+      "Consentimiento.pdf",
+      "Informe vascular anterior.pdf"
+    ],
+    "history": [
+      {
+        "date": "22/04/2026",
+        "exam": "Ecografía Doppler venosa"
+      },
+      {
+        "date": "30/09/2025",
+        "exam": "Ecografía abdominal"
+      }
+    ],
+    "aiSummary": null
+  },
+  {
+    "id": 5,
+    "time": "",
+    "name": "LOPEZ ROMERO, MANUEL",
+    "rut": "10603307-2",
+    "age": 57,
+    "doctor": "Dr. Ludwig Plate B.",
+    "phone": "",
+    "observations": "DG: SAHOS.",
+    "exam": "Polisomnografía basal",
+    "room": "Sin asignar",
+    "status": "Pendiente de validación",
+    "risk": "SIN EVALUAR",
+    "documents": [
+      "MANUEL LOPEZ  ROMERO-  INFORME..pdf"
+    ],
+    "history": [],
+    "aiSummary": "Paciente: LOPEZ ROMERO, MANUEL, 57 años (RUT 10.603.307-2). Examen: Polisomnografía basal (DG: SAHOS). Fecha: 07/10/2026.  \nPrincipales hallazgos del sueño: TTS 440.5 min, eficiencia 90%, N3 0 min (ausencia de sueño profundo), REM 64.5 min (15%), índice de microdespertares 19.3/h.  \nRespiratorio: IAH total 4.5 e/h (2 apneas obstructivas, 31 hipoapneas); IAH REM 13.0 e/h; IAH NREM 3.0 e/h; IAH supino 20.2 e/h.  \nOximetría y conclusión: SatO2 promedio 92%, mínima 84–85%, CT90 ≈ 8.7%. Conclusión: alteración severa de la estructura del sueño por ausencia de sueño profundo; el informe recomienda encuesta e higiene de sueño y evaluar factores externos.  \nAntecedentes: Sin historial registrado. Datos faltantes/pendientes: teléfono vacío, sala sin asignar, nivel de riesgo SIN EVALUAR, prioridad sin información, estado pendiente de validación.",
+    "documentDate": "7/10/2026",
+    "equipment": "Estudio polisomnográfico digital con monitoreo de electroencefalograma, electrooculograma, electromiograma de mentón y tibiales anteriores, flujo aéreo naso-bucal (temperatura), movimientos respiratorios torácicos y abdominales, registro electrocardiográfico, oximetría de pulso, registro de posición y cámara de video infrarrojo.",
+    "documentSummary": "Polisomnografía basal realizada el 7/10/2026 en paciente masculino de 57 años. Tiempo total de sueño 440.5 min, eficiencia 90%, N3 0 min (no hay sueño profundo), REM 64.5 min (15%). Índice de microdespertares 19.3 /h. IAH total 4.5 e/h (2 apneas obstructivas y 31 hipoapneas); IAH REM 13.0 e/h, IAH NREM 3.0 e/h; IAH supino 20.2 e/h. Saturación promedio 92%, mínima 84-85%, CT90 ≈ 8.7%. Conclusión: alteración severa de la estructura del sueño por ausencia de sueño profundo; recomienda encuesta e higiene de sueño y evaluación de factores externos."
+  }
+]

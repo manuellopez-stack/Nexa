@@ -82,6 +82,8 @@ class _TodayPatientsSectionState extends State<TodayPatientsSection> {
           return _PatientDialog(patient: patient);
         },
       );
+
+      if (mounted) _reloadPatients();
     } on ApiException catch (error) {
       if (!mounted) return;
       Navigator.of(context, rootNavigator: true).pop();
@@ -237,9 +239,13 @@ class _PatientDialogState extends State<_PatientDialog> {
   String? _error;
   bool _isLoading = false;
   bool _isAnalyzingDocument = false;
+  bool _isIncorporatingDocument = false;
   String? _documentAnalysis;
   Map<String, dynamic>? _documentData;
   String? _documentError;
+  String? _incorporationMessage;
+  Map<String, dynamic>? _existingPatientMatch;
+  String? _documentFilename;
 
   @override
   void dispose() {
@@ -360,6 +366,9 @@ $historyText
       _documentAnalysis = null;
       _documentData = null;
       _documentError = null;
+      _incorporationMessage = null;
+      _existingPatientMatch = null;
+      _documentFilename = null;
     });
 
     try {
@@ -375,6 +384,13 @@ $historyText
         _documentAnalysis = result['analysis']?.toString();
         final data = result['documentData'];
         _documentData = data is Map<String, dynamic> ? data : null;
+        final existing = result['existingPatient'];
+        _existingPatientMatch =
+            existing is Map<String, dynamic> ? existing : null;
+        _documentFilename =
+            result['filename']?.toString().trim().isNotEmpty == true
+                ? result['filename'].toString().trim()
+                : file.name;
       });
     } on ApiException catch (error) {
       if (!mounted) return;
@@ -395,6 +411,53 @@ $historyText
         });
       }
     }
+  }
+
+  Future<void> _incorporateDocumentIntoPatient() async {
+    if (_isIncorporatingDocument || _documentData == null) return;
+
+    final filename = _documentFilename;
+    if (filename == null || filename.trim().isEmpty) {
+      setState(() {
+        _documentError =
+            'Nexa no pudo identificar el nombre del PDF analizado. Vuelve a analizar el documento.';
+      });
+      return;
+    }
+
+    final patientId = widget.patient['id'];
+    if (patientId is! int) { setState(() => _documentError = 'El paciente no tiene un identificador válido.'); return; }
+    if (_documentData!['isClinical'] != true) { setState(() => _documentError = 'Este documento no fue clasificado como clínico y no se incorporará a la ficha.'); return; }
+    String normalizedRut(dynamic value) => value?.toString().toUpperCase().replaceAll(RegExp(r'[^0-9K]'), '') ?? '';
+    final currentRut = normalizedRut(widget.patient['rut']);
+    final incomingRut = normalizedRut(_documentData!['patientRut']);
+    final identityDiffers = incomingRut.isNotEmpty && currentRut.isNotEmpty && incomingRut != currentRut;
+    int? targetPatientId;
+    if (identityDiffers) {
+      final existing = _existingPatientMatch;
+      if (existing == null || existing['id'] is! int) { setState(() => _documentError = 'El documento corresponde a otro RUT, pero Nexa no encontró una ficha existente. No se modificó la ficha actual.'); return; }
+      final confirmed = await showDialog<bool>(context: context, builder: (dialogContext) => AlertDialog(
+        title: const Text('Este paciente ya existe'),
+        content: Text('El documento corresponde a ${existing['name'] ?? 'otro paciente'} (RUT ${existing['rut'] ?? 'sin información'}).\n\n¿Desea incorporar el documento a su ficha existente?\n\nLa ficha actual de ${widget.patient['name'] ?? 'este paciente'} no será modificada.'),
+        actions: [TextButton(onPressed: () => Navigator.pop(dialogContext, false), child: const Text('Cancelar')), FilledButton(onPressed: () => Navigator.pop(dialogContext, true), child: const Text('Incorporar a ficha existente'))],
+      ));
+      if (confirmed != true) return;
+      targetPatientId = existing['id'] as int;
+    }
+    setState(() { _isIncorporatingDocument = true; _documentError = null; _incorporationMessage = null; });
+    try {
+      final result = await ApiService.incorporateDocumentData(
+        patientId: patientId,
+        documentData: _documentData!,
+        filename: filename,
+        targetPatientId: targetPatientId,
+      );
+      if (!mounted) return;
+      final updatedPatient = result['patient']; final routed = result['routedToExistingPatient'] == true; final message = result['message']?.toString();
+      setState(() { if (!routed && updatedPatient is Map<String, dynamic>) { widget.patient..clear()..addAll(updatedPatient); } _incorporationMessage = message?.trim().isNotEmpty == true ? message!.trim() : (routed ? 'Documento incorporado a la ficha existente. La ficha actual no fue modificada.' : 'Información incorporada y guardada correctamente en la ficha.'); });
+    } on ApiException catch (error) { if (mounted) setState(() => _documentError = error.message); }
+    catch (_) { if (mounted) setState(() => _documentError = 'Ocurrió un error al incorporar la información a la ficha.'); }
+    finally { if (mounted) setState(() => _isIncorporatingDocument = false); }
   }
 
   Future<void> _askNexa() async {
@@ -624,43 +687,41 @@ $historyText
               ],
               if (_documentData != null) ...[
                 const SizedBox(height: 14),
-                _DocumentDataCard(data: _documentData!),
+                _DocumentDataCard(
+                  data: _documentData!,
+                  isIncorporating: _isIncorporatingDocument,
+                  incorporationMessage: _incorporationMessage,
+                  onIncorporate: _incorporateDocumentIntoPatient,
+                ),
               ],
               if (_documentAnalysis != null) ...[
-                const SizedBox(height: 14),
+                const SizedBox(height: 12),
                 Container(
-                  width: double.infinity,
-                  padding: const EdgeInsets.all(16),
                   decoration: BoxDecoration(
                     color: const Color(0xFFFFFBEB),
                     borderRadius: BorderRadius.circular(14),
-                    border: Border.all(
-                      color: const Color(0xFFFDE68A),
-                    ),
+                    border: Border.all(color: const Color(0xFFFDE68A)),
                   ),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Row(
-                        children: [
-                          Icon(
-                            Icons.document_scanner_outlined,
-                            color: Color(0xFFB45309),
-                          ),
-                          SizedBox(width: 8),
-                          Text(
-                            'Análisis del documento',
-                            style: TextStyle(
-                              color: Color(0xFF92400E),
-                              fontWeight: FontWeight.w800,
-                            ),
-                          ),
-                        ],
+                  child: ExpansionTile(
+                    leading: const Icon(
+                      Icons.document_scanner_outlined,
+                      color: Color(0xFFB45309),
+                    ),
+                    title: const Text(
+                      'Ver análisis completo del documento',
+                      style: TextStyle(
+                        color: Color(0xFF92400E),
+                        fontWeight: FontWeight.w800,
                       ),
-                      const SizedBox(height: 10),
-                      Text(
-                        _documentAnalysis!,
-                        style: const TextStyle(height: 1.5),
+                    ),
+                    childrenPadding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+                    children: [
+                      Align(
+                        alignment: Alignment.centerLeft,
+                        child: Text(
+                          _documentAnalysis!,
+                          style: const TextStyle(height: 1.5),
+                        ),
                       ),
                     ],
                   ),
@@ -698,9 +759,17 @@ $historyText
 }
 
 class _DocumentDataCard extends StatelessWidget {
-  const _DocumentDataCard({required this.data});
+  const _DocumentDataCard({
+    required this.data,
+    required this.isIncorporating,
+    required this.incorporationMessage,
+    required this.onIncorporate,
+  });
 
   final Map<String, dynamic> data;
+  final bool isIncorporating;
+  final String? incorporationMessage;
+  final VoidCallback onIncorporate;
 
   String value(String key) {
     final result = data[key]?.toString().trim();
@@ -714,83 +783,126 @@ class _DocumentDataCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final isClinical = data['isClinical'] == true;
 
-    final fields = <MapEntry<String, String>>[
-      MapEntry('Tipo de documento', value('documentType')),
-      MapEntry('Paciente', value('patientName')),
-      MapEntry('RUT', value('patientRut')),
-      MapEntry('Examen', value('exam')),
-      MapEntry('Médico', value('doctor')),
-      MapEntry('Prioridad', value('priority')),
-      MapEntry('Fecha', value('date')),
-      MapEntry('Motivo', value('reason')),
-      MapEntry('Equipo', value('equipment')),
+    final fields = <({String label, String key, IconData icon})>[
+      (label: 'Tipo de documento', key: 'documentType', icon: Icons.description_outlined),
+      (label: 'Paciente', key: 'patientName', icon: Icons.person_outline),
+      (label: 'RUT', key: 'patientRut', icon: Icons.badge_outlined),
+      (label: 'Edad', key: 'patientAge', icon: Icons.cake_outlined),
+      (label: 'Examen', key: 'exam', icon: Icons.biotech_outlined),
+      (label: 'Médico', key: 'doctor', icon: Icons.medical_services_outlined),
+      (label: 'Prioridad', key: 'priority', icon: Icons.flag_outlined),
+      (label: 'Fecha', key: 'date', icon: Icons.calendar_today_outlined),
+      (label: 'Motivo', key: 'reason', icon: Icons.notes_outlined),
+      (label: 'Equipo', key: 'equipment', icon: Icons.monitor_heart_outlined),
     ];
 
     return Container(
       width: double.infinity,
-      padding: const EdgeInsets.all(16),
+      padding: const EdgeInsets.all(18),
       decoration: BoxDecoration(
         color: Colors.white,
-        borderRadius: BorderRadius.circular(14),
+        borderRadius: BorderRadius.circular(16),
         border: Border.all(color: const Color(0xFFE2E8F0)),
+        boxShadow: const [
+          BoxShadow(
+            color: Color(0x0A0F172A),
+            blurRadius: 16,
+            offset: Offset(0, 6),
+          ),
+        ],
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(
             children: [
-              Icon(
-                isClinical
-                    ? Icons.medical_information_outlined
-                    : Icons.description_outlined,
-                color: isClinical
-                    ? const Color(0xFF15803D)
-                    : const Color(0xFFB45309),
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Text(
+              Container(
+                padding: const EdgeInsets.all(9),
+                decoration: BoxDecoration(
+                  color: isClinical
+                      ? const Color(0xFFDCFCE7)
+                      : const Color(0xFFFFF7ED),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Icon(
                   isClinical
-                      ? 'Documento clínico detectado'
-                      : 'Documento no clínico detectado',
-                  style: const TextStyle(
-                    fontWeight: FontWeight.w800,
-                    fontSize: 16,
-                  ),
+                      ? Icons.medical_information_outlined
+                      : Icons.description_outlined,
+                  color: isClinical
+                      ? const Color(0xFF15803D)
+                      : const Color(0xFFB45309),
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      isClinical
+                          ? 'Documento clínico detectado'
+                          : 'Documento no clínico detectado',
+                      style: const TextStyle(
+                        fontWeight: FontWeight.w800,
+                        fontSize: 17,
+                        color: Color(0xFF0F172A),
+                      ),
+                    ),
+                    const SizedBox(height: 3),
+                    Text(
+                      value('documentType'),
+                      style: const TextStyle(color: Color(0xFF64748B)),
+                    ),
+                  ],
                 ),
               ),
             ],
           ),
-          const SizedBox(height: 14),
+          const SizedBox(height: 16),
           Wrap(
             spacing: 12,
             runSpacing: 12,
             children: fields
                 .map(
                   (item) => SizedBox(
-                    width: 285,
+                    width: 290,
                     child: Container(
-                      padding: const EdgeInsets.all(12),
+                      padding: const EdgeInsets.all(13),
                       decoration: BoxDecoration(
                         color: const Color(0xFFF8FAFC),
-                        borderRadius: BorderRadius.circular(10),
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(color: const Color(0xFFE2E8F0)),
                       ),
-                      child: Column(
+                      child: Row(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          Text(
-                            item.key,
-                            style: const TextStyle(
-                              color: Color(0xFF64748B),
-                              fontSize: 12,
-                              fontWeight: FontWeight.w700,
-                            ),
+                          Icon(
+                            item.icon,
+                            size: 19,
+                            color: const Color(0xFF475569),
                           ),
-                          const SizedBox(height: 4),
-                          Text(
-                            item.value,
-                            style: const TextStyle(
-                              fontWeight: FontWeight.w700,
+                          const SizedBox(width: 9),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  item.label,
+                                  style: const TextStyle(
+                                    color: Color(0xFF64748B),
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.w700,
+                                  ),
+                                ),
+                                const SizedBox(height: 4),
+                                Text(
+                                  value(item.key),
+                                  style: const TextStyle(
+                                    fontWeight: FontWeight.w700,
+                                    color: Color(0xFF0F172A),
+                                  ),
+                                ),
+                              ],
                             ),
                           ),
                         ],
@@ -800,13 +912,104 @@ class _DocumentDataCard extends StatelessWidget {
                 )
                 .toList(),
           ),
-          const SizedBox(height: 14),
-          const Text(
-            'Resumen extraído',
-            style: TextStyle(fontWeight: FontWeight.w800),
+          const SizedBox(height: 16),
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(14),
+            decoration: BoxDecoration(
+              color: const Color(0xFFF0FDFA),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: const Color(0xFF99F6E4)),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'Resumen extraído',
+                  style: TextStyle(
+                    color: Color(0xFF115E59),
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+                const SizedBox(height: 7),
+                Text(
+                  value('summary'),
+                  style: const TextStyle(
+                    color: Color(0xFF134E4A),
+                    height: 1.45,
+                  ),
+                ),
+              ],
+            ),
           ),
-          const SizedBox(height: 6),
-          Text(value('summary'), style: const TextStyle(height: 1.45)),
+          const SizedBox(height: 16),
+          if (isClinical)
+            SizedBox(
+              width: double.infinity,
+              child: FilledButton.icon(
+                onPressed: isIncorporating ? null : onIncorporate,
+                icon: isIncorporating
+                    ? const SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          color: Colors.white,
+                        ),
+                      )
+                    : const Icon(Icons.download_done_outlined),
+                label: Text(
+                  isIncorporating
+                      ? 'Incorporando información...'
+                      : 'Incorporar datos a la ficha',
+                ),
+              ),
+            )
+          else
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: const Color(0xFFFFF7ED),
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: const Text(
+                'Este documento no es clínico. Nexa no modificará la ficha del paciente.',
+                style: TextStyle(
+                  color: Color(0xFF9A3412),
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+            ),
+          if (incorporationMessage != null) ...[
+            const SizedBox(height: 12),
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: const Color(0xFFDCFCE7),
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Row(
+                children: [
+                  const Icon(
+                    Icons.check_circle_outline,
+                    color: Color(0xFF15803D),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      incorporationMessage!,
+                      style: const TextStyle(
+                        color: Color(0xFF166534),
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
         ],
       ),
     );

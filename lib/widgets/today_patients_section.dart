@@ -324,6 +324,72 @@ $historyText
   }
 
 
+  Future<void> _showSavedDocument(String filename) async {
+    final patientId = widget.patient['id'];
+    if (patientId is! int) {
+      setState(() => _documentError = 'El paciente no tiene un identificador válido.');
+      return;
+    }
+
+    try {
+      final result = await ApiService.getPatientDocument(
+        patientId: patientId,
+        filename: filename,
+      );
+      if (!mounted) return;
+      final raw = result['document'];
+      if (raw is! Map) {
+        throw const ApiException('Nexa no encontró información guardada para este documento.');
+      }
+      final document = Map<String, dynamic>.from(raw);
+      String value(String key) {
+        final text = document[key]?.toString().trim() ?? '';
+        return text.isEmpty ? 'Sin información' : text;
+      }
+
+      await showDialog<void>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+          title: Row(children: [
+            const Icon(Icons.picture_as_pdf_outlined),
+            const SizedBox(width: 10),
+            Expanded(child: Text(filename, overflow: TextOverflow.ellipsis)),
+          ]),
+          content: SizedBox(
+            width: 680,
+            child: SingleChildScrollView(
+              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                _DocumentDetailRow(label: 'Tipo', value: value('documentType')),
+                _DocumentDetailRow(label: 'Paciente', value: value('patientName')),
+                _DocumentDetailRow(label: 'RUT', value: value('patientRut')),
+                _DocumentDetailRow(label: 'Edad', value: value('patientAge')),
+                _DocumentDetailRow(label: 'Examen', value: value('exam')),
+                _DocumentDetailRow(label: 'Médico', value: value('doctor')),
+                _DocumentDetailRow(label: 'Fecha', value: value('date')),
+                _DocumentDetailRow(label: 'Prioridad', value: value('priority')),
+                const Divider(height: 28),
+                const Text('Resumen guardado', style: TextStyle(fontWeight: FontWeight.w800)),
+                const SizedBox(height: 8),
+                SelectableText(value('summary')),
+                const SizedBox(height: 18),
+                const Text('Equipo / técnica', style: TextStyle(fontWeight: FontWeight.w800)),
+                const SizedBox(height: 8),
+                SelectableText(value('equipment')),
+              ]),
+            ),
+          ),
+          actions: [
+            FilledButton(onPressed: () => Navigator.pop(dialogContext), child: const Text('Cerrar')),
+          ],
+        ),
+      );
+    } on ApiException catch (error) {
+      if (mounted) setState(() => _documentError = error.message);
+    } catch (_) {
+      if (mounted) setState(() => _documentError = 'No fue posible abrir la información del documento.');
+    }
+  }
+
   Future<void> _analyzePdfDocument() async {
     if (_isAnalyzingDocument) return;
 
@@ -655,7 +721,7 @@ $historyText
                   spacing: 10,
                   runSpacing: 10,
                   children: documents
-                      .map((document) => _DocumentChip(name: document))
+                      .map((document) => _DocumentChip(name: document, onTap: () => _showSavedDocument(document)))
                       .toList(),
                 ),
               const SizedBox(height: 14),
@@ -1177,13 +1243,17 @@ class _AiPanel extends StatelessWidget {
 }
 
 class _DocumentChip extends StatelessWidget {
-  const _DocumentChip({required this.name});
+  const _DocumentChip({required this.name, this.onTap});
 
   final String name;
+  final VoidCallback? onTap;
 
   @override
   Widget build(BuildContext context) {
-    return Container(
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(12),
+      child: Container(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
       decoration: BoxDecoration(
         color: const Color(0xFFF8FAFC),
@@ -1202,7 +1272,7 @@ class _DocumentChip extends StatelessWidget {
           Text(name, style: const TextStyle(fontWeight: FontWeight.w600)),
         ],
       ),
-    );
+    ));
   }
 }
 
@@ -1339,6 +1409,26 @@ class _ErrorMessage extends StatelessWidget {
           ),
         ],
       ),
+    );
+  }
+}
+
+class _DocumentDetailRow extends StatelessWidget {
+  const _DocumentDetailRow({required this.label, required this.value});
+  final String label;
+  final String value;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        SizedBox(
+          width: 105,
+          child: Text(label, style: const TextStyle(fontWeight: FontWeight.w700, color: Color(0xFF475569))),
+        ),
+        Expanded(child: SelectableText(value)),
+      ]),
     );
   }
 }

@@ -88,6 +88,23 @@ class ApiService {
     return _decodeMap(response);
   }
 
+  static Future<Map<String, dynamic>> getPatientDocument({
+    required int patientId,
+    required String filename,
+  }) async {
+    final encodedFilename = Uri.encodeComponent(filename);
+    final http.Response response;
+    try {
+      response = await http.get(
+        Uri.parse('$_baseUrl/patients/$patientId/documents/$encodedFilename'),
+        headers: const {'Accept': 'application/json'},
+      ).timeout(const Duration(seconds: 30));
+    } catch (_) {
+      throw const ApiException('No fue posible consultar el documento guardado.');
+    }
+    return _decodeMap(response);
+  }
+
   static Future<Map<String, dynamic>> analyzePatientPdf({
     required int patientId,
     required String filename,

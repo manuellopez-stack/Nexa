@@ -452,10 +452,45 @@ app.patch("/patients/:id/from-document", async (request, response) => {
     }
   }
 
+  if (!Array.isArray(targetPatient.documentRecords)) targetPatient.documentRecords = [];
+  if (filename) {
+    const normalizeStoredName = (value) => typeof value === "string"
+      ? value.trim().toLowerCase().replace(/\.pdf$/i, "").replace(/[^a-z0-9áéíóúüñ]+/gi, "")
+      : "";
+    const normalizedStoredFilename = normalizeStoredName(filename);
+    const record = {
+      filename, incorporatedAt: new Date().toISOString(),
+      isClinical: documentData.isClinical === true,
+      documentType: cleanValue(documentData.documentType),
+      patientName, patientRut, patientAge, exam, doctor, reason, priority, date, equipment, summary,
+    };
+    const recordIndex = targetPatient.documentRecords.findIndex(
+      (item) => item && normalizeStoredName(item.filename) === normalizedStoredFilename,
+    );
+    if (recordIndex >= 0) targetPatient.documentRecords[recordIndex] = record;
+    else targetPatient.documentRecords.push(record);
+  }
+
   targetPatient.aiSummary=null;
   try{targetPatient.aiSummary=await generatePatientSummary(targetPatient);}catch(error){console.error("No fue posible regenerar el resumen:",error);}
   savePatients();
   return response.json({ok:true,routedToExistingPatient,sourcePatientId:sourcePatient.id,targetPatientId:targetPatient.id,message:routedToExistingPatient?`Documento incorporado a la ficha existente de ${targetPatient.name}. La ficha original no fue modificada.`:"Información incorporada y guardada correctamente en la ficha.",patient:targetPatient});
+});
+
+app.get("/patients/:id/documents/:filename", (request, response) => {
+  const patient = getPatientById(request.params.id);
+  if (!patient) return response.status(404).json({ error: "Paciente no encontrado" });
+  const filename = decodeURIComponent(request.params.filename);
+  const normalizeName = (value) => typeof value === "string"
+    ? value.trim().toLowerCase().replace(/\.pdf$/i, "").replace(/[^a-z0-9áéíóúüñ]+/gi, "")
+    : "";
+  const normalized = normalizeName(filename);
+  const records = Array.isArray(patient.documentRecords) ? patient.documentRecords : [];
+  const record = records.find((item) => item && normalizeName(item.filename) === normalized);
+  if (!record) return response.status(404).json({
+    error: "Este documento todavía no tiene información detallada guardada. Vuelve a analizarlo e incorporarlo para habilitar su consulta.",
+  });
+  return response.json({ patientId: patient.id, patientName: patient.name, document: record });
 });
 
 app.post("/patients/:id/documents/analyze", async (request, response) => {

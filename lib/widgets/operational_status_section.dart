@@ -1,9 +1,34 @@
 import 'package:flutter/material.dart';
 
 import '../core/nexa_colors.dart';
+import '../services/api_service.dart';
 
-class OperationalStatusSection extends StatelessWidget {
+class OperationalStatusSection extends StatefulWidget {
   const OperationalStatusSection({super.key});
+
+  @override
+  State<OperationalStatusSection> createState() =>
+      _OperationalStatusSectionState();
+}
+
+class _OperationalStatusSectionState extends State<OperationalStatusSection> {
+  late Future<Map<String, dynamic>> _summaryFuture;
+
+  @override
+  void initState() {
+    super.initState();
+    _summaryFuture = ApiService.getDashboardSummary();
+  }
+
+  void _reload() {
+    setState(() => _summaryFuture = ApiService.getDashboardSummary());
+  }
+
+  int _asInt(dynamic value) {
+    if (value is int) return value;
+    if (value is num) return value.toInt();
+    return int.tryParse(value?.toString() ?? '') ?? 0;
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -21,10 +46,10 @@ class OperationalStatusSection extends StatelessWidget {
           ),
         ],
       ),
-      child: const Column(
+      child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(
+          const Text(
             'Estado operacional',
             style: TextStyle(
               fontSize: 24,
@@ -32,47 +57,89 @@ class OperationalStatusSection extends StatelessWidget {
               color: NexaColors.textPrimary,
             ),
           ),
-          SizedBox(height: 6),
-          Text(
-            'Situación actual de las áreas principales',
-            style: TextStyle(
-              color: NexaColors.textSecondary,
-            ),
+          const SizedBox(height: 6),
+          const Text(
+            'Situación actual, calculada desde los pacientes registrados hoy',
+            style: TextStyle(color: NexaColors.textSecondary),
           ),
-          SizedBox(height: 28),
+          const SizedBox(height: 28),
+          FutureBuilder<Map<String, dynamic>>(
+            future: _summaryFuture,
+            builder: (context, snapshot) {
+              if (snapshot.connectionState == ConnectionState.waiting) {
+                return const Padding(
+                  padding: EdgeInsets.symmetric(vertical: 20),
+                  child: Center(child: CircularProgressIndicator()),
+                );
+              }
 
-          StatusBar(
-            title: 'Equipos',
-            value: 0.82,
-            label: '4 de 5 disponibles',
-            color: Color(0xFF06B6D4),
-          ),
+              if (snapshot.hasError || !snapshot.hasData) {
+                final message = snapshot.error is ApiException
+                    ? (snapshot.error as ApiException).message
+                    : 'No fue posible cargar el estado operacional.';
 
-          SizedBox(height: 18),
+                return Column(
+                  children: [
+                    Text(
+                      message,
+                      style: const TextStyle(color: Color(0xFF991B1B)),
+                    ),
+                    const SizedBox(height: 8),
+                    TextButton(
+                      onPressed: _reload,
+                      child: const Text('Reintentar'),
+                    ),
+                  ],
+                );
+              }
 
-          StatusBar(
-            title: 'Agenda',
-            value: 0.92,
-            label: '92 % ocupación',
-            color: NexaColors.primary,
-          ),
+              final summary = snapshot.data!;
+              final roomsInUse = _asInt(summary['roomsInUse']);
+              final totalKnownRooms = _asInt(summary['totalKnownRooms']);
+              final waiting = _asInt(summary['waiting']);
+              final patientsToday = _asInt(summary['patientsToday']);
+              final pendingValidation = _asInt(summary['pendingValidation']);
+              final awaitingAnalysis =
+                  _asInt(summary['documentsAwaitingAnalysis']);
+              final totalUploaded =
+                  _asInt(summary['totalUploadedDocuments']);
 
-          SizedBox(height: 18),
-
-          StatusBar(
-            title: 'Personal',
-            value: 1.0,
-            label: 'Equipo completo',
-            color: Color(0xFF10B981),
-          ),
-
-          SizedBox(height: 18),
-
-          StatusBar(
-            title: 'Conectividad',
-            value: 0.98,
-            label: 'Servicios operativos',
-            color: Color(0xFF10B981),
+              return Column(
+                children: [
+                  StatusBar(
+                    title: 'Salas en uso',
+                    value: totalKnownRooms > 0
+                        ? roomsInUse / totalKnownRooms
+                        : 0,
+                    label: '$roomsInUse de $totalKnownRooms en uso',
+                    color: const Color(0xFF06B6D4),
+                  ),
+                  const SizedBox(height: 18),
+                  StatusBar(
+                    title: 'Pacientes esperando',
+                    value: patientsToday > 0 ? waiting / patientsToday : 0,
+                    label: '$waiting de $patientsToday pacientes',
+                    color: NexaColors.primary,
+                  ),
+                  const SizedBox(height: 18),
+                  StatusBar(
+                    title: 'Documentos por validar',
+                    value:
+                        patientsToday > 0 ? pendingValidation / patientsToday : 0,
+                    label: '$pendingValidation fichas pendientes',
+                    color: const Color(0xFFF59E0B),
+                  ),
+                  const SizedBox(height: 18),
+                  StatusBar(
+                    title: 'Documentos sin analizar',
+                    value:
+                        totalUploaded > 0 ? awaitingAnalysis / totalUploaded : 0,
+                    label: '$awaitingAnalysis de $totalUploaded documentos',
+                    color: const Color(0xFF10B981),
+                  ),
+                ],
+              );
+            },
           ),
         ],
       ),

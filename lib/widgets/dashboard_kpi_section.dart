@@ -1,77 +1,153 @@
 import 'package:flutter/material.dart';
 
 import '../core/nexa_colors.dart';
+import '../services/api_service.dart';
 
-class DashboardKpiSection extends StatelessWidget {
+class DashboardKpiSection extends StatefulWidget {
   const DashboardKpiSection({super.key});
 
   @override
-  Widget build(BuildContext context) {
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        int columns;
+  State<DashboardKpiSection> createState() => _DashboardKpiSectionState();
+}
 
-        if (constraints.maxWidth >= 1050) {
-          columns = 4;
-        } else if (constraints.maxWidth >= 620) {
-          columns = 2;
-        } else {
-          columns = 1;
+class _DashboardKpiSectionState extends State<DashboardKpiSection> {
+  late Future<Map<String, dynamic>> _summaryFuture;
+
+  @override
+  void initState() {
+    super.initState();
+    _summaryFuture = ApiService.getDashboardSummary();
+  }
+
+  void _reload() {
+    setState(() => _summaryFuture = ApiService.getDashboardSummary());
+  }
+
+  int _asInt(dynamic value) {
+    if (value is int) return value;
+    if (value is num) return value.toInt();
+    return int.tryParse(value?.toString() ?? '') ?? 0;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return FutureBuilder<Map<String, dynamic>>(
+      future: _summaryFuture,
+      builder: (context, snapshot) {
+        if (snapshot.connectionState == ConnectionState.waiting) {
+          return const SizedBox(
+            height: 188,
+            child: Center(child: CircularProgressIndicator()),
+          );
         }
 
-        const spacing = 16.0;
+        if (snapshot.hasError || !snapshot.hasData) {
+          final message = snapshot.error is ApiException
+              ? (snapshot.error as ApiException).message
+              : 'No fue posible cargar el resumen del día.';
 
-        final cardWidth =
-            (constraints.maxWidth - spacing * (columns - 1)) / columns;
-
-        return Wrap(
-          spacing: spacing,
-          runSpacing: spacing,
-          children: const [
-            KpiCard(
-              title: 'Pacientes hoy',
-              value: '126',
-              variation: '+14%',
-              detail: 'Meta: 120',
-              icon: Icons.people_outline,
-              accentColor: NexaColors.primary,
-              progress: 1,
+          return Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(20),
+            decoration: BoxDecoration(
+              color: const Color(0xFFFEF2F2),
+              borderRadius: BorderRadius.circular(14),
             ),
-            KpiCard(
-              title: 'Estudios',
-              value: '148',
-              variation: '+8%',
-              detail: 'Meta: 150',
-              icon: Icons.monitor_heart_outlined,
-              accentColor: Color(0xFF06B6D4),
-              progress: 0.98,
-            ),
-            KpiCard(
-              title: 'Ingresos',
-              value: '\$4.320.000',
-              variation: '+18%',
-              detail: 'Proyección diaria',
-              icon: Icons.payments_outlined,
-              accentColor: Color(0xFF10B981),
-              progress: 0.92,
-            ),
-            KpiCard(
-              title: 'Alertas',
-              value: '2',
-              variation: '1 crítica',
-              detail: 'Requieren atención',
-              icon: Icons.warning_amber_rounded,
-              accentColor: Color(0xFFF59E0B),
-              progress: 0.38,
-            ),
-          ]
-              .map(
-                (card) => SizedBox(
-                  width: cardWidth,
-                  child: card,
+            child: Column(
+              children: [
+                Text(
+                  message,
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(
+                    fontWeight: FontWeight.w700,
+                    color: Color(0xFF991B1B),
+                  ),
                 ),
-              )
-              .toList(),
+                const SizedBox(height: 10),
+                TextButton(onPressed: _reload, child: const Text('Reintentar')),
+              ],
+            ),
+          );
+        }
+
+        final summary = snapshot.data!;
+        final patientsToday = _asInt(summary['patientsToday']);
+        final waiting = _asInt(summary['waiting']);
+        final inAttention = _asInt(summary['inAttention']);
+        final scheduled = _asInt(summary['scheduled']);
+        final pendingValidation = _asInt(summary['pendingValidation']);
+        final totalUploaded = _asInt(summary['totalUploadedDocuments']);
+        final totalAnalyzed = _asInt(summary['totalAnalyzedDocuments']);
+
+        final cards = [
+          KpiCard(
+            title: 'Pacientes hoy',
+            value: '$patientsToday',
+            variation: '$inAttention en atención',
+            detail: '$waiting esperando · $scheduled programados',
+            icon: Icons.people_outline,
+            accentColor: NexaColors.primary,
+            progress: patientsToday > 0 ? inAttention / patientsToday : 0,
+          ),
+          KpiCard(
+            title: 'Documentos analizados por IA',
+            value: '$totalAnalyzed',
+            variation: 'de $totalUploaded cargados',
+            detail: '${(totalUploaded - totalAnalyzed).clamp(0, totalUploaded)} por procesar',
+            icon: Icons.description_outlined,
+            accentColor: const Color(0xFF06B6D4),
+            progress: totalUploaded > 0 ? totalAnalyzed / totalUploaded : 0,
+          ),
+          KpiCard(
+            title: 'Pendientes de validación',
+            value: '$pendingValidation',
+            variation: pendingValidation > 0 ? 'Requiere revisión' : 'Al día',
+            detail: 'de $patientsToday pacientes registrados',
+            icon: Icons.fact_check_outlined,
+            accentColor: const Color(0xFFF59E0B),
+            progress: patientsToday > 0 ? pendingValidation / patientsToday : 0,
+          ),
+          const KpiCard(
+            title: 'Backend Nexa',
+            value: 'Operativo',
+            variation: 'En línea',
+            detail: 'Conectividad en tiempo real',
+            icon: Icons.cloud_done_outlined,
+            accentColor: Color(0xFF10B981),
+            progress: 1,
+          ),
+        ];
+
+        return LayoutBuilder(
+          builder: (context, constraints) {
+            int columns;
+
+            if (constraints.maxWidth >= 1050) {
+              columns = 4;
+            } else if (constraints.maxWidth >= 620) {
+              columns = 2;
+            } else {
+              columns = 1;
+            }
+
+            const spacing = 16.0;
+
+            final cardWidth =
+                (constraints.maxWidth - spacing * (columns - 1)) / columns;
+
+            return Wrap(
+              spacing: spacing,
+              runSpacing: spacing,
+              children: cards
+                  .map(
+                    (card) => SizedBox(
+                      width: cardWidth,
+                      child: card,
+                    ),
+                  )
+                  .toList(),
+            );
+          },
         );
       },
     );

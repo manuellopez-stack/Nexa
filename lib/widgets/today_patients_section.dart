@@ -2,8 +2,8 @@ import 'dart:convert';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
-import 'package:http/http.dart' as http;
 
+import '../core/nexa_colors.dart';
 import '../services/api_service.dart';
 
 class TodayPatientsSection extends StatefulWidget {
@@ -22,21 +22,8 @@ class _TodayPatientsSectionState extends State<TodayPatientsSection> {
     _patientsFuture = _loadPatients();
   }
 
-  Future<List<Map<String, dynamic>>> _loadPatients() async {
-    final response = await http.get(
-      Uri.parse('http://localhost:3000/patients/today'),
-    );
-
-    if (response.statusCode != 200) {
-      throw Exception('No fue posible cargar los pacientes.');
-    }
-
-    final data = jsonDecode(response.body) as Map<String, dynamic>;
-    final patients = data['patients'] as List<dynamic>;
-
-    return patients
-        .map((patient) => Map<String, dynamic>.from(patient as Map))
-        .toList();
+  Future<List<Map<String, dynamic>>> _loadPatients() {
+    return ApiService.getTodayPatients();
   }
 
   void _reloadPatients() {
@@ -107,9 +94,9 @@ class _TodayPatientsSectionState extends State<TodayPatientsSection> {
       width: double.infinity,
       padding: const EdgeInsets.all(24),
       decoration: BoxDecoration(
-        color: Colors.white,
+        color: NexaColors.surface,
         borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: const Color(0xFFE2E8F0)),
+        border: Border.all(color: NexaColors.border),
         boxShadow: const [
           BoxShadow(
             color: Color(0x0D0F172A),
@@ -125,7 +112,7 @@ class _TodayPatientsSectionState extends State<TodayPatientsSection> {
             children: [
               const Icon(
                 Icons.people_alt_outlined,
-                color: Color(0xFF2563EB),
+                color: NexaColors.primary,
               ),
               const SizedBox(width: 10),
               const Expanded(
@@ -134,7 +121,7 @@ class _TodayPatientsSectionState extends State<TodayPatientsSection> {
                   style: TextStyle(
                     fontSize: 22,
                     fontWeight: FontWeight.w800,
-                    color: Color(0xFF0F172A),
+                    color: NexaColors.textPrimary,
                   ),
                 ),
               ),
@@ -148,7 +135,7 @@ class _TodayPatientsSectionState extends State<TodayPatientsSection> {
           const SizedBox(height: 6),
           const Text(
             'Próximas atenciones obtenidas desde Nexa Backend',
-            style: TextStyle(color: Color(0xFF64748B)),
+            style: TextStyle(color: NexaColors.textSecondary),
           ),
           const SizedBox(height: 22),
           FutureBuilder<List<Map<String, dynamic>>>(
@@ -164,7 +151,11 @@ class _TodayPatientsSectionState extends State<TodayPatientsSection> {
               }
 
               if (snapshot.hasError) {
-                return _ErrorMessage(onRetry: _reloadPatients);
+                final error = snapshot.error;
+                return _ErrorMessage(
+                  message: error is ApiException ? error.message : null,
+                  onRetry: _reloadPatients,
+                );
               }
 
               final patients = snapshot.data ?? [];
@@ -181,7 +172,7 @@ class _TodayPatientsSectionState extends State<TodayPatientsSection> {
                 child: DataTable(
                   showCheckboxColumn: false,
                   headingRowColor: const WidgetStatePropertyAll(
-                    Color(0xFFF8FAFC),
+                    NexaColors.background,
                   ),
                   columns: const [
                     DataColumn(label: Text('Hora')),
@@ -246,6 +237,7 @@ class _PatientDialogState extends State<_PatientDialog> {
   String? _incorporationMessage;
   Map<String, dynamic>? _existingPatientMatch;
   String? _documentFilename;
+  String? _deletingFilename;
 
   @override
   void dispose() {
@@ -287,17 +279,55 @@ class _PatientDialogState extends State<_PatientDialog> {
         .toUpperCase();
   }
 
+  String _normalizeDocumentName(String value) {
+    return value
+        .trim()
+        .toLowerCase()
+        .replaceAll(RegExp(r'\.pdf$'), '')
+        .replaceAll(RegExp(r'[^a-z0-9áéíóúüñ]+'), '');
+  }
+
+  Map<String, dynamic>? _documentRecordFor(String filename) {
+    final records = _mapList(widget.patient['documentRecords']);
+    final target = _normalizeDocumentName(filename);
+
+    for (final record in records) {
+      final recordFilename = record['filename']?.toString() ?? '';
+      if (_normalizeDocumentName(recordFilename) == target) return record;
+    }
+
+    return null;
+  }
+
   String _patientContext() {
     final patient = widget.patient;
     final history = _mapList(patient['history']);
+    final documentRecords = _mapList(patient['documentRecords']);
 
     final historyText = history.isEmpty
         ? 'Sin historial registrado.'
         : history
-            .map(
-              (item) =>
-                  '- ${item['date'] ?? ''}: ${item['exam'] ?? ''}',
-            )
+            .map((item) {
+              final date = item['date'] ?? 'Sin fecha';
+              final exam = item['exam'] ?? 'Sin examen';
+              final summary = item['summary']?.toString().trim();
+              final summaryPart =
+                  (summary != null && summary.isNotEmpty) ? ' — $summary' : '';
+              return '- $date: $exam$summaryPart';
+            })
+            .join('\n');
+
+    final documentsText = documentRecords.isEmpty
+        ? 'Sin documentos incorporados todavía.'
+        : documentRecords
+            .map((doc) {
+              final date = doc['date'] ?? 'Sin fecha';
+              final type = doc['documentType'] ?? doc['exam'] ?? 'Documento';
+              final summary = doc['summary']?.toString().trim();
+              final summaryPart =
+                  (summary != null && summary.isNotEmpty) ? '\n  $summary' : '';
+              return '- [$date] $type$summaryPart';
+            })
             .join('\n');
 
     return '''
@@ -305,6 +335,12 @@ Responde exclusivamente usando la ficha clínica proporcionada.
 No inventes diagnósticos ni datos.
 Aclara cuando la información no sea suficiente.
 No reemplaces la evaluación de un profesional de salud.
+Si la pregunta pide comparar exámenes, describir cambios o evolución en el
+tiempo, usa las fechas del historial y de los documentos incorporados para
+identificar cuál es el examen más reciente y cuál el anterior, y compara
+explícitamente los hallazgos de cada uno. Si solo existe un examen o
+documento, indícalo claramente y aclara que no hay un estudio anterior con
+el cual comparar.
 
 FICHA DEL PACIENTE
 Nombre: ${patient['name'] ?? 'Sin información'}
@@ -318,8 +354,11 @@ Estado: ${patient['status'] ?? 'Sin información'}
 Observaciones: ${patient['observations'] ?? 'Sin observaciones'}
 Riesgo registrado: ${patient['risk'] ?? 'Sin evaluar'}
 
-HISTORIAL
+HISTORIAL (ordenado como está registrado)
 $historyText
+
+DOCUMENTOS INCORPORADOS (con su resumen clínico)
+$documentsText
 '''.trim();
   }
 
@@ -342,51 +381,93 @@ $historyText
         throw const ApiException('Nexa no encontró información guardada para este documento.');
       }
       final document = Map<String, dynamic>.from(raw);
-      String value(String key) {
-        final text = document[key]?.toString().trim() ?? '';
-        return text.isEmpty ? 'Sin información' : text;
-      }
 
       await showDialog<void>(
         context: context,
-        builder: (dialogContext) => AlertDialog(
-          title: Row(children: [
-            const Icon(Icons.picture_as_pdf_outlined),
-            const SizedBox(width: 10),
-            Expanded(child: Text(filename, overflow: TextOverflow.ellipsis)),
-          ]),
-          content: SizedBox(
-            width: 680,
-            child: SingleChildScrollView(
-              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                _DocumentDetailRow(label: 'Tipo', value: value('documentType')),
-                _DocumentDetailRow(label: 'Paciente', value: value('patientName')),
-                _DocumentDetailRow(label: 'RUT', value: value('patientRut')),
-                _DocumentDetailRow(label: 'Edad', value: value('patientAge')),
-                _DocumentDetailRow(label: 'Examen', value: value('exam')),
-                _DocumentDetailRow(label: 'Médico', value: value('doctor')),
-                _DocumentDetailRow(label: 'Fecha', value: value('date')),
-                _DocumentDetailRow(label: 'Prioridad', value: value('priority')),
-                const Divider(height: 28),
-                const Text('Resumen guardado', style: TextStyle(fontWeight: FontWeight.w800)),
-                const SizedBox(height: 8),
-                SelectableText(value('summary')),
-                const SizedBox(height: 18),
-                const Text('Equipo / técnica', style: TextStyle(fontWeight: FontWeight.w800)),
-                const SizedBox(height: 8),
-                SelectableText(value('equipment')),
-              ]),
-            ),
-          ),
-          actions: [
-            FilledButton(onPressed: () => Navigator.pop(dialogContext), child: const Text('Cerrar')),
-          ],
+        builder: (dialogContext) => _SavedDocumentDialog(
+          patientId: patientId,
+          filename: filename,
+          document: document,
         ),
       );
     } on ApiException catch (error) {
       if (mounted) setState(() => _documentError = error.message);
     } catch (_) {
       if (mounted) setState(() => _documentError = 'No fue posible abrir la información del documento.');
+    }
+  }
+
+  Future<void> _deleteDocument(String filename) async {
+    final patientId = widget.patient['id'];
+
+    if (patientId is! int) {
+      setState(() => _documentError = 'El paciente no tiene un identificador válido.');
+      return;
+    }
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Eliminar documento'),
+        content: Text(
+          '¿Quitar "$filename" de la ficha de este paciente? Esta acción no se puede deshacer.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('Cancelar'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            style: FilledButton.styleFrom(
+              backgroundColor: const Color(0xFFDC2626),
+            ),
+            child: const Text('Eliminar'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed != true || !mounted) return;
+
+    setState(() {
+      _deletingFilename = filename;
+      _documentError = null;
+    });
+
+    try {
+      final result = await ApiService.deleteDocument(
+        patientId: patientId,
+        filename: filename,
+      );
+
+      if (!mounted) return;
+
+      setState(() {
+        final updatedPatient = result['patient'];
+
+        if (updatedPatient is Map<String, dynamic>) {
+          widget.patient
+            ..clear()
+            ..addAll(updatedPatient);
+        }
+
+        if (_documentFilename == filename) {
+          _documentAnalysis = null;
+          _documentData = null;
+          _documentFilename = null;
+          _incorporationMessage = null;
+          _existingPatientMatch = null;
+        }
+      });
+    } on ApiException catch (error) {
+      if (mounted) setState(() => _documentError = error.message);
+    } catch (_) {
+      if (mounted) {
+        setState(() => _documentError = 'No fue posible eliminar el documento.');
+      }
+    } finally {
+      if (mounted) setState(() => _deletingFilename = null);
     }
   }
 
@@ -526,6 +607,11 @@ $historyText
     finally { if (mounted) setState(() => _isIncorporatingDocument = false); }
   }
 
+  void _askQuickQuestion(String question) {
+    _questionController.text = question;
+    _askNexa();
+  }
+
   Future<void> _askNexa() async {
     final question = _questionController.text.trim();
 
@@ -587,7 +673,7 @@ $historyText
             child: Text(
               _initials(patient['name']?.toString() ?? ''),
               style: const TextStyle(
-                color: Color(0xFF2563EB),
+                color: NexaColors.primary,
                 fontWeight: FontWeight.w800,
               ),
             ),
@@ -608,7 +694,7 @@ $historyText
                 Text(
                   'RUT: ${patient['rut']?.toString() ?? 'Sin información'}',
                   style: const TextStyle(
-                    color: Color(0xFF64748B),
+                    color: NexaColors.textSecondary,
                     fontSize: 14,
                   ),
                 ),
@@ -705,6 +791,7 @@ $historyText
                 answer: _answer,
                 error: _error,
                 onSend: _askNexa,
+                onQuickQuestion: _askQuickQuestion,
               ),
               const SizedBox(height: 20),
               const Divider(),
@@ -720,9 +807,18 @@ $historyText
                 Wrap(
                   spacing: 10,
                   runSpacing: 10,
-                  children: documents
-                      .map((document) => _DocumentChip(name: document, onTap: () => _showSavedDocument(document)))
-                      .toList(),
+                  children: documents.map((document) {
+                    final record = _documentRecordFor(document);
+
+                    return _DocumentChip(
+                      name: document,
+                      documentType: record?['documentType']?.toString(),
+                      date: record?['date']?.toString(),
+                      onTap: () => _showSavedDocument(document),
+                      onDelete: () => _deleteDocument(document),
+                      isDeleting: _deletingFilename == document,
+                    );
+                  }).toList(),
                 ),
               const SizedBox(height: 14),
               OutlinedButton.icon(
@@ -808,6 +904,7 @@ $historyText
                   (item) => _HistoryItem(
                     date: item['date']?.toString() ?? '',
                     exam: item['exam']?.toString() ?? '',
+                    summary: item['summary']?.toString(),
                   ),
                 ),
             ],
@@ -866,9 +963,9 @@ class _DocumentDataCard extends StatelessWidget {
       width: double.infinity,
       padding: const EdgeInsets.all(18),
       decoration: BoxDecoration(
-        color: Colors.white,
+        color: NexaColors.surface,
         borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: const Color(0xFFE2E8F0)),
+        border: Border.all(color: NexaColors.border),
         boxShadow: const [
           BoxShadow(
             color: Color(0x0A0F172A),
@@ -911,13 +1008,13 @@ class _DocumentDataCard extends StatelessWidget {
                       style: const TextStyle(
                         fontWeight: FontWeight.w800,
                         fontSize: 17,
-                        color: Color(0xFF0F172A),
+                        color: NexaColors.textPrimary,
                       ),
                     ),
                     const SizedBox(height: 3),
                     Text(
                       value('documentType'),
-                      style: const TextStyle(color: Color(0xFF64748B)),
+                      style: const TextStyle(color: NexaColors.textSecondary),
                     ),
                   ],
                 ),
@@ -935,9 +1032,9 @@ class _DocumentDataCard extends StatelessWidget {
                     child: Container(
                       padding: const EdgeInsets.all(13),
                       decoration: BoxDecoration(
-                        color: const Color(0xFFF8FAFC),
+                        color: NexaColors.background,
                         borderRadius: BorderRadius.circular(12),
-                        border: Border.all(color: const Color(0xFFE2E8F0)),
+                        border: Border.all(color: NexaColors.border),
                       ),
                       child: Row(
                         crossAxisAlignment: CrossAxisAlignment.start,
@@ -955,7 +1052,7 @@ class _DocumentDataCard extends StatelessWidget {
                                 Text(
                                   item.label,
                                   style: const TextStyle(
-                                    color: Color(0xFF64748B),
+                                    color: NexaColors.textSecondary,
                                     fontSize: 12,
                                     fontWeight: FontWeight.w700,
                                   ),
@@ -965,7 +1062,7 @@ class _DocumentDataCard extends StatelessWidget {
                                   value(item.key),
                                   style: const TextStyle(
                                     fontWeight: FontWeight.w700,
-                                    color: Color(0xFF0F172A),
+                                    color: NexaColors.textPrimary,
                                   ),
                                 ),
                               ],
@@ -1020,7 +1117,7 @@ class _DocumentDataCard extends StatelessWidget {
                         height: 18,
                         child: CircularProgressIndicator(
                           strokeWidth: 2,
-                          color: Colors.white,
+                          color: NexaColors.surface,
                         ),
                       )
                     : const Icon(Icons.download_done_outlined),
@@ -1089,6 +1186,7 @@ class _PatientChatPanel extends StatelessWidget {
     required this.answer,
     required this.error,
     required this.onSend,
+    required this.onQuickQuestion,
   });
 
   final TextEditingController controller;
@@ -1096,6 +1194,7 @@ class _PatientChatPanel extends StatelessWidget {
   final String? answer;
   final String? error;
   final VoidCallback onSend;
+  final ValueChanged<String> onQuickQuestion;
 
   @override
   Widget build(BuildContext context) {
@@ -1103,24 +1202,49 @@ class _PatientChatPanel extends StatelessWidget {
       width: double.infinity,
       padding: const EdgeInsets.all(18),
       decoration: BoxDecoration(
-        color: const Color(0xFFF8FAFC),
+        color: NexaColors.background,
         borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: const Color(0xFFE2E8F0)),
+        border: Border.all(color: NexaColors.border),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           const Row(
             children: [
-              Icon(Icons.chat_bubble_outline, color: Color(0xFF2563EB)),
+              Icon(Icons.chat_bubble_outline, color: NexaColors.primary),
               SizedBox(width: 9),
               Text(
                 'Preguntar a Nexa sobre este paciente',
                 style: TextStyle(
-                  color: Color(0xFF0F172A),
+                  color: NexaColors.textPrimary,
                   fontSize: 16,
                   fontWeight: FontWeight.w800,
                 ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              ActionChip(
+                avatar: const Icon(Icons.compare_arrows, size: 16),
+                label: const Text('¿Qué cambió respecto al examen anterior?'),
+                onPressed: isLoading
+                    ? null
+                    : () => onQuickQuestion(
+                          '¿Qué cambió respecto al examen o documento anterior de este paciente?',
+                        ),
+              ),
+              ActionChip(
+                avatar: const Icon(Icons.timeline, size: 16),
+                label: const Text('Resume la evolución del paciente'),
+                onPressed: isLoading
+                    ? null
+                    : () => onQuickQuestion(
+                          'Resume la evolución de este paciente a lo largo del tiempo, según el historial y los documentos disponibles.',
+                        ),
               ),
             ],
           ),
@@ -1148,7 +1272,7 @@ class _PatientChatPanel extends StatelessWidget {
                       height: 17,
                       child: CircularProgressIndicator(
                         strokeWidth: 2,
-                        color: Colors.white,
+                        color: NexaColors.surface,
                       ),
                     )
                   : const Icon(Icons.auto_awesome),
@@ -1171,7 +1295,7 @@ class _PatientChatPanel extends StatelessWidget {
               width: double.infinity,
               padding: const EdgeInsets.all(14),
               decoration: BoxDecoration(
-                color: Colors.white,
+                color: NexaColors.surface,
                 borderRadius: BorderRadius.circular(12),
                 border: Border.all(color: const Color(0xFFBFDBFE)),
               ),
@@ -1243,36 +1367,98 @@ class _AiPanel extends StatelessWidget {
 }
 
 class _DocumentChip extends StatelessWidget {
-  const _DocumentChip({required this.name, this.onTap});
+  const _DocumentChip({
+    required this.name,
+    this.documentType,
+    this.date,
+    this.onTap,
+    this.onDelete,
+    this.isDeleting = false,
+  });
 
   final String name;
+  final String? documentType;
+  final String? date;
   final VoidCallback? onTap;
+  final VoidCallback? onDelete;
+  final bool isDeleting;
 
   @override
   Widget build(BuildContext context) {
-    return InkWell(
-      onTap: onTap,
-      borderRadius: BorderRadius.circular(12),
-      child: Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
+    final metaParts = [
+      if (documentType != null && documentType!.trim().isNotEmpty)
+        documentType!.trim(),
+      if (date != null && date!.trim().isNotEmpty) date!.trim(),
+    ];
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
       decoration: BoxDecoration(
-        color: const Color(0xFFF8FAFC),
+        color: NexaColors.background,
         borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: const Color(0xFFE2E8F0)),
+        border: Border.all(color: NexaColors.border),
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          const Icon(
-            Icons.description_outlined,
-            size: 18,
-            color: Color(0xFF2563EB),
+          InkWell(
+            onTap: onTap,
+            borderRadius: BorderRadius.circular(10),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(
+                  Icons.description_outlined,
+                  size: 18,
+                  color: NexaColors.primary,
+                ),
+                const SizedBox(width: 7),
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      name,
+                      style: const TextStyle(fontWeight: FontWeight.w600),
+                    ),
+                    if (metaParts.isNotEmpty)
+                      Text(
+                        metaParts.join(' · '),
+                        style: const TextStyle(
+                          fontSize: 11,
+                          color: NexaColors.textSecondary,
+                        ),
+                      ),
+                  ],
+                ),
+              ],
+            ),
           ),
-          const SizedBox(width: 7),
-          Text(name, style: const TextStyle(fontWeight: FontWeight.w600)),
+          if (onDelete != null) ...[
+            const SizedBox(width: 6),
+            SizedBox(
+              width: 26,
+              height: 26,
+              child: isDeleting
+                  ? const Padding(
+                      padding: EdgeInsets.all(5),
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : IconButton(
+                      padding: EdgeInsets.zero,
+                      iconSize: 15,
+                      tooltip: 'Eliminar documento',
+                      onPressed: onDelete,
+                      icon: const Icon(
+                        Icons.close,
+                        color: Color(0xFF94A3B8),
+                      ),
+                    ),
+            ),
+          ],
         ],
       ),
-    ));
+    );
   }
 }
 
@@ -1308,38 +1494,60 @@ class _RiskBadge extends StatelessWidget {
 }
 
 class _HistoryItem extends StatelessWidget {
-  const _HistoryItem({required this.date, required this.exam});
+  const _HistoryItem({required this.date, required this.exam, this.summary});
 
   final String date;
   final String exam;
+  final String? summary;
 
   @override
   Widget build(BuildContext context) {
+    final hasSummary = summary != null && summary!.trim().isNotEmpty;
+
     return Container(
       margin: const EdgeInsets.only(bottom: 8),
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
-        color: const Color(0xFFF8FAFC),
+        color: NexaColors.background,
         borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: const Color(0xFFE2E8F0)),
+        border: Border.all(color: NexaColors.border),
       ),
-      child: Row(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Icon(Icons.history, size: 19, color: Color(0xFF2563EB)),
-          const SizedBox(width: 10),
-          Expanded(
-            child: Text(
-              exam,
-              style: const TextStyle(fontWeight: FontWeight.w600),
-            ),
+          Row(
+            children: [
+              const Icon(Icons.history, size: 19, color: NexaColors.primary),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  exam,
+                  style: const TextStyle(fontWeight: FontWeight.w600),
+                ),
+              ),
+              Text(
+                date,
+                style: const TextStyle(
+                  color: NexaColors.textSecondary,
+                  fontSize: 13,
+                ),
+              ),
+            ],
           ),
-          Text(
-            date,
-            style: const TextStyle(
-              color: Color(0xFF64748B),
-              fontSize: 13,
+          if (hasSummary) ...[
+            const SizedBox(height: 6),
+            Padding(
+              padding: const EdgeInsets.only(left: 29),
+              child: Text(
+                summary!.trim(),
+                style: const TextStyle(
+                  color: NexaColors.textSecondary,
+                  fontSize: 13,
+                  height: 1.4,
+                ),
+              ),
             ),
-          ),
+          ],
         ],
       ),
     );
@@ -1374,9 +1582,10 @@ class _InfoRow extends StatelessWidget {
 }
 
 class _ErrorMessage extends StatelessWidget {
-  const _ErrorMessage({required this.onRetry});
+  const _ErrorMessage({required this.onRetry, this.message});
 
   final VoidCallback onRetry;
+  final String? message;
 
   @override
   Widget build(BuildContext context) {
@@ -1394,9 +1603,10 @@ class _ErrorMessage extends StatelessWidget {
             color: Color(0xFFDC2626),
           ),
           const SizedBox(height: 10),
-          const Text(
-            'No fue posible conectar con Nexa Backend.',
-            style: TextStyle(
+          Text(
+            message ?? 'No fue posible conectar con Nexa Backend.',
+            textAlign: TextAlign.center,
+            style: const TextStyle(
               fontWeight: FontWeight.w700,
               color: Color(0xFF991B1B),
             ),
@@ -1409,6 +1619,144 @@ class _ErrorMessage extends StatelessWidget {
           ),
         ],
       ),
+    );
+  }
+}
+
+class _SavedDocumentDialog extends StatefulWidget {
+  const _SavedDocumentDialog({
+    required this.patientId,
+    required this.filename,
+    required this.document,
+  });
+
+  final int patientId;
+  final String filename;
+  final Map<String, dynamic> document;
+
+  @override
+  State<_SavedDocumentDialog> createState() => _SavedDocumentDialogState();
+}
+
+class _SavedDocumentDialogState extends State<_SavedDocumentDialog> {
+  final TextEditingController _controller = TextEditingController();
+  bool _loading = false;
+  String? _answer;
+  String? _error;
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  String _value(String key) {
+    final text = widget.document[key]?.toString().trim() ?? '';
+    return text.isEmpty ? 'Sin información' : text;
+  }
+
+  Future<void> _ask() async {
+    final question = _controller.text.trim();
+    if (question.isEmpty || _loading) return;
+    setState(() { _loading = true; _answer = null; _error = null; });
+    try {
+      final answer = await ApiService.askPatientDocument(
+        patientId: widget.patientId,
+        filename: widget.filename,
+        question: question,
+      );
+      if (!mounted) return;
+      setState(() => _answer = answer);
+    } on ApiException catch (error) {
+      if (mounted) setState(() => _error = error.message);
+    } catch (_) {
+      if (mounted) setState(() => _error = 'No fue posible obtener una respuesta de Nexa.');
+    } finally {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: Row(children: [
+        const Icon(Icons.picture_as_pdf_outlined),
+        const SizedBox(width: 10),
+        Expanded(child: Text(widget.filename, overflow: TextOverflow.ellipsis)),
+      ]),
+      content: SizedBox(
+        width: 680,
+        child: SingleChildScrollView(
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            _DocumentDetailRow(label: 'Tipo', value: _value('documentType')),
+            _DocumentDetailRow(label: 'Paciente', value: _value('patientName')),
+            _DocumentDetailRow(label: 'RUT', value: _value('patientRut')),
+            _DocumentDetailRow(label: 'Edad', value: _value('patientAge')),
+            _DocumentDetailRow(label: 'Examen', value: _value('exam')),
+            _DocumentDetailRow(label: 'Médico', value: _value('doctor')),
+            _DocumentDetailRow(label: 'Fecha', value: _value('date')),
+            _DocumentDetailRow(label: 'Prioridad', value: _value('priority')),
+            const Divider(height: 28),
+            const Text('Resumen guardado', style: TextStyle(fontWeight: FontWeight.w800)),
+            const SizedBox(height: 8),
+            SelectableText(_value('summary')),
+            const SizedBox(height: 18),
+            const Text('Equipo / técnica', style: TextStyle(fontWeight: FontWeight.w800)),
+            const SizedBox(height: 8),
+            SelectableText(_value('equipment')),
+            const SizedBox(height: 24),
+            const Divider(),
+            const SizedBox(height: 12),
+            const Row(children: [
+              Icon(Icons.auto_awesome, size: 20, color: Color(0xFF4F64A3)),
+              SizedBox(width: 8),
+              Text('Preguntar a Nexa sobre este documento', style: TextStyle(fontWeight: FontWeight.w800)),
+            ]),
+            const SizedBox(height: 10),
+            TextField(
+              controller: _controller,
+              minLines: 2,
+              maxLines: 4,
+              decoration: const InputDecoration(
+                hintText: 'Ej.: ¿Cuáles son los hallazgos principales de este informe?',
+                border: OutlineInputBorder(),
+              ),
+              onSubmitted: (_) => _ask(),
+            ),
+            const SizedBox(height: 10),
+            Align(
+              alignment: Alignment.centerRight,
+              child: FilledButton.icon(
+                onPressed: _loading ? null : _ask,
+                icon: _loading
+                    ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
+                    : const Icon(Icons.auto_awesome),
+                label: Text(_loading ? 'Consultando...' : 'Consultar'),
+              ),
+            ),
+            if (_error != null) ...[
+              const SizedBox(height: 12),
+              Text(_error!, style: const TextStyle(color: Color(0xFFB91C1C), fontWeight: FontWeight.w600)),
+            ],
+            if (_answer != null) ...[
+              const SizedBox(height: 14),
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(14),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFF0FDFA),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: const Color(0xFF99F6E4)),
+                ),
+                child: SelectableText(_answer!, style: const TextStyle(height: 1.45)),
+              ),
+            ],
+          ]),
+        ),
+      ),
+      actions: [
+        FilledButton(onPressed: () => Navigator.pop(context), child: const Text('Cerrar')),
+      ],
     );
   }
 }

@@ -5,6 +5,7 @@ import OpenAI from "openai";
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
+import { randomUUID } from "crypto";
 
 dotenv.config({ quiet: true });
 
@@ -303,6 +304,53 @@ app.get("/patients/today", (_request, response) => {
   });
 });
 
+// Métricas reales del dashboard, calculadas a partir de los pacientes
+// registrados. No se inventan cifras (como ingresos) para las que no
+// existe una fuente de datos real todavía.
+app.get("/dashboard/summary", (_request, response) => {
+  const KNOWN_ROOMS = ["Sala 1", "Sala 2", "Sala 3"];
+
+  const waiting = patients.filter((p) => p.status === "Esperando").length;
+  const inAttention = patients.filter((p) => p.status === "En atención").length;
+  const scheduled = patients.filter((p) => p.status === "Programado").length;
+  const pendingValidation = patients.filter(
+    (p) => p.status === "Pendiente de validación",
+  ).length;
+
+  const totalUploadedDocuments = patients.reduce(
+    (sum, p) => sum + (Array.isArray(p.documents) ? p.documents.length : 0),
+    0,
+  );
+  const totalAnalyzedDocuments = patients.reduce(
+    (sum, p) =>
+      sum + (Array.isArray(p.documentRecords) ? p.documentRecords.length : 0),
+    0,
+  );
+
+  const roomsInUse = new Set(
+    patients
+      .map((p) => p.room)
+      .filter((room) => KNOWN_ROOMS.includes(room)),
+  ).size;
+
+  response.json({
+    fecha: new Date().toISOString().split("T")[0],
+    patientsToday: patients.length,
+    waiting,
+    inAttention,
+    scheduled,
+    pendingValidation,
+    totalUploadedDocuments,
+    totalAnalyzedDocuments,
+    documentsAwaitingAnalysis: Math.max(
+      totalUploadedDocuments - totalAnalyzedDocuments,
+      0,
+    ),
+    roomsInUse,
+    totalKnownRooms: KNOWN_ROOMS.length,
+  });
+});
+
 app.get("/patients/:id", async (request, response) => {
   const patient = getPatientById(request.params.id);
 
@@ -458,17 +506,42 @@ app.patch("/patients/:id/from-document", async (request, response) => {
       ? value.trim().toLowerCase().replace(/\.pdf$/i, "").replace(/[^a-z0-9áéíóúüñ]+/gi, "")
       : "";
     const normalizedStoredFilename = normalizeStoredName(filename);
+    const recordIndex = targetPatient.documentRecords.findIndex(
+      (item) => item && normalizeStoredName(item.filename) === normalizedStoredFilename,
+    );
+    // V8: cada documento tiene una identidad propia (id) que no cambia aunque
+    // se vuelva a analizar o reincorporar el mismo archivo.
+    const existingId = recordIndex >= 0 ? targetPatient.documentRecords[recordIndex].id : null;
     const record = {
+      id: existingId ?? randomUUID(),
       filename, incorporatedAt: new Date().toISOString(),
       isClinical: documentData.isClinical === true,
       documentType: cleanValue(documentData.documentType),
       patientName, patientRut, patientAge, exam, doctor, reason, priority, date, equipment, summary,
     };
-    const recordIndex = targetPatient.documentRecords.findIndex(
-      (item) => item && normalizeStoredName(item.filename) === normalizedStoredFilename,
-    );
     if (recordIndex >= 0) targetPatient.documentRecords[recordIndex] = record;
     else targetPatient.documentRecords.push(record);
+
+    // V9: cada documento incorporado con un examen identificado genera (o
+    // actualiza) un evento en el historial del paciente. Se usa el id del
+    // propio documento para no duplicar el evento si se vuelve a incorporar.
+    if (exam) {
+      if (!Array.isArray(targetPatient.history)) targetPatient.history = [];
+
+      const historyEntry = {
+        date: date ?? new Date().toLocaleDateString("es-CL"),
+        exam,
+        summary: summary ?? null,
+        sourceDocumentId: record.id,
+      };
+
+      const historyIndex = targetPatient.history.findIndex(
+        (item) => item && item.sourceDocumentId === record.id,
+      );
+
+      if (historyIndex >= 0) targetPatient.history[historyIndex] = historyEntry;
+      else targetPatient.history.unshift(historyEntry);
+    }
   }
 
   targetPatient.aiSummary=null;
@@ -491,6 +564,127 @@ app.get("/patients/:id/documents/:filename", (request, response) => {
     error: "Este documento todavía no tiene información detallada guardada. Vuelve a analizarlo e incorporarlo para habilitar su consulta.",
   });
   return response.json({ patientId: patient.id, patientName: patient.name, document: record });
+});
+
+// V8: gestión real de documentos — permite retirar un documento de la ficha
+// (tanto de la lista simple "documents" como de su registro estructurado).
+app.delete("/patients/:id/documents/:filename", (request, response) => {
+  const patient = getPatientById(request.params.id);
+  if (!patient) return response.status(404).json({ error: "Paciente no encontrado" });
+
+  const filename = decodeURIComponent(request.params.filename);
+  const normalizeName = (value) => typeof value === "string"
+    ? value.trim().toLowerCase().replace(/\.pdf$/i, "").replace(/[^a-z0-9áéíóúüñ]+/gi, "")
+    : "";
+  const normalized = normalizeName(filename);
+
+  const hadDocument =
+    Array.isArray(patient.documents) &&
+    patient.documents.some((name) => normalizeName(name) === normalized);
+  const matchingRecord = Array.isArray(patient.documentRecords)
+    ? patient.documentRecords.find(
+        (item) => item && normalizeName(item.filename) === normalized,
+      )
+    : null;
+  const hadRecord = Boolean(matchingRecord);
+
+  if (!hadDocument && !hadRecord) {
+    return response.status(404).json({
+      error: "Este documento no está registrado en la ficha del paciente.",
+    });
+  }
+
+  if (Array.isArray(patient.documents)) {
+    patient.documents = patient.documents.filter(
+      (name) => normalizeName(name) !== normalized,
+    );
+  }
+
+  if (Array.isArray(patient.documentRecords)) {
+    patient.documentRecords = patient.documentRecords.filter(
+      (item) => !(item && normalizeName(item.filename) === normalized),
+    );
+  }
+
+  // V9: si el documento eliminado había generado un evento de historial,
+  // lo retiramos también para no dejar historial huérfano.
+  if (matchingRecord && Array.isArray(patient.history)) {
+    patient.history = patient.history.filter(
+      (item) => !(item && item.sourceDocumentId === matchingRecord.id),
+    );
+  }
+
+  savePatients();
+
+  return response.json({
+    ok: true,
+    patientId: patient.id,
+    filename,
+    patient,
+  });
+});
+
+app.post("/patients/:id/documents/:filename/ask", async (request, response) => {
+  const patient = getPatientById(request.params.id);
+  if (!patient) return response.status(404).json({ error: "Paciente no encontrado" });
+
+  const filename = decodeURIComponent(request.params.filename);
+  const question = typeof request.body?.question === "string" ? request.body.question.trim() : "";
+  if (!question) return response.status(400).json({ error: "Debes escribir una pregunta sobre el documento." });
+
+  const normalizeName = (value) => typeof value === "string"
+    ? value.trim().toLowerCase().replace(/\.pdf$/i, "").replace(/[^a-z0-9áéíóúüñ]+/gi, "")
+    : "";
+  const records = Array.isArray(patient.documentRecords) ? patient.documentRecords : [];
+  const record = records.find((item) => item && normalizeName(item.filename) === normalizeName(filename));
+  if (!record) return response.status(404).json({
+    error: "Este documento todavía no tiene información detallada guardada. Vuelve a analizarlo e incorporarlo para poder consultarlo.",
+  });
+
+  const documentContext = JSON.stringify({
+    filename: record.filename,
+    documentType: record.documentType,
+    patientName: record.patientName,
+    patientRut: record.patientRut,
+    patientAge: record.patientAge,
+    exam: record.exam,
+    doctor: record.doctor,
+    reason: record.reason,
+    priority: record.priority,
+    date: record.date,
+    equipment: record.equipment,
+    summary: record.summary,
+  }, null, 2);
+
+  try {
+    const result = await openai.responses.create({
+      model,
+      instructions: `
+Eres Nexa, un asistente de apoyo para la consulta de documentos clínicos ya incorporados.
+
+Reglas estrictas:
+- Responde siempre en español.
+- Responde ÚNICAMENTE con la información del documento guardado que se entrega como contexto.
+- No uses otros antecedentes de la ficha del paciente ni conocimiento externo para completar datos.
+- No inventes diagnósticos, resultados, fechas ni recomendaciones.
+- Si la respuesta no está contenida en el documento guardado, dilo claramente.
+- No reemplaces el criterio de un profesional de salud.
+- Sé claro, breve y práctico.
+      `.trim(),
+      input: `DOCUMENTO GUARDADO:\n${documentContext}\n\nPREGUNTA DEL USUARIO:\n${question}`,
+    });
+
+    const answer = result.output_text?.trim();
+    if (!answer) return response.status(502).json({ error: "OpenAI no entregó una respuesta de texto." });
+    return response.json({ patientId: patient.id, filename: record.filename, respuesta: answer });
+  } catch (error) {
+    console.error("Error al consultar documento con Nexa:", error);
+    const status = typeof error?.status === "number" ? error.status : 500;
+    return response.status(status).json({
+      error: "No fue posible consultar este documento con Nexa.",
+      detalle: typeof error?.message === "string" ? error.message : "Error desconocido.",
+    });
+  }
 });
 
 app.post("/patients/:id/documents/analyze", async (request, response) => {

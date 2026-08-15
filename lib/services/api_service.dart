@@ -48,6 +48,50 @@ class ApiService {
     return decodedBody;
   }
 
+  static Future<Map<String, dynamic>> getDashboardSummary() async {
+    final http.Response response;
+
+    try {
+      response = await http
+          .get(Uri.parse('$_baseUrl/dashboard/summary'))
+          .timeout(const Duration(seconds: 30));
+    } catch (_) {
+      throw const ApiException(
+        'No fue posible conectar con el backend de Nexa.',
+      );
+    }
+
+    return _decodeMap(response);
+  }
+
+  static Future<List<Map<String, dynamic>>> getTodayPatients() async {
+    final http.Response response;
+
+    try {
+      response = await http
+          .get(Uri.parse('$_baseUrl/patients/today'))
+          .timeout(const Duration(seconds: 30));
+    } catch (_) {
+      throw const ApiException(
+        'No fue posible conectar con el backend de Nexa.',
+      );
+    }
+
+    final decodedBody = await _decodeMap(response);
+    final patients = decodedBody['patients'];
+
+    if (patients is! List) {
+      throw const ApiException(
+        'El backend no entregó la lista de pacientes.',
+      );
+    }
+
+    return patients
+        .whereType<Map>()
+        .map((patient) => Map<String, dynamic>.from(patient))
+        .toList();
+  }
+
   static Future<String> sendMessage(String message) async {
     final response = await http
         .post(
@@ -105,6 +149,30 @@ class ApiService {
     return _decodeMap(response);
   }
 
+  static Future<String> askPatientDocument({
+    required int patientId,
+    required String filename,
+    required String question,
+  }) async {
+    final encodedFilename = Uri.encodeComponent(filename);
+    final http.Response response;
+    try {
+      response = await http.post(
+        Uri.parse('$_baseUrl/patients/$patientId/documents/$encodedFilename/ask'),
+        headers: const {'Content-Type': 'application/json'},
+        body: jsonEncode({'question': question}),
+      ).timeout(const Duration(seconds: 60));
+    } catch (_) {
+      throw const ApiException('No fue posible consultar este documento con Nexa.');
+    }
+    final decodedBody = await _decodeMap(response);
+    final answer = decodedBody['respuesta'];
+    if (answer is! String || answer.trim().isEmpty) {
+      throw const ApiException('El backend no entregó una respuesta válida.');
+    }
+    return answer.trim();
+  }
+
   static Future<Map<String, dynamic>> analyzePatientPdf({
     required int patientId,
     required String filename,
@@ -154,6 +222,36 @@ class ApiService {
       'documentData': Map<String, dynamic>.from(documentData),
       'existingPatient': existingPatient is Map ? Map<String, dynamic>.from(existingPatient) : null,
     };
+  }
+
+  static Future<Map<String, dynamic>> deleteDocument({
+    required int patientId,
+    required String filename,
+  }) async {
+    final encodedFilename = Uri.encodeComponent(filename);
+    final http.Response response;
+
+    try {
+      response = await http
+          .delete(
+            Uri.parse(
+              '$_baseUrl/patients/$patientId/documents/$encodedFilename',
+            ),
+            headers: const {'Accept': 'application/json'},
+          )
+          .timeout(const Duration(seconds: 30));
+    } catch (_) {
+      throw const ApiException('No fue posible eliminar el documento.');
+    }
+
+    final decodedBody = await _decodeMap(response);
+    final patient = decodedBody['patient'];
+
+    if (patient is! Map) {
+      throw const ApiException('El backend no entregó la ficha actualizada.');
+    }
+
+    return {...decodedBody, 'patient': Map<String, dynamic>.from(patient)};
   }
 
   static Future<Map<String, dynamic>> incorporateDocumentData({

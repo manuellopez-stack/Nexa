@@ -518,6 +518,12 @@ app.patch("/patients/:id/from-document", async (request, response) => {
       isClinical: documentData.isClinical === true,
       documentType: cleanValue(documentData.documentType),
       patientName, patientRut, patientAge, exam, doctor, reason, priority, date, equipment, summary,
+      // V11: cada documento requiere validación humana antes de darse por
+      // definitivo. Se reinicia a "pendiente" cada vez que se (re)incorpora,
+      // ya que una nueva extracción es información nueva que aún no ha sido
+      // revisada por un profesional.
+      validationStatus: "pendiente",
+      validatedAt: null,
     };
     if (recordIndex >= 0) targetPatient.documentRecords[recordIndex] = record;
     else targetPatient.documentRecords.push(record);
@@ -564,6 +570,49 @@ app.get("/patients/:id/documents/:filename", (request, response) => {
     error: "Este documento todavía no tiene información detallada guardada. Vuelve a analizarlo e incorporarlo para habilitar su consulta.",
   });
   return response.json({ patientId: patient.id, patientName: patient.name, document: record });
+});
+
+// V11: validación humana por documento. Un profesional aprueba o rechaza
+// la información que la IA extrajo antes de que se considere definitiva.
+app.patch("/patients/:id/documents/:filename/validate", (request, response) => {
+  const patient = getPatientById(request.params.id);
+  if (!patient) return response.status(404).json({ error: "Paciente no encontrado" });
+
+  const filename = decodeURIComponent(request.params.filename);
+  const normalizeName = (value) => typeof value === "string"
+    ? value.trim().toLowerCase().replace(/\.pdf$/i, "").replace(/[^a-z0-9áéíóúüñ]+/gi, "")
+    : "";
+  const normalized = normalizeName(filename);
+
+  const validStatuses = ["pendiente", "aprobado", "rechazado"];
+  const status = request.body?.status;
+
+  if (!validStatuses.includes(status)) {
+    return response.status(400).json({
+      error: "Estado de validación inválido. Debe ser pendiente, aprobado o rechazado.",
+    });
+  }
+
+  const records = Array.isArray(patient.documentRecords) ? patient.documentRecords : [];
+  const record = records.find((item) => item && normalizeName(item.filename) === normalized);
+
+  if (!record) {
+    return response.status(404).json({
+      error: "Este documento no tiene información detallada guardada todavía.",
+    });
+  }
+
+  record.validationStatus = status;
+  record.validatedAt = status === "pendiente" ? null : new Date().toISOString();
+
+  savePatients();
+
+  return response.json({
+    patientId: patient.id,
+    filename,
+    document: record,
+    patient,
+  });
 });
 
 // V8: gestión real de documentos — permite retirar un documento de la ficha

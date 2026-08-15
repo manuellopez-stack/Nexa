@@ -224,6 +224,40 @@ class ApiService {
     };
   }
 
+  static Future<Map<String, dynamic>> validateDocument({
+    required int patientId,
+    required String filename,
+    required String status,
+  }) async {
+    final encodedFilename = Uri.encodeComponent(filename);
+    final http.Response response;
+
+    try {
+      response = await http
+          .patch(
+            Uri.parse(
+              '$_baseUrl/patients/$patientId/documents/$encodedFilename/validate',
+            ),
+            headers: const {'Content-Type': 'application/json'},
+            body: jsonEncode({'status': status}),
+          )
+          .timeout(const Duration(seconds: 30));
+    } catch (_) {
+      throw const ApiException(
+        'No fue posible actualizar la validación del documento.',
+      );
+    }
+
+    final decodedBody = await _decodeMap(response);
+    final patient = decodedBody['patient'];
+
+    if (patient is! Map) {
+      throw const ApiException('El backend no entregó la ficha actualizada.');
+    }
+
+    return {...decodedBody, 'patient': Map<String, dynamic>.from(patient)};
+  }
+
   static Future<Map<String, dynamic>> deleteDocument({
     required int patientId,
     required String filename,

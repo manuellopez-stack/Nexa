@@ -388,6 +388,26 @@ $documentsText
           patientId: patientId,
           filename: filename,
           document: document,
+          onValidated: (updatedRecord) {
+            if (!mounted) return;
+            setState(() {
+              final records = widget.patient['documentRecords'];
+              if (records is List) {
+                final target = _normalizeDocumentName(filename);
+                for (var i = 0; i < records.length; i++) {
+                  final item = records[i];
+                  if (item is Map &&
+                      _normalizeDocumentName(
+                            item['filename']?.toString() ?? '',
+                          ) ==
+                          target) {
+                    records[i] = updatedRecord;
+                    break;
+                  }
+                }
+              }
+            });
+          },
         ),
       );
     } on ApiException catch (error) {
@@ -814,6 +834,7 @@ $documentsText
                       name: document,
                       documentType: record?['documentType']?.toString(),
                       date: record?['date']?.toString(),
+                      validationStatus: record?['validationStatus']?.toString(),
                       onTap: () => _showSavedDocument(document),
                       onDelete: () => _deleteDocument(document),
                       isDeleting: _deletingFilename == document,
@@ -1371,6 +1392,7 @@ class _DocumentChip extends StatelessWidget {
     required this.name,
     this.documentType,
     this.date,
+    this.validationStatus,
     this.onTap,
     this.onDelete,
     this.isDeleting = false,
@@ -1379,6 +1401,7 @@ class _DocumentChip extends StatelessWidget {
   final String name;
   final String? documentType;
   final String? date;
+  final String? validationStatus;
   final VoidCallback? onTap;
   final VoidCallback? onDelete;
   final bool isDeleting;
@@ -1429,6 +1452,10 @@ class _DocumentChip extends StatelessWidget {
                           color: NexaColors.textSecondary,
                         ),
                       ),
+                    if (validationStatus != null) ...[
+                      const SizedBox(height: 4),
+                      _ValidationBadge(status: validationStatus!),
+                    ],
                   ],
                 ),
               ],
@@ -1628,11 +1655,13 @@ class _SavedDocumentDialog extends StatefulWidget {
     required this.patientId,
     required this.filename,
     required this.document,
+    this.onValidated,
   });
 
   final int patientId;
   final String filename;
   final Map<String, dynamic> document;
+  final ValueChanged<Map<String, dynamic>>? onValidated;
 
   @override
   State<_SavedDocumentDialog> createState() => _SavedDocumentDialogState();
@@ -1640,9 +1669,18 @@ class _SavedDocumentDialog extends StatefulWidget {
 
 class _SavedDocumentDialogState extends State<_SavedDocumentDialog> {
   final TextEditingController _controller = TextEditingController();
+  late Map<String, dynamic> _document;
   bool _loading = false;
+  bool _validating = false;
   String? _answer;
   String? _error;
+  String? _validationError;
+
+  @override
+  void initState() {
+    super.initState();
+    _document = widget.document;
+  }
 
   @override
   void dispose() {
@@ -1651,8 +1689,40 @@ class _SavedDocumentDialogState extends State<_SavedDocumentDialog> {
   }
 
   String _value(String key) {
-    final text = widget.document[key]?.toString().trim() ?? '';
+    final text = _document[key]?.toString().trim() ?? '';
     return text.isEmpty ? 'Sin información' : text;
+  }
+
+  Future<void> _setValidation(String status) async {
+    if (_validating) return;
+    setState(() {
+      _validating = true;
+      _validationError = null;
+    });
+
+    try {
+      final result = await ApiService.validateDocument(
+        patientId: widget.patientId,
+        filename: widget.filename,
+        status: status,
+      );
+      final updatedDocument = result['document'];
+      if (updatedDocument is Map) {
+        final updated = Map<String, dynamic>.from(updatedDocument);
+        if (mounted) setState(() => _document = updated);
+        widget.onValidated?.call(updated);
+      }
+    } on ApiException catch (error) {
+      if (mounted) setState(() => _validationError = error.message);
+    } catch (_) {
+      if (mounted) {
+        setState(
+          () => _validationError = 'No fue posible actualizar la validación.',
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _validating = false);
+    }
   }
 
   Future<void> _ask() async {
@@ -1678,6 +1748,8 @@ class _SavedDocumentDialogState extends State<_SavedDocumentDialog> {
 
   @override
   Widget build(BuildContext context) {
+    final status = _document['validationStatus']?.toString() ?? 'pendiente';
+
     return AlertDialog(
       title: Row(children: [
         const Icon(Icons.picture_as_pdf_outlined),
@@ -1688,6 +1760,61 @@ class _SavedDocumentDialogState extends State<_SavedDocumentDialog> {
         width: 680,
         child: SingleChildScrollView(
           child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Row(
+              children: [
+                const Text(
+                  'Validación humana',
+                  style: TextStyle(fontWeight: FontWeight.w800),
+                ),
+                const SizedBox(width: 10),
+                _ValidationBadge(status: status),
+              ],
+            ),
+            const SizedBox(height: 10),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                FilledButton.icon(
+                  onPressed: (_validating || status == 'aprobado')
+                      ? null
+                      : () => _setValidation('aprobado'),
+                  style: FilledButton.styleFrom(
+                    backgroundColor: const Color(0xFF15803D),
+                  ),
+                  icon: const Icon(Icons.check, size: 18),
+                  label: const Text('Aprobar'),
+                ),
+                OutlinedButton.icon(
+                  onPressed: (_validating || status == 'rechazado')
+                      ? null
+                      : () => _setValidation('rechazado'),
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: const Color(0xFFB91C1C),
+                    side: const BorderSide(color: Color(0xFFB91C1C)),
+                  ),
+                  icon: const Icon(Icons.close, size: 18),
+                  label: const Text('Rechazar'),
+                ),
+                if (status != 'pendiente')
+                  TextButton(
+                    onPressed:
+                        _validating ? null : () => _setValidation('pendiente'),
+                    child: const Text('Volver a pendiente'),
+                  ),
+              ],
+            ),
+            if (_validationError != null) ...[
+              const SizedBox(height: 8),
+              Text(
+                _validationError!,
+                style: const TextStyle(
+                  color: Color(0xFFB91C1C),
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ],
+            const Divider(height: 28),
             _DocumentDetailRow(label: 'Tipo', value: _value('documentType')),
             _DocumentDetailRow(label: 'Paciente', value: _value('patientName')),
             _DocumentDetailRow(label: 'RUT', value: _value('patientRut')),
@@ -1777,6 +1904,63 @@ class _DocumentDetailRow extends StatelessWidget {
         ),
         Expanded(child: SelectableText(value)),
       ]),
+    );
+  }
+}
+
+class _ValidationBadge extends StatelessWidget {
+  const _ValidationBadge({required this.status});
+
+  final String status;
+
+  @override
+  Widget build(BuildContext context) {
+    Color backgroundColor;
+    Color textColor;
+    IconData icon;
+    String label;
+
+    switch (status) {
+      case 'aprobado':
+        backgroundColor = const Color(0xFFDCFCE7);
+        textColor = const Color(0xFF15803D);
+        icon = Icons.check_circle_outline;
+        label = 'Aprobado';
+        break;
+      case 'rechazado':
+        backgroundColor = const Color(0xFFFEE2E2);
+        textColor = const Color(0xFFB91C1C);
+        icon = Icons.cancel_outlined;
+        label = 'Rechazado';
+        break;
+      default:
+        backgroundColor = const Color(0xFFFFF7ED);
+        textColor = const Color(0xFFC2410C);
+        icon = Icons.hourglass_empty;
+        label = 'Pendiente de validación';
+    }
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
+      decoration: BoxDecoration(
+        color: backgroundColor,
+        borderRadius: BorderRadius.circular(20),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 13, color: textColor),
+          const SizedBox(width: 5),
+          Text(
+            label,
+            style: TextStyle(
+              color: textColor,
+              fontWeight: FontWeight.w700,
+              fontSize: 11,
+            ),
+          ),
+        ],
+      ),
     );
   }
 }

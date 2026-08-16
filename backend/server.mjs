@@ -2,20 +2,13 @@ import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
 import OpenAI from "openai";
-import fs from "fs";
-import path from "path";
-import { fileURLToPath } from "url";
-import { randomUUID } from "crypto";
+import { createClient } from "@supabase/supabase-js";
 
 dotenv.config({ quiet: true });
 
 const app = express();
 const port = 3000;
 const model = process.env.OPENAI_MODEL || "gpt-5-mini";
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-const dataDirectory = path.join(__dirname, "data");
-const patientsFile = path.join(dataDirectory, "patients.json");
 
 app.use(cors());
 app.use(express.json({ limit: "20mb" }));
@@ -27,190 +20,146 @@ if (!process.env.OPENAI_API_KEY) {
   process.exit(1);
 }
 
+if (!process.env.SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY) {
+  console.error("");
+  console.error("ERROR: Faltan SUPABASE_URL o SUPABASE_SERVICE_ROLE_KEY en backend/.env");
+  console.error("");
+  process.exit(1);
+}
+
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
-const defaultPatients = [
-  {
-    id: 1,
-    time: "08:30",
-    name: "María Soto",
-    rut: "15.234.567-8",
-    age: 46,
-    doctor: "Dr. Juan Pérez",
-    phone: "+56 9 9876 5432",
-    observations: "Paciente diabética. Ayuno confirmado.",
-    exam: "Ecografía abdominal",
-    room: "Sala 1",
-    status: "En atención",
-    risk: "BAJO",
-    documents: [
-      "Orden médica.pdf",
-      "Consentimiento.pdf",
-      "Informe anterior.pdf",
-    ],
-    history: [
-      { date: "15/07/2026", exam: "Ecografía abdominal" },
-      { date: "12/03/2026", exam: "Control médico" },
-      { date: "21/11/2025", exam: "Radiografía de tórax" },
-    ],
-    aiSummary: null,
-  },
-  {
-    id: 2,
-    time: "08:45",
-    name: "Juan Pérez",
-    rut: "12.345.678-5",
-    age: 52,
-    doctor: "Dra. Carolina Muñoz",
-    phone: "+56 9 6543 2109",
-    observations: "Control anual. Sin antecedentes relevantes registrados.",
-    exam: "Mamografía",
-    room: "Sala 2",
-    status: "Esperando",
-    risk: "BAJO",
-    documents: [
-      "Orden médica.pdf",
-      "Consentimiento.pdf",
-    ],
-    history: [
-      { date: "10/06/2026", exam: "Mamografía" },
-      { date: "08/05/2025", exam: "Control médico" },
-    ],
-    aiSummary: null,
-  },
-  {
-    id: 3,
-    time: "09:00",
-    name: "Ana Rojas",
-    rut: "18.765.432-1",
-    age: 39,
-    doctor: "Dr. Felipe Morales",
-    phone: "+56 9 7654 3210",
-    observations: "Derivada por tos persistente.",
-    exam: "Rayos X de tórax",
-    room: "Sala 3",
-    status: "Programado",
-    risk: "BAJO",
-    documents: [
-      "Orden médica.pdf",
-      "Consentimiento.pdf",
-      "Informe anterior.pdf",
-    ],
-    history: [
-      { date: "18/01/2026", exam: "Radiografía de tórax" },
-      { date: "02/08/2025", exam: "Control respiratorio" },
-    ],
-    aiSummary: null,
-  },
-  {
-    id: 4,
-    time: "09:15",
-    name: "Carlos Díaz",
-    rut: "9.876.543-2",
-    age: 61,
-    doctor: "Dra. Paula Silva",
-    phone: "+56 9 8765 4321",
-    observations: "Dolor y edema en extremidad inferior derecha.",
-    exam: "Ecografía Doppler",
-    room: "Sala 1",
-    status: "Programado",
-    risk: "MEDIO",
-    documents: [
-      "Orden médica.pdf",
-      "Consentimiento.pdf",
-      "Informe vascular anterior.pdf",
-    ],
-    history: [
-      { date: "22/04/2026", exam: "Ecografía Doppler venosa" },
-      { date: "30/09/2025", exam: "Ecografía abdominal" },
-    ],
-    aiSummary: null,
-  },
-];
-
-
-function cloneDefaultPatients() {
-  return JSON.parse(JSON.stringify(defaultPatients));
-}
-
-function ensureDataDirectory() {
-  if (!fs.existsSync(dataDirectory)) {
-    fs.mkdirSync(dataDirectory, { recursive: true });
-  }
-}
-
-function savePatients() {
-  ensureDataDirectory();
-  fs.writeFileSync(
-    patientsFile,
-    JSON.stringify(patients, null, 2),
-    "utf8",
-  );
-}
-
-function loadPatients() {
-  ensureDataDirectory();
-
-  if (!fs.existsSync(patientsFile)) {
-    const initialPatients = cloneDefaultPatients();
-    fs.writeFileSync(
-      patientsFile,
-      JSON.stringify(initialPatients, null, 2),
-      "utf8",
-    );
-    return initialPatients;
-  }
-
-  try {
-    const raw = fs.readFileSync(patientsFile, "utf8");
-    const savedPatients = JSON.parse(raw);
-
-    if (!Array.isArray(savedPatients)) {
-      throw new Error("patients.json no contiene una lista válida.");
-    }
-
-    return savedPatients;
-  } catch (error) {
-    console.error("No fue posible leer patients.json:", error);
-    console.error("Nexa continuará con los pacientes iniciales.");
-    return cloneDefaultPatients();
-  }
-}
-
-let patients = loadPatients();
-
-function getPatientById(id) {
-  return patients.find((patient) => patient.id === Number(id));
-}
+const supabase = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_SERVICE_ROLE_KEY,
+);
 
 function normalizeRut(value) {
   return typeof value === "string" ? value.toUpperCase().replace(/[^0-9K]/g, "") : "";
 }
 
-function findPatientsByRut(rut, excludeId = null) {
+function normalizeDocumentName(value) {
+  return typeof value === "string"
+    ? value.trim().toLowerCase().replace(/\.pdf$/i, "").replace(/[^a-z0-9áéíóúüñ]+/gi, "")
+    : "";
+}
+
+// ---- Helpers para transformar filas de Supabase (snake_case) al formato
+// que la app Flutter ya espera (camelCase). Esto es lo que permite que el
+// frontend no necesite ningún cambio con esta migración.
+
+function shapePatientRow(row) {
+  return {
+    id: row.id,
+    time: row.time,
+    name: row.name,
+    rut: row.rut,
+    age: row.age,
+    doctor: row.doctor,
+    phone: row.phone,
+    exam: row.exam,
+    room: row.room,
+    status: row.status,
+    observations: row.observations,
+    priority: row.priority,
+    risk: row.risk,
+    aiSummary: row.ai_summary,
+  };
+}
+
+function shapeDocumentRecord(row) {
+  return {
+    id: row.id,
+    filename: row.filename,
+    documentType: row.document_type,
+    exam: row.exam,
+    patientName: row.patient_name,
+    patientRut: row.patient_rut,
+    patientAge: row.patient_age,
+    reason: row.reason,
+    priority: row.priority,
+    isClinical: row.is_clinical,
+    date: row.date,
+    summary: row.summary,
+    equipment: row.equipment,
+    doctor: row.doctor,
+    validationStatus: row.validation_status,
+    validatedAt: row.validated_at,
+    incorporatedAt: row.incorporated_at,
+  };
+}
+
+function shapeHistoryEvent(row) {
+  return {
+    date: row.date,
+    exam: row.exam,
+    summary: row.summary,
+  };
+}
+
+async function getPatientFull(id) {
+  const patientId = Number(id);
+  if (!Number.isInteger(patientId)) return null;
+
+  const { data: patientRow, error: patientError } = await supabase
+    .from("patients")
+    .select("*")
+    .eq("id", patientId)
+    .maybeSingle();
+
+  if (patientError) throw patientError;
+  if (!patientRow) return null;
+
+  const { data: documentRows, error: documentsError } = await supabase
+    .from("documents")
+    .select("*")
+    .eq("patient_id", patientId)
+    .order("incorporated_at", { ascending: true });
+
+  if (documentsError) throw documentsError;
+
+  const { data: historyRows, error: historyError } = await supabase
+    .from("history_events")
+    .select("*")
+    .eq("patient_id", patientId)
+    .order("id", { ascending: false });
+
+  if (historyError) throw historyError;
+
+  return {
+    ...shapePatientRow(patientRow),
+    documents: (documentRows ?? []).map((row) => row.filename).filter(Boolean),
+    documentRecords: (documentRows ?? []).map(shapeDocumentRecord),
+    history: (historyRows ?? []).map(shapeHistoryEvent),
+  };
+}
+
+async function findPatientsByRutDb(rut, excludeId = null) {
   const normalized = normalizeRut(rut);
   if (!normalized) return [];
-  return patients.filter(
+
+  const { data, error } = await supabase.from("patients").select("id, name, rut");
+  if (error) throw error;
+
+  return (data ?? []).filter(
     (patient) =>
-      patient.id !== Number(excludeId) &&
-      normalizeRut(patient.rut) === normalized,
+      patient.id !== Number(excludeId) && normalizeRut(patient.rut) === normalized,
   );
 }
 
-function findPatientByRut(rut, excludeId = null) {
-  const matches = findPatientsByRut(rut, excludeId);
-  return matches.length === 1 ? matches[0] : null;
-}
+async function getDuplicateRutGroupsDb() {
+  const { data, error } = await supabase.from("patients").select("id, name, time, rut");
+  if (error) {
+    console.error("No fue posible verificar RUT duplicados:", error.message);
+    return [];
+  }
 
-function getDuplicateRutGroups() {
   const groups = new Map();
-
-  for (const patient of patients) {
+  for (const patient of data ?? []) {
     const rut = normalizeRut(patient.rut);
     if (!rut) continue;
-
     if (!groups.has(rut)) groups.set(rut, []);
     groups.get(rut).push(patient);
   }
@@ -219,40 +168,56 @@ function getDuplicateRutGroups() {
     .filter(([, group]) => group.length > 1)
     .map(([rut, group]) => ({
       rut,
-      patients: group.map((patient) => ({
-        id: patient.id,
-        name: patient.name,
-        time: patient.time,
-      })),
+      patients: group.map((patient) => ({ id: patient.id, name: patient.name, time: patient.time })),
     }));
 }
 
 function buildPatientContext(patient) {
+  const history = Array.isArray(patient.history) ? patient.history : [];
   const historyText =
-    patient.history.length === 0
+    history.length === 0
       ? "Sin historial registrado."
-      : patient.history
-          .map((item) => `- ${item.date}: ${item.exam}`)
+      : history
+          .map((item) => {
+            const summaryPart = item.summary ? ` — ${item.summary}` : "";
+            return `- ${item.date ?? "Sin fecha"}: ${item.exam ?? "Sin examen"}${summaryPart}`;
+          })
           .join("\n");
 
+  const documentRecords = Array.isArray(patient.documentRecords) ? patient.documentRecords : [];
+  const documentsText =
+    documentRecords.length === 0
+      ? "Sin documentos incorporados todavía."
+      : documentRecords
+          .map((doc) => {
+            const summaryPart = doc.summary ? `\n  ${doc.summary}` : "";
+            return `- [${doc.date ?? "Sin fecha"}] ${doc.documentType ?? doc.exam ?? "Documento"}${summaryPart}`;
+          })
+          .join("\n");
+
+  const latestDocument = documentRecords[documentRecords.length - 1] ?? null;
+
   return `
-Nombre: ${patient.name}
-RUT: ${patient.rut}
-Edad: ${patient.age}
-Médico: ${patient.doctor}
-Teléfono: ${patient.phone}
-Examen: ${patient.exam}
-Sala: ${patient.room}
-Estado: ${patient.status}
-Observaciones: ${patient.observations}
-Nivel de riesgo registrado: ${patient.risk}
+Nombre: ${patient.name ?? "Sin información"}
+RUT: ${patient.rut ?? "Sin información"}
+Edad: ${patient.age ?? "Sin información"}
+Médico: ${patient.doctor ?? "Sin información"}
+Teléfono: ${patient.phone ?? "Sin información"}
+Examen: ${patient.exam ?? "Sin información"}
+Sala: ${patient.room ?? "Sin información"}
+Estado: ${patient.status ?? "Sin información"}
+Observaciones: ${patient.observations ?? "Sin información"}
+Nivel de riesgo registrado: ${patient.risk ?? "Sin información"}
 Prioridad: ${patient.priority ?? "Sin información"}
-Fecha del documento: ${patient.documentDate ?? "Sin información"}
-Equipo: ${patient.equipment ?? "Sin información"}
-Resumen del documento incorporado: ${patient.documentSummary ?? "Sin información"}
+Fecha del último documento: ${latestDocument?.date ?? "Sin información"}
+Equipo del último documento: ${latestDocument?.equipment ?? "Sin información"}
+Resumen del último documento incorporado: ${latestDocument?.summary ?? "Sin información"}
 
 Historial:
 ${historyText}
+
+Documentos incorporados (con su resumen clínico):
+${documentsText}
   `.trim();
 }
 
@@ -296,416 +261,549 @@ app.get("/health", (_request, response) => {
   });
 });
 
-app.get("/patients/today", (_request, response) => {
-  response.json({
-    fecha: new Date().toISOString().split("T")[0],
-    total: patients.length,
-    patients,
-  });
+app.get("/patients/today", async (_request, response) => {
+  try {
+    const { data, error } = await supabase
+      .from("patients")
+      .select("*")
+      .order("time", { ascending: true });
+
+    if (error) throw error;
+
+    const patients = (data ?? []).map(shapePatientRow);
+
+    return response.json({
+      fecha: new Date().toISOString().split("T")[0],
+      total: patients.length,
+      patients,
+    });
+  } catch (error) {
+    console.error("Error al obtener pacientes de hoy:", error);
+    return response.status(500).json({ error: "No fue posible obtener los pacientes." });
+  }
 });
 
-// Métricas reales del dashboard, calculadas a partir de los pacientes
-// registrados. No se inventan cifras (como ingresos) para las que no
-// existe una fuente de datos real todavía.
-app.get("/dashboard/summary", (_request, response) => {
-  const KNOWN_ROOMS = ["Sala 1", "Sala 2", "Sala 3"];
+// Métricas reales del dashboard, calculadas desde la base de datos.
+app.get("/dashboard/summary", async (_request, response) => {
+  try {
+    const KNOWN_ROOMS = ["Sala 1", "Sala 2", "Sala 3"];
 
-  const waiting = patients.filter((p) => p.status === "Esperando").length;
-  const inAttention = patients.filter((p) => p.status === "En atención").length;
-  const scheduled = patients.filter((p) => p.status === "Programado").length;
-  const pendingValidation = patients.filter(
-    (p) => p.status === "Pendiente de validación",
-  ).length;
+    const { data: patientRows, error: patientsError } = await supabase
+      .from("patients")
+      .select("id, status, room");
+    if (patientsError) throw patientsError;
 
-  const totalUploadedDocuments = patients.reduce(
-    (sum, p) => sum + (Array.isArray(p.documents) ? p.documents.length : 0),
-    0,
-  );
-  const totalAnalyzedDocuments = patients.reduce(
-    (sum, p) =>
-      sum + (Array.isArray(p.documentRecords) ? p.documentRecords.length : 0),
-    0,
-  );
+    const patients = patientRows ?? [];
+    const waiting = patients.filter((p) => p.status === "Esperando").length;
+    const inAttention = patients.filter((p) => p.status === "En atención").length;
+    const scheduled = patients.filter((p) => p.status === "Programado").length;
+    const pendingValidation = patients.filter(
+      (p) => p.status === "Pendiente de validación",
+    ).length;
+    const roomsInUse = new Set(
+      patients.map((p) => p.room).filter((room) => KNOWN_ROOMS.includes(room)),
+    ).size;
 
-  const roomsInUse = new Set(
-    patients
-      .map((p) => p.room)
-      .filter((room) => KNOWN_ROOMS.includes(room)),
-  ).size;
+    const { count: documentsCount, error: docsCountError } = await supabase
+      .from("documents")
+      .select("id", { count: "exact", head: true });
+    if (docsCountError) throw docsCountError;
 
-  response.json({
-    fecha: new Date().toISOString().split("T")[0],
-    patientsToday: patients.length,
-    waiting,
-    inAttention,
-    scheduled,
-    pendingValidation,
-    totalUploadedDocuments,
-    totalAnalyzedDocuments,
-    documentsAwaitingAnalysis: Math.max(
-      totalUploadedDocuments - totalAnalyzedDocuments,
-      0,
-    ),
-    roomsInUse,
-    totalKnownRooms: KNOWN_ROOMS.length,
-  });
+    const totalDocuments = documentsCount ?? 0;
+
+    return response.json({
+      fecha: new Date().toISOString().split("T")[0],
+      patientsToday: patients.length,
+      waiting,
+      inAttention,
+      scheduled,
+      pendingValidation,
+      totalUploadedDocuments: totalDocuments,
+      totalAnalyzedDocuments: totalDocuments,
+      documentsAwaitingAnalysis: 0,
+      roomsInUse,
+      totalKnownRooms: KNOWN_ROOMS.length,
+    });
+  } catch (error) {
+    console.error("Error al calcular el resumen del dashboard:", error);
+    return response.status(500).json({ error: "No fue posible calcular el resumen." });
+  }
 });
 
 app.get("/patients/:id", async (request, response) => {
-  const patient = getPatientById(request.params.id);
-
-  if (!patient) {
-    return response.status(404).json({
-      error: "Paciente no encontrado",
-    });
-  }
-
   try {
+    const patient = await getPatientFull(request.params.id);
+    if (!patient) return response.status(404).json({ error: "Paciente no encontrado" });
+
     if (!patient.aiSummary) {
-      patient.aiSummary = await generatePatientSummary(patient);
-      savePatients();
+      try {
+        const aiSummary = await generatePatientSummary(patient);
+        const { error: updateError } = await supabase
+          .from("patients")
+          .update({ ai_summary: aiSummary })
+          .eq("id", patient.id);
+        if (updateError) throw updateError;
+        patient.aiSummary = aiSummary;
+      } catch (summaryError) {
+        console.error("Error al generar resumen del paciente:", summaryError);
+        return response.json({
+          ...patient,
+          aiSummary: "No fue posible generar el resumen automático en este momento.",
+          aiSummaryError: true,
+        });
+      }
     }
 
     return response.json(patient);
   } catch (error) {
-    console.error("Error al generar resumen del paciente:", error);
-
-    return response.json({
-      ...patient,
-      aiSummary:
-        "No fue posible generar el resumen automático en este momento.",
-      aiSummaryError: true,
-    });
+    console.error("Error al obtener paciente:", error);
+    return response.status(500).json({ error: "No fue posible obtener el paciente." });
   }
 });
 
 app.post("/patients/:id/summary", async (request, response) => {
-  const patient = getPatientById(request.params.id);
-
-  if (!patient) {
-    return response.status(404).json({
-      error: "Paciente no encontrado",
-    });
-  }
-
   try {
-    patient.aiSummary = await generatePatientSummary(patient);
-    savePatients();
+    const patient = await getPatientFull(request.params.id);
+    if (!patient) return response.status(404).json({ error: "Paciente no encontrado" });
 
-    return response.json({
-      patientId: patient.id,
-      aiSummary: patient.aiSummary,
-    });
+    const aiSummary = await generatePatientSummary(patient);
+    const { error: updateError } = await supabase
+      .from("patients")
+      .update({ ai_summary: aiSummary })
+      .eq("id", patient.id);
+    if (updateError) throw updateError;
+
+    return response.json({ patientId: patient.id, aiSummary });
   } catch (error) {
     console.error("Error al regenerar resumen:", error);
-
     return response.status(500).json({
       error: "No fue posible generar el resumen automático.",
-      detalle:
-        typeof error?.message === "string"
-          ? error.message
-          : "Error desconocido.",
+      detalle: typeof error?.message === "string" ? error.message : "Error desconocido.",
     });
   }
 });
-
 
 app.patch("/patients/:id/from-document", async (request, response) => {
-  const sourcePatient = getPatientById(request.params.id);
-  if (!sourcePatient) return response.status(404).json({ error: "Paciente de origen no encontrado" });
-  const documentData = request.body?.documentData;
-  const requestedTargetId = request.body?.targetPatientId;
-  const filename =
-    typeof request.body?.filename === "string"
-      ? request.body.filename.trim()
-      : "";
-  if (!documentData || typeof documentData !== "object") return response.status(400).json({ error: "No se recibieron datos válidos del documento." });
-  if (documentData.isClinical !== true) return response.status(400).json({ error: "Solo se pueden incorporar datos desde documentos clínicos." });
-  const cleanValue = (value) => { if (typeof value !== "string") return null; const c=value.trim(); return !c || c.toLowerCase()==="sin información" ? null : c; };
-  const parseAge = (value) => { if (Number.isInteger(value) && value>=0 && value<=130) return value; if (typeof value==="string") { const m=value.match(/\d{1,3}/); if(m){const n=Number(m[0]); if(n>=0&&n<=130)return n;} } return null; };
-  const patientName=cleanValue(documentData.patientName), patientRut=cleanValue(documentData.patientRut), patientAge=parseAge(documentData.patientAge), exam=cleanValue(documentData.exam), doctor=cleanValue(documentData.doctor), reason=cleanValue(documentData.reason), priority=cleanValue(documentData.priority), date=cleanValue(documentData.date), equipment=cleanValue(documentData.equipment), summary=cleanValue(documentData.summary);
-  const incomingRut=normalizeRut(patientRut), sourceRut=normalizeRut(sourcePatient.rut);
-  const identityDiffers=incomingRut && sourceRut && incomingRut!==sourceRut;
-  let targetPatient=sourcePatient; let routedToExistingPatient=false;
-  if (identityDiffers) {
-    const matches = findPatientsByRut(patientRut, sourcePatient.id);
+  try {
+    const sourcePatient = await getPatientFull(request.params.id);
+    if (!sourcePatient) return response.status(404).json({ error: "Paciente de origen no encontrado" });
 
-    if (matches.length === 0) {
-      return response.status(409).json({
-        error:
-          "El documento corresponde a otro RUT y no existe una ficha coincidente. Nexa no modificó la ficha original.",
-      });
+    const documentData = request.body?.documentData;
+    const requestedTargetId = request.body?.targetPatientId;
+    const filename =
+      typeof request.body?.filename === "string" ? request.body.filename.trim() : "";
+
+    if (!documentData || typeof documentData !== "object") {
+      return response.status(400).json({ error: "No se recibieron datos válidos del documento." });
+    }
+    if (documentData.isClinical !== true) {
+      return response.status(400).json({ error: "Solo se pueden incorporar datos desde documentos clínicos." });
     }
 
-    if (matches.length > 1) {
-      return response.status(409).json({
-        error:
-          "Nexa encontró más de una ficha con el mismo RUT. Debes corregir los duplicados antes de incorporar el documento.",
-      });
-    }
-
-    const existingPatient = matches[0];
-
-    if (Number(requestedTargetId) !== existingPatient.id) {
-      return response.status(409).json({
-        error:
-          "Este paciente ya existe. Debes confirmar la incorporación a su ficha existente.",
-      });
-    }
-
-    targetPatient = existingPatient;
-    routedToExistingPatient = true;
-  }
-  if(patientName)targetPatient.name=patientName; if(patientRut)targetPatient.rut=patientRut; if(patientAge!==null)targetPatient.age=patientAge; if(exam)targetPatient.exam=exam; if(doctor)targetPatient.doctor=doctor; if(reason)targetPatient.observations=reason; if(priority)targetPatient.priority=priority; if(date)targetPatient.documentDate=date; if(equipment)targetPatient.equipment=equipment; if(summary)targetPatient.documentSummary=summary;
-
-  // V4.1: el PDF queda registrado únicamente en la ficha de destino.
-  // Si una versión anterior lo dejó por error en la ficha de origen,
-  // al volver a incorporarlo lo retiramos de allí.
-  if (filename) {
-    if (!Array.isArray(targetPatient.documents)) targetPatient.documents = [];
-
-    const normalizeDocumentName = (value) =>
-      typeof value === "string"
-        ? value
-            .trim()
-            .toLowerCase()
-            .replace(/\.pdf$/i, "")
-            .replace(/[^a-z0-9áéíóúüñ]+/gi, "")
-        : "";
-
-    const normalizedFilename = normalizeDocumentName(filename);
-
-    // V4.3: limpieza robusta. Compara el nombre ignorando espacios,
-    // guiones, puntos, dobles espacios y mayúsculas/minúsculas.
-    // Así también elimina asociaciones antiguas con pequeñas variaciones
-    // del mismo nombre de archivo.
-    for (const otherPatient of patients) {
-      if (otherPatient.id === targetPatient.id) continue;
-      if (!Array.isArray(otherPatient.documents)) continue;
-
-      otherPatient.documents = otherPatient.documents.filter((documentName) => {
-        if (typeof documentName !== "string") return true;
-        return normalizeDocumentName(documentName) !== normalizedFilename;
-      });
-    }
-
-    const alreadyInTarget = targetPatient.documents.some(
-      (documentName) =>
-        typeof documentName === "string" &&
-        normalizeDocumentName(documentName) === normalizedFilename,
-    );
-
-    if (!alreadyInTarget) {
-      targetPatient.documents.push(filename);
-    }
-  }
-
-  if (!Array.isArray(targetPatient.documentRecords)) targetPatient.documentRecords = [];
-  if (filename) {
-    const normalizeStoredName = (value) => typeof value === "string"
-      ? value.trim().toLowerCase().replace(/\.pdf$/i, "").replace(/[^a-z0-9áéíóúüñ]+/gi, "")
-      : "";
-    const normalizedStoredFilename = normalizeStoredName(filename);
-    const recordIndex = targetPatient.documentRecords.findIndex(
-      (item) => item && normalizeStoredName(item.filename) === normalizedStoredFilename,
-    );
-    // V8: cada documento tiene una identidad propia (id) que no cambia aunque
-    // se vuelva a analizar o reincorporar el mismo archivo.
-    const existingId = recordIndex >= 0 ? targetPatient.documentRecords[recordIndex].id : null;
-    const record = {
-      id: existingId ?? randomUUID(),
-      filename, incorporatedAt: new Date().toISOString(),
-      isClinical: documentData.isClinical === true,
-      documentType: cleanValue(documentData.documentType),
-      patientName, patientRut, patientAge, exam, doctor, reason, priority, date, equipment, summary,
-      // V11: cada documento requiere validación humana antes de darse por
-      // definitivo. Se reinicia a "pendiente" cada vez que se (re)incorpora,
-      // ya que una nueva extracción es información nueva que aún no ha sido
-      // revisada por un profesional.
-      validationStatus: "pendiente",
-      validatedAt: null,
+    const cleanValue = (value) => {
+      if (typeof value !== "string") return null;
+      const c = value.trim();
+      return !c || c.toLowerCase() === "sin información" ? null : c;
     };
-    if (recordIndex >= 0) targetPatient.documentRecords[recordIndex] = record;
-    else targetPatient.documentRecords.push(record);
+    const parseAge = (value) => {
+      if (Number.isInteger(value) && value >= 0 && value <= 130) return value;
+      if (typeof value === "string") {
+        const m = value.match(/\d{1,3}/);
+        if (m) {
+          const n = Number(m[0]);
+          if (n >= 0 && n <= 130) return n;
+        }
+      }
+      return null;
+    };
 
-    // V9: cada documento incorporado con un examen identificado genera (o
-    // actualiza) un evento en el historial del paciente. Se usa el id del
-    // propio documento para no duplicar el evento si se vuelve a incorporar.
-    if (exam) {
-      if (!Array.isArray(targetPatient.history)) targetPatient.history = [];
+    const patientName = cleanValue(documentData.patientName);
+    const patientRut = cleanValue(documentData.patientRut);
+    const patientAge = parseAge(documentData.patientAge);
+    const exam = cleanValue(documentData.exam);
+    const doctor = cleanValue(documentData.doctor);
+    const reason = cleanValue(documentData.reason);
+    const priority = cleanValue(documentData.priority);
+    const date = cleanValue(documentData.date);
+    const equipment = cleanValue(documentData.equipment);
+    const summary = cleanValue(documentData.summary);
+    const documentType = cleanValue(documentData.documentType);
 
-      const historyEntry = {
-        date: date ?? new Date().toLocaleDateString("es-CL"),
-        exam,
-        summary: summary ?? null,
-        sourceDocumentId: record.id,
-      };
+    const incomingRut = normalizeRut(patientRut);
+    const sourceRut = normalizeRut(sourcePatient.rut);
+    const identityDiffers = incomingRut && sourceRut && incomingRut !== sourceRut;
 
-      const historyIndex = targetPatient.history.findIndex(
-        (item) => item && item.sourceDocumentId === record.id,
+    let targetPatient = sourcePatient;
+    let routedToExistingPatient = false;
+
+    if (identityDiffers) {
+      const matches = await findPatientsByRutDb(patientRut, sourcePatient.id);
+
+      if (matches.length === 0) {
+        return response.status(409).json({
+          error:
+            "El documento corresponde a otro RUT y no existe una ficha coincidente. Nexa no modificó la ficha original.",
+        });
+      }
+      if (matches.length > 1) {
+        return response.status(409).json({
+          error:
+            "Nexa encontró más de una ficha con el mismo RUT. Debes corregir los duplicados antes de incorporar el documento.",
+        });
+      }
+
+      const existingPatientId = matches[0].id;
+      if (Number(requestedTargetId) !== existingPatientId) {
+        return response.status(409).json({
+          error: "Este paciente ya existe. Debes confirmar la incorporación a su ficha existente.",
+        });
+      }
+
+      targetPatient = await getPatientFull(existingPatientId);
+      routedToExistingPatient = true;
+    }
+
+    const patientUpdate = {};
+    if (patientName) patientUpdate.name = patientName;
+    if (patientRut) patientUpdate.rut = patientRut;
+    if (patientAge !== null) patientUpdate.age = patientAge;
+    if (exam) patientUpdate.exam = exam;
+    if (doctor) patientUpdate.doctor = doctor;
+    if (reason) patientUpdate.observations = reason;
+    if (priority) patientUpdate.priority = priority;
+
+    if (Object.keys(patientUpdate).length > 0) {
+      const { error: patientUpdateError } = await supabase
+        .from("patients")
+        .update(patientUpdate)
+        .eq("id", targetPatient.id);
+      if (patientUpdateError) throw patientUpdateError;
+    }
+
+    if (filename) {
+      const normalizedFilename = normalizeDocumentName(filename);
+
+      // Si el mismo archivo quedó por error asociado a otra ficha, lo
+      // retiramos de ahí (equivalente a la limpieza cruzada de antes).
+      const { data: otherDocs, error: otherDocsError } = await supabase
+        .from("documents")
+        .select("id, filename")
+        .neq("patient_id", targetPatient.id);
+      if (otherDocsError) throw otherDocsError;
+
+      const crossedDocs = (otherDocs ?? []).filter(
+        (doc) => normalizeDocumentName(doc.filename) === normalizedFilename,
+      );
+      for (const doc of crossedDocs) {
+        await supabase.from("history_events").delete().eq("document_id", doc.id);
+        await supabase.from("documents").delete().eq("id", doc.id);
+      }
+
+      const { data: existingDocs, error: existingDocsError } = await supabase
+        .from("documents")
+        .select("id, filename")
+        .eq("patient_id", targetPatient.id);
+      if (existingDocsError) throw existingDocsError;
+
+      const existingDoc = (existingDocs ?? []).find(
+        (doc) => normalizeDocumentName(doc.filename) === normalizedFilename,
       );
 
-      if (historyIndex >= 0) targetPatient.history[historyIndex] = historyEntry;
-      else targetPatient.history.unshift(historyEntry);
+      const documentRow = {
+        patient_id: targetPatient.id,
+        filename,
+        document_type: documentType,
+        exam,
+        patient_name: patientName,
+        patient_rut: patientRut,
+        patient_age: patientAge,
+        reason,
+        priority,
+        is_clinical: true,
+        date,
+        summary,
+        equipment,
+        doctor,
+        // Cada vez que se (re)incorpora un documento, su validación humana
+        // vuelve a quedar pendiente: es información nueva que todavía no
+        // ha sido revisada por un profesional.
+        validation_status: "pendiente",
+        validated_at: null,
+        incorporated_at: new Date().toISOString(),
+      };
+
+      let savedDocId;
+      if (existingDoc) {
+        const { data, error } = await supabase
+          .from("documents")
+          .update(documentRow)
+          .eq("id", existingDoc.id)
+          .select()
+          .single();
+        if (error) throw error;
+        savedDocId = data.id;
+      } else {
+        const { data, error } = await supabase
+          .from("documents")
+          .insert(documentRow)
+          .select()
+          .single();
+        if (error) throw error;
+        savedDocId = data.id;
+      }
+
+      if (exam) {
+        const historyEntry = {
+          patient_id: targetPatient.id,
+          document_id: savedDocId,
+          date: date ?? new Date().toLocaleDateString("es-CL"),
+          exam,
+          summary,
+        };
+
+        const { data: existingHistory, error: existingHistoryError } = await supabase
+          .from("history_events")
+          .select("id")
+          .eq("document_id", savedDocId)
+          .maybeSingle();
+        if (existingHistoryError) throw existingHistoryError;
+
+        if (existingHistory) {
+          const { error } = await supabase
+            .from("history_events")
+            .update(historyEntry)
+            .eq("id", existingHistory.id);
+          if (error) throw error;
+        } else {
+          const { error } = await supabase.from("history_events").insert(historyEntry);
+          if (error) throw error;
+        }
+      }
     }
-  }
 
-  targetPatient.aiSummary=null;
-  try{targetPatient.aiSummary=await generatePatientSummary(targetPatient);}catch(error){console.error("No fue posible regenerar el resumen:",error);}
-  savePatients();
-  return response.json({ok:true,routedToExistingPatient,sourcePatientId:sourcePatient.id,targetPatientId:targetPatient.id,message:routedToExistingPatient?`Documento incorporado a la ficha existente de ${targetPatient.name}. La ficha original no fue modificada.`:"Información incorporada y guardada correctamente en la ficha.",patient:targetPatient});
-});
+    const refreshedPatient = await getPatientFull(targetPatient.id);
 
-app.get("/patients/:id/documents/:filename", (request, response) => {
-  const patient = getPatientById(request.params.id);
-  if (!patient) return response.status(404).json({ error: "Paciente no encontrado" });
-  const filename = decodeURIComponent(request.params.filename);
-  const normalizeName = (value) => typeof value === "string"
-    ? value.trim().toLowerCase().replace(/\.pdf$/i, "").replace(/[^a-z0-9áéíóúüñ]+/gi, "")
-    : "";
-  const normalized = normalizeName(filename);
-  const records = Array.isArray(patient.documentRecords) ? patient.documentRecords : [];
-  const record = records.find((item) => item && normalizeName(item.filename) === normalized);
-  if (!record) return response.status(404).json({
-    error: "Este documento todavía no tiene información detallada guardada. Vuelve a analizarlo e incorporarlo para habilitar su consulta.",
-  });
-  return response.json({ patientId: patient.id, patientName: patient.name, document: record });
-});
+    try {
+      const aiSummary = await generatePatientSummary(refreshedPatient);
+      await supabase.from("patients").update({ ai_summary: aiSummary }).eq("id", targetPatient.id);
+      refreshedPatient.aiSummary = aiSummary;
+    } catch (error) {
+      console.error("No fue posible regenerar el resumen:", error);
+    }
 
-// V11: validación humana por documento. Un profesional aprueba o rechaza
-// la información que la IA extrajo antes de que se considere definitiva.
-app.patch("/patients/:id/documents/:filename/validate", (request, response) => {
-  const patient = getPatientById(request.params.id);
-  if (!patient) return response.status(404).json({ error: "Paciente no encontrado" });
-
-  const filename = decodeURIComponent(request.params.filename);
-  const normalizeName = (value) => typeof value === "string"
-    ? value.trim().toLowerCase().replace(/\.pdf$/i, "").replace(/[^a-z0-9áéíóúüñ]+/gi, "")
-    : "";
-  const normalized = normalizeName(filename);
-
-  const validStatuses = ["pendiente", "aprobado", "rechazado"];
-  const status = request.body?.status;
-
-  if (!validStatuses.includes(status)) {
-    return response.status(400).json({
-      error: "Estado de validación inválido. Debe ser pendiente, aprobado o rechazado.",
+    return response.json({
+      ok: true,
+      routedToExistingPatient,
+      sourcePatientId: sourcePatient.id,
+      targetPatientId: targetPatient.id,
+      message: routedToExistingPatient
+        ? `Documento incorporado a la ficha existente de ${refreshedPatient.name}. La ficha original no fue modificada.`
+        : "Información incorporada y guardada correctamente en la ficha.",
+      patient: refreshedPatient,
+    });
+  } catch (error) {
+    console.error("Error al incorporar documento:", error);
+    return response.status(500).json({
+      error: "No fue posible incorporar el documento a la ficha.",
+      detalle: typeof error?.message === "string" ? error.message : "Error desconocido.",
     });
   }
-
-  const records = Array.isArray(patient.documentRecords) ? patient.documentRecords : [];
-  const record = records.find((item) => item && normalizeName(item.filename) === normalized);
-
-  if (!record) {
-    return response.status(404).json({
-      error: "Este documento no tiene información detallada guardada todavía.",
-    });
-  }
-
-  record.validationStatus = status;
-  record.validatedAt = status === "pendiente" ? null : new Date().toISOString();
-
-  savePatients();
-
-  return response.json({
-    patientId: patient.id,
-    filename,
-    document: record,
-    patient,
-  });
 });
 
-// V8: gestión real de documentos — permite retirar un documento de la ficha
-// (tanto de la lista simple "documents" como de su registro estructurado).
-app.delete("/patients/:id/documents/:filename", (request, response) => {
-  const patient = getPatientById(request.params.id);
-  if (!patient) return response.status(404).json({ error: "Paciente no encontrado" });
+app.get("/patients/:id/documents/:filename", async (request, response) => {
+  try {
+    const patientId = Number(request.params.id);
+    const filename = decodeURIComponent(request.params.filename);
+    const normalized = normalizeDocumentName(filename);
 
-  const filename = decodeURIComponent(request.params.filename);
-  const normalizeName = (value) => typeof value === "string"
-    ? value.trim().toLowerCase().replace(/\.pdf$/i, "").replace(/[^a-z0-9áéíóúüñ]+/gi, "")
-    : "";
-  const normalized = normalizeName(filename);
+    const { data: patientRow, error: patientError } = await supabase
+      .from("patients")
+      .select("id, name")
+      .eq("id", patientId)
+      .maybeSingle();
+    if (patientError) throw patientError;
+    if (!patientRow) return response.status(404).json({ error: "Paciente no encontrado" });
 
-  const hadDocument =
-    Array.isArray(patient.documents) &&
-    patient.documents.some((name) => normalizeName(name) === normalized);
-  const matchingRecord = Array.isArray(patient.documentRecords)
-    ? patient.documentRecords.find(
-        (item) => item && normalizeName(item.filename) === normalized,
-      )
-    : null;
-  const hadRecord = Boolean(matchingRecord);
+    const { data: docs, error: docsError } = await supabase
+      .from("documents")
+      .select("*")
+      .eq("patient_id", patientId);
+    if (docsError) throw docsError;
 
-  if (!hadDocument && !hadRecord) {
-    return response.status(404).json({
-      error: "Este documento no está registrado en la ficha del paciente.",
+    const record = (docs ?? []).find((doc) => normalizeDocumentName(doc.filename) === normalized);
+    if (!record) {
+      return response.status(404).json({
+        error:
+          "Este documento todavía no tiene información detallada guardada. Vuelve a analizarlo e incorporarlo para habilitar su consulta.",
+      });
+    }
+
+    return response.json({
+      patientId: patientRow.id,
+      patientName: patientRow.name,
+      document: shapeDocumentRecord(record),
     });
+  } catch (error) {
+    console.error("Error al obtener documento:", error);
+    return response.status(500).json({ error: "No fue posible obtener el documento." });
   }
+});
 
-  if (Array.isArray(patient.documents)) {
-    patient.documents = patient.documents.filter(
-      (name) => normalizeName(name) !== normalized,
-    );
+// V11: validación humana por documento.
+app.patch("/patients/:id/documents/:filename/validate", async (request, response) => {
+  try {
+    const patientId = Number(request.params.id);
+    const filename = decodeURIComponent(request.params.filename);
+    const normalized = normalizeDocumentName(filename);
+
+    const validStatuses = ["pendiente", "aprobado", "rechazado"];
+    const status = request.body?.status;
+    if (!validStatuses.includes(status)) {
+      return response.status(400).json({
+        error: "Estado de validación inválido. Debe ser pendiente, aprobado o rechazado.",
+      });
+    }
+
+    const { data: patientRow, error: patientError } = await supabase
+      .from("patients")
+      .select("id")
+      .eq("id", patientId)
+      .maybeSingle();
+    if (patientError) throw patientError;
+    if (!patientRow) return response.status(404).json({ error: "Paciente no encontrado" });
+
+    const { data: docs, error: docsError } = await supabase
+      .from("documents")
+      .select("id, filename")
+      .eq("patient_id", patientId);
+    if (docsError) throw docsError;
+
+    const match = (docs ?? []).find((doc) => normalizeDocumentName(doc.filename) === normalized);
+    if (!match) {
+      return response.status(404).json({ error: "Este documento no tiene información detallada guardada todavía." });
+    }
+
+    const validatedAt = status === "pendiente" ? null : new Date().toISOString();
+
+    const { data: updatedDoc, error: updateError } = await supabase
+      .from("documents")
+      .update({ validation_status: status, validated_at: validatedAt })
+      .eq("id", match.id)
+      .select()
+      .single();
+    if (updateError) throw updateError;
+
+    const refreshedPatient = await getPatientFull(patientId);
+
+    return response.json({
+      patientId,
+      filename,
+      document: shapeDocumentRecord(updatedDoc),
+      patient: refreshedPatient,
+    });
+  } catch (error) {
+    console.error("Error al validar documento:", error);
+    return response.status(500).json({ error: "No fue posible actualizar la validación del documento." });
   }
+});
 
-  if (Array.isArray(patient.documentRecords)) {
-    patient.documentRecords = patient.documentRecords.filter(
-      (item) => !(item && normalizeName(item.filename) === normalized),
-    );
+// V8: gestión real de documentos.
+app.delete("/patients/:id/documents/:filename", async (request, response) => {
+  try {
+    const patientId = Number(request.params.id);
+    const filename = decodeURIComponent(request.params.filename);
+    const normalized = normalizeDocumentName(filename);
+
+    const { data: patientRow, error: patientError } = await supabase
+      .from("patients")
+      .select("id")
+      .eq("id", patientId)
+      .maybeSingle();
+    if (patientError) throw patientError;
+    if (!patientRow) return response.status(404).json({ error: "Paciente no encontrado" });
+
+    const { data: docs, error: docsError } = await supabase
+      .from("documents")
+      .select("id, filename")
+      .eq("patient_id", patientId);
+    if (docsError) throw docsError;
+
+    const match = (docs ?? []).find((doc) => normalizeDocumentName(doc.filename) === normalized);
+    if (!match) {
+      return response.status(404).json({ error: "Este documento no está registrado en la ficha del paciente." });
+    }
+
+    const { error: historyDeleteError } = await supabase
+      .from("history_events")
+      .delete()
+      .eq("document_id", match.id);
+    if (historyDeleteError) throw historyDeleteError;
+
+    const { error: docDeleteError } = await supabase
+      .from("documents")
+      .delete()
+      .eq("id", match.id);
+    if (docDeleteError) throw docDeleteError;
+
+    const refreshedPatient = await getPatientFull(patientId);
+
+    return response.json({ ok: true, patientId, filename, patient: refreshedPatient });
+  } catch (error) {
+    console.error("Error al eliminar documento:", error);
+    return response.status(500).json({ error: "No fue posible eliminar el documento." });
   }
-
-  // V9: si el documento eliminado había generado un evento de historial,
-  // lo retiramos también para no dejar historial huérfano.
-  if (matchingRecord && Array.isArray(patient.history)) {
-    patient.history = patient.history.filter(
-      (item) => !(item && item.sourceDocumentId === matchingRecord.id),
-    );
-  }
-
-  savePatients();
-
-  return response.json({
-    ok: true,
-    patientId: patient.id,
-    filename,
-    patient,
-  });
 });
 
 app.post("/patients/:id/documents/:filename/ask", async (request, response) => {
-  const patient = getPatientById(request.params.id);
-  if (!patient) return response.status(404).json({ error: "Paciente no encontrado" });
-
-  const filename = decodeURIComponent(request.params.filename);
-  const question = typeof request.body?.question === "string" ? request.body.question.trim() : "";
-  if (!question) return response.status(400).json({ error: "Debes escribir una pregunta sobre el documento." });
-
-  const normalizeName = (value) => typeof value === "string"
-    ? value.trim().toLowerCase().replace(/\.pdf$/i, "").replace(/[^a-z0-9áéíóúüñ]+/gi, "")
-    : "";
-  const records = Array.isArray(patient.documentRecords) ? patient.documentRecords : [];
-  const record = records.find((item) => item && normalizeName(item.filename) === normalizeName(filename));
-  if (!record) return response.status(404).json({
-    error: "Este documento todavía no tiene información detallada guardada. Vuelve a analizarlo e incorporarlo para poder consultarlo.",
-  });
-
-  const documentContext = JSON.stringify({
-    filename: record.filename,
-    documentType: record.documentType,
-    patientName: record.patientName,
-    patientRut: record.patientRut,
-    patientAge: record.patientAge,
-    exam: record.exam,
-    doctor: record.doctor,
-    reason: record.reason,
-    priority: record.priority,
-    date: record.date,
-    equipment: record.equipment,
-    summary: record.summary,
-  }, null, 2);
-
   try {
+    const patientId = Number(request.params.id);
+    const filename = decodeURIComponent(request.params.filename);
+    const question = typeof request.body?.question === "string" ? request.body.question.trim() : "";
+    if (!question) return response.status(400).json({ error: "Debes escribir una pregunta sobre el documento." });
+
+    const { data: patientRow, error: patientError } = await supabase
+      .from("patients")
+      .select("id")
+      .eq("id", patientId)
+      .maybeSingle();
+    if (patientError) throw patientError;
+    if (!patientRow) return response.status(404).json({ error: "Paciente no encontrado" });
+
+    const { data: docs, error: docsError } = await supabase
+      .from("documents")
+      .select("*")
+      .eq("patient_id", patientId);
+    if (docsError) throw docsError;
+
+    const record = (docs ?? []).find(
+      (doc) => normalizeDocumentName(doc.filename) === normalizeDocumentName(filename),
+    );
+    if (!record) {
+      return response.status(404).json({
+        error:
+          "Este documento todavía no tiene información detallada guardada. Vuelve a analizarlo e incorporarlo para poder consultarlo.",
+      });
+    }
+
+    const documentContext = JSON.stringify(
+      {
+        filename: record.filename,
+        documentType: record.document_type,
+        patientName: record.patient_name,
+        patientRut: record.patient_rut,
+        patientAge: record.patient_age,
+        exam: record.exam,
+        doctor: record.doctor,
+        reason: record.reason,
+        priority: record.priority,
+        date: record.date,
+        equipment: record.equipment,
+        summary: record.summary,
+      },
+      null,
+      2,
+    );
+
     const result = await openai.responses.create({
       model,
       instructions: `
@@ -725,7 +823,7 @@ Reglas estrictas:
 
     const answer = result.output_text?.trim();
     if (!answer) return response.status(502).json({ error: "OpenAI no entregó una respuesta de texto." });
-    return response.json({ patientId: patient.id, filename: record.filename, respuesta: answer });
+    return response.json({ patientId, filename: record.filename, respuesta: answer });
   } catch (error) {
     console.error("Error al consultar documento con Nexa:", error);
     const status = typeof error?.status === "number" ? error.status : 500;
@@ -737,35 +835,26 @@ Reglas estrictas:
 });
 
 app.post("/patients/:id/documents/analyze", async (request, response) => {
-  const patient = getPatientById(request.params.id);
-
-  if (!patient) {
-    return response.status(404).json({
-      error: "Paciente no encontrado",
-    });
-  }
-
-  const filename = request.body?.filename;
-  const base64Data = request.body?.base64Data;
-
-  if (
-    typeof filename !== "string" ||
-    !filename.toLowerCase().endsWith(".pdf") ||
-    typeof base64Data !== "string" ||
-    base64Data.trim().length === 0
-  ) {
-    return response.status(400).json({
-      error: "Debes enviar un archivo PDF válido.",
-    });
-  }
-
-  if (base64Data.length > 14_000_000) {
-    return response.status(413).json({
-      error: "El PDF supera el tamaño máximo permitido de 10 MB.",
-    });
-  }
-
   try {
+    const patient = await getPatientFull(request.params.id);
+    if (!patient) return response.status(404).json({ error: "Paciente no encontrado" });
+
+    const filename = request.body?.filename;
+    const base64Data = request.body?.base64Data;
+
+    if (
+      typeof filename !== "string" ||
+      !filename.toLowerCase().endsWith(".pdf") ||
+      typeof base64Data !== "string" ||
+      base64Data.trim().length === 0
+    ) {
+      return response.status(400).json({ error: "Debes enviar un archivo PDF válido." });
+    }
+
+    if (base64Data.length > 14_000_000) {
+      return response.status(413).json({ error: "El PDF supera el tamaño máximo permitido de 10 MB." });
+    }
+
     const result = await openai.responses.create({
       model,
       instructions: `
@@ -817,16 +906,12 @@ Si el documento no es clínico, usa isClinical=false y extrae igualmente la info
     const raw = result.output_text?.trim();
 
     if (!raw) {
-      return response.status(502).json({
-        error: "OpenAI no entregó un análisis del documento.",
-      });
+      return response.status(502).json({ error: "OpenAI no entregó un análisis del documento." });
     }
 
     let clean = raw;
     if (clean.startsWith("```")) {
-      clean = clean
-        .replace(/^```(?:json)?\s*/i, "")
-        .replace(/\s*```$/, "");
+      clean = clean.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
     }
 
     let documentData;
@@ -834,25 +919,18 @@ Si el documento no es clínico, usa isClinical=false y extrae igualmente la info
       documentData = JSON.parse(clean);
     } catch (parseError) {
       console.error("Respuesta no JSON de OpenAI:", raw);
-      return response.status(502).json({
-        error: "Nexa recibió un análisis que no pudo estructurar.",
-      });
+      return response.status(502).json({ error: "Nexa recibió un análisis que no pudo estructurar." });
     }
 
-    const missing = Array.isArray(documentData.missingData)
-      ? documentData.missingData
-      : [];
-    const differences = Array.isArray(documentData.differences)
-      ? documentData.differences
-      : [];
+    const missing = Array.isArray(documentData.missingData) ? documentData.missingData : [];
+    const differences = Array.isArray(documentData.differences) ? documentData.differences : [];
 
     const matchingPatients =
       documentData.isClinical === true
-        ? findPatientsByRut(documentData.patientRut, patient.id)
+        ? await findPatientsByRutDb(documentData.patientRut, patient.id)
         : [];
 
-    const existingPatientMatch =
-      matchingPatients.length === 1 ? matchingPatients[0] : null;
+    const existingPatientMatch = matchingPatients.length === 1 ? matchingPatients[0] : null;
 
     const analysisLines = [
       `Tipo de documento: ${documentData.documentType ?? "Sin información"}`,
@@ -873,36 +951,22 @@ Si el documento no es clínico, usa isClinical=false y extrae igualmente la info
       `Diferencias con la ficha: ${differences.length ? differences.join(" | ") : "No se informaron diferencias"}`,
     ];
 
-    // El análisis por sí solo no asocia el archivo a ninguna ficha.
-    // La asociación se realiza únicamente al confirmar "Incorporar datos a la ficha".
     return response.json({
       patientId: patient.id,
       filename,
       analysis: analysisLines.join("\n"),
       documentData,
       existingPatient: existingPatientMatch
-        ? {
-            id: existingPatientMatch.id,
-            name: existingPatientMatch.name,
-            rut: existingPatientMatch.rut,
-          }
+        ? { id: existingPatientMatch.id, name: existingPatientMatch.name, rut: existingPatientMatch.rut }
         : null,
       duplicateRutCount: matchingPatients.length > 1 ? matchingPatients.length : 0,
     });
   } catch (error) {
     console.error("Error al analizar PDF:", error);
-
-    const status =
-      typeof error?.status === "number"
-        ? error.status
-        : 500;
-
+    const status = typeof error?.status === "number" ? error.status : 500;
     return response.status(status).json({
       error: "No fue posible analizar el documento.",
-      detalle:
-        typeof error?.message === "string"
-          ? error.message
-          : "Error desconocido.",
+      detalle: typeof error?.message === "string" ? error.message : "Error desconocido.",
     });
   }
 });
@@ -912,9 +976,7 @@ app.post("/chat", async (request, response) => {
     const message = request.body?.message;
 
     if (typeof message !== "string" || message.trim().length === 0) {
-      return response.status(400).json({
-        error: "Debes enviar un mensaje válido.",
-      });
+      return response.status(400).json({ error: "Debes enviar un mensaje válido." });
     }
 
     const result = await openai.responses.create({
@@ -936,65 +998,52 @@ Reglas:
     const answer = result.output_text?.trim();
 
     if (!answer) {
-      return response.status(502).json({
-        error: "OpenAI no entregó una respuesta de texto.",
-      });
+      return response.status(502).json({ error: "OpenAI no entregó una respuesta de texto." });
     }
 
-    return response.json({
-      respuesta: answer,
-    });
+    return response.json({ respuesta: answer });
   } catch (error) {
     console.error("");
     console.error("Error al consultar OpenAI:");
     console.error(error);
     console.error("");
 
-    const status =
-      typeof error?.status === "number"
-        ? error.status
-        : 500;
+    const status = typeof error?.status === "number" ? error.status : 500;
 
-    let publicMessage =
-      "No fue posible consultar la inteligencia artificial.";
+    let publicMessage = "No fue posible consultar la inteligencia artificial.";
 
     if (status === 401) {
-      publicMessage =
-        "La API Key no es válida, fue revocada o no está siendo leída.";
+      publicMessage = "La API Key no es válida, fue revocada o no está siendo leída.";
     } else if (status === 403) {
-      publicMessage =
-        "La cuenta o el proyecto no tiene permiso para utilizar este recurso.";
+      publicMessage = "La cuenta o el proyecto no tiene permiso para utilizar este recurso.";
     } else if (status === 429) {
-      publicMessage =
-        "La cuenta alcanzó un límite de uso o no tiene saldo disponible.";
+      publicMessage = "La cuenta alcanzó un límite de uso o no tiene saldo disponible.";
     }
 
     return response.status(status).json({
       error: publicMessage,
-      detalle:
-        typeof error?.message === "string"
-          ? error.message
-          : "Error desconocido.",
+      detalle: typeof error?.message === "string" ? error.message : "Error desconocido.",
     });
   }
 });
 
 app.listen(port, () => {
-  const duplicateRutGroups = getDuplicateRutGroups();
-
-  if (duplicateRutGroups.length > 0) {
-    console.warn("");
-    console.warn("ADVERTENCIA: se detectaron RUT duplicados en patients.json:");
-    console.warn(JSON.stringify(duplicateRutGroups, null, 2));
-    console.warn("");
-  }
-
   console.log("");
   console.log("========================================");
   console.log("Nexa Backend iniciado correctamente");
-  console.log(`Servidor: http://localhost:${port}`);
-  console.log(`Estado:   http://localhost:${port}/health`);
-  console.log(`Modelo:   ${model}`);
+  console.log(`Servidor:      http://localhost:${port}`);
+  console.log(`Estado:        http://localhost:${port}/health`);
+  console.log(`Modelo:        ${model}`);
+  console.log(`Base de datos: Supabase (${process.env.SUPABASE_URL})`);
   console.log("========================================");
   console.log("");
+
+  getDuplicateRutGroupsDb().then((duplicateRutGroups) => {
+    if (duplicateRutGroups.length > 0) {
+      console.warn("");
+      console.warn("ADVERTENCIA: se detectaron RUT duplicados en la base de datos:");
+      console.warn(JSON.stringify(duplicateRutGroups, null, 2));
+      console.warn("");
+    }
+  });
 });

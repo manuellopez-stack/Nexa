@@ -31,7 +31,7 @@
         "exam": "Radiografía de tórax"
       }
     ],
-    "aiSummary": null
+    "aiSummary": "Paciente: María Soto (46 años, RUT 15.234.567-8). Examen: Ecografía abdominal en Sala 1 (estado: En atención).  \nAntecedentes registrados: Diabética; ayuno confirmado; nivel de riesgo: BAJO.  \nHistorial relevante: 15/07/2026 - Ecografía abdominal; 12/03/2026 - Control médico; 21/11/2025 - Radiografía de tórax.  \nDatos faltantes: Prioridad, fecha del documento, equipo y resumen del documento incorporado."
   },
   {
     "id": 2,
@@ -90,7 +90,7 @@
         "exam": "Control respiratorio"
       }
     ],
-    "aiSummary": null
+    "aiSummary": "Ana Rojas (RUT 18.765.432-1), 39 años — Examen: Rayos X de tórax; Estado: Programado; Sala 3.  \nMotivo: Derivada por tos persistente.  \nAntecedentes/historial relevantes: 02/08/2025 control respiratorio; 18/01/2026 radiografía de tórax.  \nMédico: Dr. Felipe Morales; Teléfono: +56 9 7654 3210; Nivel de riesgo: BAJO.  \nDatos faltantes: Prioridad, Fecha del documento, Equipo y Resumen del documento incorporado: Sin información."
   },
   {
     "id": 4,
@@ -158,7 +158,9 @@
         "priority": null,
         "date": "7/10/2026",
         "equipment": null,
-        "summary": "Informe de polisomnografía basal realizado el 7/10/2026 en paciente Manuel Lopez Romero (RUT 10603307-2), 57 años. Tiempo total de sueño 440.5 min, eficiencia 90%, N3 0.0 min, REM 64.5 min (15%). Índice de microdespertares 19.3/h. IAH TST 4.5 e/h (IAH NREM 3.0 e/h, IAH REM 13.0 e/h), compuesto por 2 apneas obstructivas y 31 hipoapneas. IAH en supino 20.2 e/h; no supino 2.3 e/h. Saturación promedio durante sueño 92%, mínima 85%, CT90 ~8.7%. Conclusión: ausencia de sueño profundo y alteración de la estructura del sueño; se sugieren encuesta de sueño, higiene del sueño y evaluar factores externos que afectan el descanso."
+        "summary": "Informe de polisomnografía basal realizado el 7/10/2026 en paciente Manuel Lopez Romero (RUT 10603307-2), 57 años. Tiempo total de sueño 440.5 min, eficiencia 90%, N3 0.0 min, REM 64.5 min (15%). Índice de microdespertares 19.3/h. IAH TST 4.5 e/h (IAH NREM 3.0 e/h, IAH REM 13.0 e/h), compuesto por 2 apneas obstructivas y 31 hipoapneas. IAH en supino 20.2 e/h; no supino 2.3 e/h. Saturación promedio durante sueño 92%, mínima 85%, CT90 ~8.7%. Conclusión: ausencia de sueño profundo y alteración de la estructura del sueño; se sugieren encuesta de sueño, higiene del sueño y evaluar factores externos que afectan el descanso.",
+        "validationStatus": "rechazado",
+        "validatedAt": "2026-08-15T16:02:03.113Z"
       }
     ]
   }

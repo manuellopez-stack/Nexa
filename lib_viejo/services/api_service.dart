@@ -14,32 +14,7 @@ class ApiException implements Exception {
 class ApiService {
   ApiService._();
 
-  static const String _baseUrl = 'https://nexa-7avs.onrender.com';
-
-  // Token de sesión guardado en memoria luego de iniciar sesión. Se agrega
-  // automáticamente a todas las llamadas al backend que lo necesiten.
-  static String? _accessToken;
-  static Map<String, dynamic>? _currentUser;
-
-  static bool get isLoggedIn => _accessToken != null;
-  static Map<String, dynamic>? get currentUser => _currentUser;
-
-  static void _setSession(String accessToken, Map<String, dynamic> user) {
-    _accessToken = accessToken;
-    _currentUser = user;
-  }
-
-  static void logout() {
-    _accessToken = null;
-    _currentUser = null;
-  }
-
-  static Map<String, String> _headers({Map<String, String>? extra}) {
-    return {
-      if (_accessToken != null) 'Authorization': 'Bearer $_accessToken',
-      ...?extra,
-    };
-  }
+  static const String _baseUrl = 'http://localhost:3000';
 
   static Future<Map<String, dynamic>> _decodeMap(
     http.Response response,
@@ -73,86 +48,11 @@ class ApiService {
     return decodedBody;
   }
 
-  static Future<void> login({
-    required String email,
-    required String password,
-  }) async {
-    final http.Response response;
-
-    try {
-      response = await http
-          .post(
-            Uri.parse('$_baseUrl/auth/login'),
-            headers: const {'Content-Type': 'application/json'},
-            body: jsonEncode({'email': email, 'password': password}),
-          )
-          .timeout(const Duration(seconds: 30));
-    } catch (_) {
-      throw const ApiException(
-        'No fue posible conectar con el backend de Nexa.',
-      );
-    }
-
-    final decodedBody = await _decodeMap(response);
-    final accessToken = decodedBody['accessToken'];
-    final user = decodedBody['user'];
-
-    if (accessToken is! String || accessToken.isEmpty || user is! Map) {
-      throw const ApiException('El backend no entregó una sesión válida.');
-    }
-
-    _setSession(accessToken, Map<String, dynamic>.from(user));
-  }
-
-  static Future<Map<String, dynamic>> getDashboardSummary() async {
-    final http.Response response;
-
-    try {
-      response = await http
-          .get(Uri.parse('$_baseUrl/dashboard/summary'), headers: _headers())
-          .timeout(const Duration(seconds: 30));
-    } catch (_) {
-      throw const ApiException(
-        'No fue posible conectar con el backend de Nexa.',
-      );
-    }
-
-    return _decodeMap(response);
-  }
-
-  static Future<List<Map<String, dynamic>>> getTodayPatients() async {
-    final http.Response response;
-
-    try {
-      response = await http
-          .get(Uri.parse('$_baseUrl/patients/today'), headers: _headers())
-          .timeout(const Duration(seconds: 30));
-    } catch (_) {
-      throw const ApiException(
-        'No fue posible conectar con el backend de Nexa.',
-      );
-    }
-
-    final decodedBody = await _decodeMap(response);
-    final patients = decodedBody['patients'];
-
-    if (patients is! List) {
-      throw const ApiException(
-        'El backend no entregó la lista de pacientes.',
-      );
-    }
-
-    return patients
-        .whereType<Map>()
-        .map((patient) => Map<String, dynamic>.from(patient))
-        .toList();
-  }
-
   static Future<String> sendMessage(String message) async {
     final response = await http
         .post(
           Uri.parse('$_baseUrl/chat'),
-          headers: _headers(extra: const {'Content-Type': 'application/json'}),
+          headers: const {'Content-Type': 'application/json'},
           body: jsonEncode({'message': message}),
         )
         .timeout(const Duration(seconds: 60));
@@ -176,7 +76,7 @@ class ApiService {
       response = await http
           .get(
             Uri.parse('$_baseUrl/patients/$id'),
-            headers: _headers(extra: const {'Accept': 'application/json'}),
+            headers: const {'Accept': 'application/json'},
           )
           .timeout(const Duration(seconds: 60));
     } catch (_) {
@@ -197,7 +97,7 @@ class ApiService {
     try {
       response = await http.get(
         Uri.parse('$_baseUrl/patients/$patientId/documents/$encodedFilename'),
-        headers: _headers(extra: const {'Accept': 'application/json'}),
+        headers: const {'Accept': 'application/json'},
       ).timeout(const Duration(seconds: 30));
     } catch (_) {
       throw const ApiException('No fue posible consultar el documento guardado.');
@@ -215,7 +115,7 @@ class ApiService {
     try {
       response = await http.post(
         Uri.parse('$_baseUrl/patients/$patientId/documents/$encodedFilename/ask'),
-        headers: _headers(extra: const {'Content-Type': 'application/json'}),
+        headers: const {'Content-Type': 'application/json'},
         body: jsonEncode({'question': question}),
       ).timeout(const Duration(seconds: 60));
     } catch (_) {
@@ -242,7 +142,7 @@ class ApiService {
             Uri.parse(
               '$_baseUrl/patients/$patientId/documents/analyze',
             ),
-            headers: _headers(extra: const {'Content-Type': 'application/json'}),
+            headers: const {'Content-Type': 'application/json'},
             body: jsonEncode({
               'filename': filename,
               'base64Data': base64Data,
@@ -280,70 +180,6 @@ class ApiService {
     };
   }
 
-  static Future<Map<String, dynamic>> validateDocument({
-    required int patientId,
-    required String filename,
-    required String status,
-  }) async {
-    final encodedFilename = Uri.encodeComponent(filename);
-    final http.Response response;
-
-    try {
-      response = await http
-          .patch(
-            Uri.parse(
-              '$_baseUrl/patients/$patientId/documents/$encodedFilename/validate',
-            ),
-            headers: _headers(extra: const {'Content-Type': 'application/json'}),
-            body: jsonEncode({'status': status}),
-          )
-          .timeout(const Duration(seconds: 30));
-    } catch (_) {
-      throw const ApiException(
-        'No fue posible actualizar la validación del documento.',
-      );
-    }
-
-    final decodedBody = await _decodeMap(response);
-    final patient = decodedBody['patient'];
-
-    if (patient is! Map) {
-      throw const ApiException('El backend no entregó la ficha actualizada.');
-    }
-
-    return {...decodedBody, 'patient': Map<String, dynamic>.from(patient)};
-  }
-
-  static Future<Map<String, dynamic>> deleteDocument({
-    required int patientId,
-    required String filename,
-  }) async {
-    final encodedFilename = Uri.encodeComponent(filename);
-    final http.Response response;
-
-    try {
-      response = await http
-          .delete(
-            Uri.parse(
-              '$_baseUrl/patients/$patientId/documents/$encodedFilename',
-            ),
-            headers: _headers(extra: const {'Accept': 'application/json'}),
-          )
-          .timeout(const Duration(seconds: 30));
-    } catch (_) {
-      throw const ApiException('No fue posible eliminar el documento.');
-    }
-
-    final decodedBody = await _decodeMap(response);
-    final patient = decodedBody['patient'];
-
-    if (patient is! Map) {
-      throw const ApiException('El backend no entregó la ficha actualizada.');
-    }
-
-    return {...decodedBody, 'patient': Map<String, dynamic>.from(patient)};
-  }
-
   static Future<Map<String, dynamic>> incorporateDocumentData({
     required int patientId,
     required Map<String, dynamic> documentData,
@@ -354,7 +190,7 @@ class ApiService {
     try {
       response = await http.patch(
         Uri.parse('$_baseUrl/patients/$patientId/from-document'),
-        headers: _headers(extra: const {'Content-Type': 'application/json'}),
+        headers: const {'Content-Type': 'application/json'},
         body: jsonEncode({
           'documentData': documentData,
           'filename': filename,

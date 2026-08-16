@@ -5,6 +5,7 @@ import 'widgets/dashboard_kpi_section.dart';
 import 'package:flutter/material.dart';
 
 import 'core/nexa_colors.dart';
+import 'services/api_service.dart';
 
 void main() {
   runApp(const NexaApp());
@@ -129,7 +130,11 @@ class _LoginPageState extends State<LoginPage> {
 
   bool get canSubmit =>
       emailController.text.trim().isNotEmpty &&
-      passwordController.text.isNotEmpty;
+      passwordController.text.isNotEmpty &&
+      !_isLoading;
+
+  bool _isLoading = false;
+  String? _error;
 
   @override
   void initState() {
@@ -147,13 +152,33 @@ class _LoginPageState extends State<LoginPage> {
     super.dispose();
   }
 
-  void _openDashboard() {
-    Navigator.pushReplacement(
-      context,
-      MaterialPageRoute(
-        builder: (_) => const DashboardPage(),
-      ),
-    );
+  Future<void> _login() async {
+    if (!canSubmit) return;
+
+    setState(() {
+      _isLoading = true;
+      _error = null;
+    });
+
+    try {
+      await ApiService.login(
+        email: emailController.text.trim(),
+        password: passwordController.text,
+      );
+      if (!mounted) return;
+      Navigator.pushReplacement(
+        context,
+        MaterialPageRoute(builder: (_) => const DashboardPage()),
+      );
+    } on ApiException catch (error) {
+      if (mounted) setState(() => _error = error.message);
+    } catch (_) {
+      if (mounted) {
+        setState(() => _error = 'No fue posible iniciar sesión. Intenta de nuevo.');
+      }
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
+    }
   }
 
   InputDecoration _inputDecoration({
@@ -269,10 +294,28 @@ class _LoginPageState extends State<LoginPage> {
                     ),
                   ),
                   const SizedBox(height: 24),
+                  if (_error != null) ...[
+                    Container(
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFFEF2F2),
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: Text(
+                        _error!,
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(
+                          color: Color(0xFF991B1B),
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                  ],
                   SizedBox(
                     height: 54,
                     child: FilledButton(
-                      onPressed: canSubmit ? _openDashboard : null,
+                      onPressed: canSubmit ? _login : null,
                       style: FilledButton.styleFrom(
                         backgroundColor: NexaColors.primary,
                         disabledBackgroundColor: const Color(0xFFE2E8F0),
@@ -281,13 +324,22 @@ class _LoginPageState extends State<LoginPage> {
                           borderRadius: BorderRadius.circular(15),
                         ),
                       ),
-                      child: const Text(
-                        'Ingresar',
-                        style: TextStyle(
-                          fontSize: 17,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
+                      child: _isLoading
+                          ? const SizedBox(
+                              width: 22,
+                              height: 22,
+                              child: CircularProgressIndicator(
+                                strokeWidth: 2.4,
+                                color: Colors.white,
+                              ),
+                            )
+                          : const Text(
+                              'Ingresar',
+                              style: TextStyle(
+                                fontSize: 17,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
                     ),
                   ),
                 ],
@@ -317,6 +369,34 @@ class DashboardPage extends StatelessWidget {
           ),
         ),
         backgroundColor: NexaColors.surface,
+        actions: [
+          if (ApiService.currentUser?['email'] != null)
+            Padding(
+              padding: const EdgeInsets.only(right: 8),
+              child: Center(
+                child: Text(
+                  ApiService.currentUser!['email'].toString(),
+                  style: const TextStyle(
+                    color: NexaColors.textSecondary,
+                    fontSize: 13,
+                  ),
+                ),
+              ),
+            ),
+          IconButton(
+            tooltip: 'Cerrar sesión',
+            icon: const Icon(Icons.logout, color: NexaColors.textSecondary),
+            onPressed: () {
+              ApiService.logout();
+              Navigator.pushAndRemoveUntil(
+                context,
+                MaterialPageRoute(builder: (_) => const LoginPage()),
+                (route) => false,
+              );
+            },
+          ),
+          const SizedBox(width: 8),
+        ],
       ),
       body: SingleChildScrollView(
   padding: const EdgeInsets.all(28),

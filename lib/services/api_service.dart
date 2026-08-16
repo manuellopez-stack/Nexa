@@ -16,6 +16,31 @@ class ApiService {
 
   static const String _baseUrl = 'http://localhost:3000';
 
+  // Token de sesión guardado en memoria luego de iniciar sesión. Se agrega
+  // automáticamente a todas las llamadas al backend que lo necesiten.
+  static String? _accessToken;
+  static Map<String, dynamic>? _currentUser;
+
+  static bool get isLoggedIn => _accessToken != null;
+  static Map<String, dynamic>? get currentUser => _currentUser;
+
+  static void _setSession(String accessToken, Map<String, dynamic> user) {
+    _accessToken = accessToken;
+    _currentUser = user;
+  }
+
+  static void logout() {
+    _accessToken = null;
+    _currentUser = null;
+  }
+
+  static Map<String, String> _headers({Map<String, String>? extra}) {
+    return {
+      if (_accessToken != null) 'Authorization': 'Bearer $_accessToken',
+      ...?extra,
+    };
+  }
+
   static Future<Map<String, dynamic>> _decodeMap(
     http.Response response,
   ) async {
@@ -48,12 +73,43 @@ class ApiService {
     return decodedBody;
   }
 
+  static Future<void> login({
+    required String email,
+    required String password,
+  }) async {
+    final http.Response response;
+
+    try {
+      response = await http
+          .post(
+            Uri.parse('$_baseUrl/auth/login'),
+            headers: const {'Content-Type': 'application/json'},
+            body: jsonEncode({'email': email, 'password': password}),
+          )
+          .timeout(const Duration(seconds: 30));
+    } catch (_) {
+      throw const ApiException(
+        'No fue posible conectar con el backend de Nexa.',
+      );
+    }
+
+    final decodedBody = await _decodeMap(response);
+    final accessToken = decodedBody['accessToken'];
+    final user = decodedBody['user'];
+
+    if (accessToken is! String || accessToken.isEmpty || user is! Map) {
+      throw const ApiException('El backend no entregó una sesión válida.');
+    }
+
+    _setSession(accessToken, Map<String, dynamic>.from(user));
+  }
+
   static Future<Map<String, dynamic>> getDashboardSummary() async {
     final http.Response response;
 
     try {
       response = await http
-          .get(Uri.parse('$_baseUrl/dashboard/summary'))
+          .get(Uri.parse('$_baseUrl/dashboard/summary'), headers: _headers())
           .timeout(const Duration(seconds: 30));
     } catch (_) {
       throw const ApiException(
@@ -69,7 +125,7 @@ class ApiService {
 
     try {
       response = await http
-          .get(Uri.parse('$_baseUrl/patients/today'))
+          .get(Uri.parse('$_baseUrl/patients/today'), headers: _headers())
           .timeout(const Duration(seconds: 30));
     } catch (_) {
       throw const ApiException(
@@ -96,7 +152,7 @@ class ApiService {
     final response = await http
         .post(
           Uri.parse('$_baseUrl/chat'),
-          headers: const {'Content-Type': 'application/json'},
+          headers: _headers(extra: const {'Content-Type': 'application/json'}),
           body: jsonEncode({'message': message}),
         )
         .timeout(const Duration(seconds: 60));
@@ -120,7 +176,7 @@ class ApiService {
       response = await http
           .get(
             Uri.parse('$_baseUrl/patients/$id'),
-            headers: const {'Accept': 'application/json'},
+            headers: _headers(extra: const {'Accept': 'application/json'}),
           )
           .timeout(const Duration(seconds: 60));
     } catch (_) {
@@ -141,7 +197,7 @@ class ApiService {
     try {
       response = await http.get(
         Uri.parse('$_baseUrl/patients/$patientId/documents/$encodedFilename'),
-        headers: const {'Accept': 'application/json'},
+        headers: _headers(extra: const {'Accept': 'application/json'}),
       ).timeout(const Duration(seconds: 30));
     } catch (_) {
       throw const ApiException('No fue posible consultar el documento guardado.');
@@ -159,7 +215,7 @@ class ApiService {
     try {
       response = await http.post(
         Uri.parse('$_baseUrl/patients/$patientId/documents/$encodedFilename/ask'),
-        headers: const {'Content-Type': 'application/json'},
+        headers: _headers(extra: const {'Content-Type': 'application/json'}),
         body: jsonEncode({'question': question}),
       ).timeout(const Duration(seconds: 60));
     } catch (_) {
@@ -186,7 +242,7 @@ class ApiService {
             Uri.parse(
               '$_baseUrl/patients/$patientId/documents/analyze',
             ),
-            headers: const {'Content-Type': 'application/json'},
+            headers: _headers(extra: const {'Content-Type': 'application/json'}),
             body: jsonEncode({
               'filename': filename,
               'base64Data': base64Data,
@@ -238,7 +294,7 @@ class ApiService {
             Uri.parse(
               '$_baseUrl/patients/$patientId/documents/$encodedFilename/validate',
             ),
-            headers: const {'Content-Type': 'application/json'},
+            headers: _headers(extra: const {'Content-Type': 'application/json'}),
             body: jsonEncode({'status': status}),
           )
           .timeout(const Duration(seconds: 30));
@@ -271,7 +327,7 @@ class ApiService {
             Uri.parse(
               '$_baseUrl/patients/$patientId/documents/$encodedFilename',
             ),
-            headers: const {'Accept': 'application/json'},
+            headers: _headers(extra: const {'Accept': 'application/json'}),
           )
           .timeout(const Duration(seconds: 30));
     } catch (_) {
@@ -298,7 +354,7 @@ class ApiService {
     try {
       response = await http.patch(
         Uri.parse('$_baseUrl/patients/$patientId/from-document'),
-        headers: const {'Content-Type': 'application/json'},
+        headers: _headers(extra: const {'Content-Type': 'application/json'}),
         body: jsonEncode({
           'documentData': documentData,
           'filename': filename,

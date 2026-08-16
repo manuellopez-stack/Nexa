@@ -27,14 +27,50 @@ if (!process.env.SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY) {
   process.exit(1);
 }
 
+if (!process.env.SUPABASE_PUBLISHABLE_KEY) {
+  console.error("");
+  console.error("ERROR: Falta SUPABASE_PUBLISHABLE_KEY en backend/.env (la clave 'anon'/'publishable' de Supabase, necesaria para el login).");
+  console.error("");
+  process.exit(1);
+}
+
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
+// Cliente con clave de administrador: para leer/escribir datos sin
+// restricciones (usado en toda la lógica de pacientes/documentos).
 const supabase = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_SERVICE_ROLE_KEY,
 );
+
+// Cliente con la clave pública: solo se usa para validar inicios de sesión
+// de usuarios reales (nunca para leer datos de pacientes directamente).
+const supabaseAuth = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_PUBLISHABLE_KEY,
+);
+
+// V13: exige una sesión válida (token entregado por /auth/login) para
+// acceder a cualquier dato de pacientes.
+async function requireAuth(request, response, next) {
+  const authHeader = request.headers.authorization || "";
+  const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : null;
+
+  if (!token) {
+    return response.status(401).json({ error: "No has iniciado sesión." });
+  }
+
+  const { data, error } = await supabaseAuth.auth.getUser(token);
+
+  if (error || !data?.user) {
+    return response.status(401).json({ error: "Tu sesión expiró o no es válida. Vuelve a iniciar sesión." });
+  }
+
+  request.user = data.user;
+  next();
+}
 
 function normalizeRut(value) {
   return typeof value === "string" ? value.toUpperCase().replace(/[^0-9K]/g, "") : "";
@@ -260,6 +296,34 @@ app.get("/health", (_request, response) => {
     modelo: model,
   });
 });
+
+app.post("/auth/login", async (request, response) => {
+  const email = typeof request.body?.email === "string" ? request.body.email.trim() : "";
+  const password = typeof request.body?.password === "string" ? request.body.password : "";
+
+  if (!email || !password) {
+    return response.status(400).json({ error: "Debes ingresar tu email y tu contraseña." });
+  }
+
+  const { data, error } = await supabaseAuth.auth.signInWithPassword({ email, password });
+
+  if (error || !data?.session) {
+    return response.status(401).json({ error: "Email o contraseña incorrectos." });
+  }
+
+  return response.json({
+    accessToken: data.session.access_token,
+    user: {
+      id: data.user.id,
+      email: data.user.email,
+    },
+  });
+});
+
+// A partir de aquí, todas las rutas requieren haber iniciado sesión.
+app.use("/patients", requireAuth);
+app.use("/dashboard", requireAuth);
+app.use("/chat", requireAuth);
 
 app.get("/patients/today", async (_request, response) => {
   try {

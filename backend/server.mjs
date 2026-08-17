@@ -101,6 +101,7 @@ function shapePatientRow(row) {
     observations: row.observations,
     priority: row.priority,
     risk: row.risk,
+    sexo: row.sexo,
     aiSummary: row.ai_summary,
   };
 }
@@ -1034,7 +1035,373 @@ Si el documento no es clínico, usa isClinical=false y extrae igualmente la info
     });
   }
 });
+// ============================================
+// MÓDULO DE LABORATORIO
+// ============================================
 
+function shapeLabPanelRow(row) {
+  return { id: row.id, fonasaCode: row.fonasa_code, name: row.name };
+}
+
+function shapeLabParameterRow(row) {
+  return {
+    id: row.id,
+    panelId: row.panel_id,
+    fonasaCode: row.fonasa_code,
+    name: row.name,
+    unit: row.unit,
+    refMin: row.ref_min,
+    refMax: row.ref_max,
+    refMinMale: row.ref_min_male,
+    refMaxMale: row.ref_max_male,
+    refMinFemale: row.ref_min_female,
+    refMaxFemale: row.ref_max_female,
+    refText: row.ref_text,
+    displayOrder: row.display_order,
+  };
+}
+
+function shapeLabOrderRow(row) {
+  return {
+    id: row.id,
+    patientId: row.patient_id,
+    status: row.status,
+    requestedAt: row.requested_at,
+    sampleTakenAt: row.sample_taken_at,
+    completedAt: row.completed_at,
+    validatedAt: row.validated_at,
+    validatedBy: row.validated_by,
+  };
+}
+
+function shapeLabResultRow(row) {
+  return {
+    id: row.id,
+    orderId: row.order_id,
+    parameterId: row.parameter_id,
+    valueNumeric: row.value_numeric,
+    valueText: row.value_text,
+    isOutOfRange: row.is_out_of_range,
+  };
+}
+
+function isNumericOutOfRange(parameter, value, sexo) {
+  let min = parameter.ref_min;
+  let max = parameter.ref_max;
+  if (sexo === "M" && (parameter.ref_min_male !== null || parameter.ref_max_male !== null)) {
+    min = parameter.ref_min_male;
+    max = parameter.ref_max_male;
+  } else if (sexo === "F" && (parameter.ref_min_female !== null || parameter.ref_max_female !== null)) {
+    min = parameter.ref_min_female;
+    max = parameter.ref_max_female;
+  }
+  if (min === null && max === null) return null;
+  if (min !== null && value < min) return true;
+  if (max !== null && value > max) return true;
+  return false;
+}
+
+app.use("/lab", requireAuth);
+
+app.get("/lab/panels", async (_request, response) => {
+  try {
+    const { data: panelRows, error: panelsError } = await supabase
+      .from("lab_panels")
+      .select("*")
+      .order("name", { ascending: true });
+    if (panelsError) throw panelsError;
+
+    const { data: parameterRows, error: parametersError } = await supabase
+      .from("lab_parameters")
+      .select("*")
+      .order("display_order", { ascending: true });
+    if (parametersError) throw parametersError;
+
+    const panels = (panelRows ?? []).map((panel) => ({
+      ...shapeLabPanelRow(panel),
+      parameters: (parameterRows ?? [])
+        .filter((param) => param.panel_id === panel.id)
+        .map(shapeLabParameterRow),
+    }));
+
+    return response.json({ panels });
+  } catch (error) {
+    console.error("Error al obtener catálogo de laboratorio:", error);
+    return response.status(500).json({ error: "No fue posible obtener el catálogo de exámenes de laboratorio." });
+  }
+});
+
+app.post("/patients/:id/lab-orders", async (request, response) => {
+  try {
+    const patientId = Number(request.params.id);
+    const panelIds = Array.isArray(request.body?.panelIds) ? request.body.panelIds : [];
+
+    if (panelIds.length === 0) {
+      return response.status(400).json({ error: "Debes seleccionar al menos un examen." });
+    }
+
+    const { data: patientRow, error: patientError } = await supabase
+      .from("patients")
+      .select("id")
+      .eq("id", patientId)
+      .maybeSingle();
+    if (patientError) throw patientError;
+    if (!patientRow) return response.status(404).json({ error: "Paciente no encontrado" });
+
+    const { data: orderRow, error: orderError } = await supabase
+      .from("lab_orders")
+      .insert({ patient_id: patientId, status: "ordenado" })
+      .select()
+      .single();
+    if (orderError) throw orderError;
+
+    const orderPanelsRows = panelIds.map((panelId) => ({ order_id: orderRow.id, panel_id: panelId }));
+    const { error: orderPanelsError } = await supabase.from("lab_order_panels").insert(orderPanelsRows);
+    if (orderPanelsError) throw orderPanelsError;
+
+    return response.json({ order: shapeLabOrderRow(orderRow) });
+  } catch (error) {
+    console.error("Error al crear orden de laboratorio:", error);
+    return response.status(500).json({ error: "No fue posible crear la orden de laboratorio." });
+  }
+});
+
+app.get("/patients/:id/lab-orders", async (request, response) => {
+  try {
+    const patientId = Number(request.params.id);
+
+    const { data: orderRows, error: ordersError } = await supabase
+      .from("lab_orders")
+      .select("*")
+      .eq("patient_id", patientId)
+      .order("requested_at", { ascending: false });
+    if (ordersError) throw ordersError;
+
+    const orderIds = (orderRows ?? []).map((o) => o.id);
+
+    const { data: orderPanelRows, error: orderPanelsError } = orderIds.length
+      ? await supabase.from("lab_order_panels").select("*, lab_panels(name, fonasa_code)").in("order_id", orderIds)
+      : { data: [], error: null };
+    if (orderPanelsError) throw orderPanelsError;
+
+    const orders = (orderRows ?? []).map((order) => ({
+      ...shapeLabOrderRow(order),
+      panels: (orderPanelRows ?? [])
+        .filter((op) => op.order_id === order.id)
+        .map((op) => ({ id: op.panel_id, name: op.lab_panels?.name, fonasaCode: op.lab_panels?.fonasa_code })),
+    }));
+
+    return response.json({ orders });
+  } catch (error) {
+    console.error("Error al obtener órdenes de laboratorio:", error);
+    return response.status(500).json({ error: "No fue posible obtener las órdenes de laboratorio." });
+  }
+});
+
+app.get("/patients/:id/lab-orders/:orderId", async (request, response) => {
+  try {
+    const patientId = Number(request.params.id);
+    const orderId = request.params.orderId;
+
+    const { data: orderRow, error: orderError } = await supabase
+      .from("lab_orders")
+      .select("*")
+      .eq("id", orderId)
+      .eq("patient_id", patientId)
+      .maybeSingle();
+    if (orderError) throw orderError;
+    if (!orderRow) return response.status(404).json({ error: "Orden de laboratorio no encontrada." });
+
+    const { data: orderPanelRows, error: orderPanelsError } = await supabase
+      .from("lab_order_panels")
+      .select("panel_id, lab_panels(id, name, fonasa_code)")
+      .eq("order_id", orderId);
+    if (orderPanelsError) throw orderPanelsError;
+
+    const panelIds = (orderPanelRows ?? []).map((op) => op.panel_id);
+
+    const { data: parameterRows, error: parametersError } = panelIds.length
+      ? await supabase.from("lab_parameters").select("*").in("panel_id", panelIds).order("display_order", { ascending: true })
+      : { data: [], error: null };
+    if (parametersError) throw parametersError;
+
+    const { data: resultRows, error: resultsError } = await supabase
+      .from("lab_results")
+      .select("*")
+      .eq("order_id", orderId);
+    if (resultsError) throw resultsError;
+
+    const panels = (orderPanelRows ?? []).map((op) => ({
+      id: op.panel_id,
+      name: op.lab_panels?.name,
+      fonasaCode: op.lab_panels?.fonasa_code,
+      parameters: (parameterRows ?? [])
+        .filter((param) => param.panel_id === op.panel_id)
+        .map((param) => {
+          const result = (resultRows ?? []).find((r) => r.parameter_id === param.id);
+          return {
+            ...shapeLabParameterRow(param),
+            result: result ? shapeLabResultRow(result) : null,
+          };
+        }),
+    }));
+
+    return response.json({ order: shapeLabOrderRow(orderRow), panels });
+  } catch (error) {
+    console.error("Error al obtener detalle de orden de laboratorio:", error);
+    return response.status(500).json({ error: "No fue posible obtener el detalle de la orden." });
+  }
+});
+
+app.patch("/patients/:id/lab-orders/:orderId/sample-taken", async (request, response) => {
+  try {
+    const patientId = Number(request.params.id);
+    const orderId = request.params.orderId;
+
+    const { data: updatedOrder, error } = await supabase
+      .from("lab_orders")
+      .update({ status: "muestra_tomada", sample_taken_at: new Date().toISOString() })
+      .eq("id", orderId)
+      .eq("patient_id", patientId)
+      .select()
+      .single();
+    if (error) throw error;
+    if (!updatedOrder) return response.status(404).json({ error: "Orden de laboratorio no encontrada." });
+
+    return response.json({ order: shapeLabOrderRow(updatedOrder) });
+  } catch (error) {
+    console.error("Error al marcar toma de muestra:", error);
+    return response.status(500).json({ error: "No fue posible marcar la toma de muestra." });
+  }
+});
+
+app.patch("/patients/:id/lab-orders/:orderId/results", async (request, response) => {
+  try {
+    const patientId = Number(request.params.id);
+    const orderId = request.params.orderId;
+    const results = Array.isArray(request.body?.results) ? request.body.results : [];
+
+    if (results.length === 0) {
+      return response.status(400).json({ error: "Debes enviar al menos un resultado." });
+    }
+
+    const { data: patientRow, error: patientError } = await supabase
+      .from("patients")
+      .select("id, sexo")
+      .eq("id", patientId)
+      .maybeSingle();
+    if (patientError) throw patientError;
+    if (!patientRow) return response.status(404).json({ error: "Paciente no encontrado" });
+
+    const { data: orderRow, error: orderError } = await supabase
+      .from("lab_orders")
+      .select("*")
+      .eq("id", orderId)
+      .eq("patient_id", patientId)
+      .maybeSingle();
+    if (orderError) throw orderError;
+    if (!orderRow) return response.status(404).json({ error: "Orden de laboratorio no encontrada." });
+
+    for (const item of results) {
+      const parameterId = item.parameterId;
+      const valueNumeric = typeof item.valueNumeric === "number" ? item.valueNumeric : null;
+      const valueText = typeof item.valueText === "string" ? item.valueText.trim() : null;
+
+      const { data: parameterRow, error: parameterError } = await supabase
+        .from("lab_parameters")
+        .select("*")
+        .eq("id", parameterId)
+        .maybeSingle();
+      if (parameterError) throw parameterError;
+      if (!parameterRow) continue;
+
+      let isOutOfRange = null;
+      if (valueNumeric !== null) {
+        isOutOfRange = isNumericOutOfRange(parameterRow, valueNumeric, patientRow.sexo);
+      } else if (valueText !== null && parameterRow.ref_text) {
+        isOutOfRange = valueText.toLowerCase() !== parameterRow.ref_text.trim().toLowerCase();
+      }
+
+      const { data: existingResult, error: existingError } = await supabase
+        .from("lab_results")
+        .select("id")
+        .eq("order_id", orderId)
+        .eq("parameter_id", parameterId)
+        .maybeSingle();
+      if (existingError) throw existingError;
+
+      const resultRow = {
+        order_id: orderId,
+        parameter_id: parameterId,
+        value_numeric: valueNumeric,
+        value_text: valueText,
+        is_out_of_range: isOutOfRange,
+      };
+
+      if (existingResult) {
+        const { error } = await supabase.from("lab_results").update(resultRow).eq("id", existingResult.id);
+        if (error) throw error;
+      } else {
+        const { error } = await supabase.from("lab_results").insert(resultRow);
+        if (error) throw error;
+      }
+    }
+
+    const { data: orderPanelRows } = await supabase.from("lab_order_panels").select("panel_id").eq("order_id", orderId);
+    const panelIds = (orderPanelRows ?? []).map((op) => op.panel_id);
+    const { data: allParameters } = panelIds.length
+      ? await supabase.from("lab_parameters").select("id").in("panel_id", panelIds)
+      : { data: [] };
+    const { data: allResults } = await supabase.from("lab_results").select("parameter_id").eq("order_id", orderId);
+
+    const totalParams = (allParameters ?? []).length;
+    const filledParams = new Set((allResults ?? []).map((r) => r.parameter_id)).size;
+
+    const newStatus = filledParams >= totalParams && totalParams > 0 ? "completado" : "en_proceso";
+
+    const { data: updatedOrder, error: updateOrderError } = await supabase
+      .from("lab_orders")
+      .update({
+        status: newStatus,
+        completed_at: newStatus === "completado" ? new Date().toISOString() : null,
+      })
+      .eq("id", orderId)
+      .select()
+      .single();
+    if (updateOrderError) throw updateOrderError;
+
+    return response.json({ order: shapeLabOrderRow(updatedOrder) });
+  } catch (error) {
+    console.error("Error al guardar resultados de laboratorio:", error);
+    return response.status(500).json({ error: "No fue posible guardar los resultados." });
+  }
+});
+
+app.patch("/patients/:id/lab-orders/:orderId/validate", async (request, response) => {
+  try {
+    const patientId = Number(request.params.id);
+    const orderId = request.params.orderId;
+
+    const { data: updatedOrder, error } = await supabase
+      .from("lab_orders")
+      .update({
+        status: "validado",
+        validated_at: new Date().toISOString(),
+        validated_by: request.user?.email ?? null,
+      })
+      .eq("id", orderId)
+      .eq("patient_id", patientId)
+      .select()
+      .single();
+    if (error) throw error;
+    if (!updatedOrder) return response.status(404).json({ error: "Orden de laboratorio no encontrada." });
+
+    return response.json({ order: shapeLabOrderRow(updatedOrder) });
+  } catch (error) {
+    console.error("Error al validar orden de laboratorio:", error);
+    return response.status(500).json({ error: "No fue posible validar la orden de laboratorio." });
+  }
+});
 app.post("/chat", async (request, response) => {
   try {
     const message = request.body?.message;

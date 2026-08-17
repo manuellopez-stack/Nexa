@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 
 import '../core/nexa_colors.dart';
 import '../services/api_service.dart';
+import 'lab_section.dart';
 
 class TodayPatientsSection extends StatefulWidget {
   const TodayPatientsSection({super.key});
@@ -910,6 +911,12 @@ $documentsText
                   ),
                 ),
               ],
+              const SizedBox(height: 20),
+              const Divider(),
+              const SizedBox(height: 12),
+              LabOrdersSection(
+                patientId: patient['id'] is int ? patient['id'] as int : null,
+              ),
               const SizedBox(height: 20),
               const Divider(),
               const SizedBox(height: 12),

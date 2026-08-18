@@ -455,6 +455,7 @@ app.patch("/patients/:id/from-document", async (request, response) => {
 
     const documentData = request.body?.documentData;
     const requestedTargetId = request.body?.targetPatientId;
+        const imagingOrderId = request.body?.imagingOrderId;
     const filename =
       typeof request.body?.filename === "string" ? request.body.filename.trim() : "";
 
@@ -642,7 +643,22 @@ app.patch("/patients/:id/from-document", async (request, response) => {
         } else {
           const { error } = await supabase.from("history_events").insert(historyEntry);
           if (error) throw error;
-        }
+               }
+      }
+
+      if (imagingOrderId) {
+        const { error: linkError } = await supabase
+          .from("documents")
+          .update({ imaging_order_id: imagingOrderId })
+          .eq("id", savedDocId);
+        if (linkError) throw linkError;
+
+        const { error: orderUpdateError } = await supabase
+          .from("imaging_orders")
+          .update({ status: "informado", informed_at: new Date().toISOString() })
+          .eq("id", imagingOrderId)
+          .eq("patient_id", targetPatient.id);
+        if (orderUpdateError) throw orderUpdateError;
       }
     }
 
@@ -757,6 +773,21 @@ app.patch("/patients/:id/documents/:filename/validate", async (request, response
       .select()
       .single();
     if (updateError) throw updateError;
+
+        if (updatedDoc.imaging_order_id) {
+      if (status === "aprobado") {
+        await supabase
+          .from("imaging_orders")
+          .update({ status: "validado", validated_at: new Date().toISOString() })
+          .eq("id", updatedDoc.imaging_order_id);
+      } else {
+        await supabase
+          .from("imaging_orders")
+          .update({ status: "informado", validated_at: null })
+          .eq("id", updatedDoc.imaging_order_id)
+          .eq("status", "validado");
+      }
+    }
 
     const refreshedPatient = await getPatientFull(patientId);
 
@@ -1402,6 +1433,217 @@ app.patch("/patients/:id/lab-orders/:orderId/validate", async (request, response
     return response.status(500).json({ error: "No fue posible validar la orden de laboratorio." });
   }
 });
+// ============================================
+// MÓDULO DE IMAGENOLOGÍA
+// ============================================
+
+function shapeImagingTypeRow(row) {
+  return {
+    id: row.id,
+    fonasaCode: row.fonasa_code,
+    category: row.category,
+    name: row.name,
+  };
+}
+
+function shapeImagingOrderRow(row) {
+  return {
+    id: row.id,
+    patientId: row.patient_id,
+    status: row.status,
+    requestedAt: row.requested_at,
+    performedAt: row.performed_at,
+    informedAt: row.informed_at,
+    validatedAt: row.validated_at,
+  };
+}
+
+app.use("/imaging", requireAuth);
+
+app.get("/imaging/types", async (_request, response) => {
+  try {
+    const { data, error } = await supabase
+      .from("imaging_types")
+      .select("*")
+      .order("category", { ascending: true })
+      .order("name", { ascending: true });
+    if (error) throw error;
+
+    return response.json({ types: (data ?? []).map(shapeImagingTypeRow) });
+  } catch (error) {
+    console.error("Error al obtener catálogo de imagenología:", error);
+    return response
+      .status(500)
+      .json({ error: "No fue posible obtener el catálogo de imagenología." });
+  }
+});
+
+app.post("/patients/:id/imaging-orders", async (request, response) => {
+  try {
+    const patientId = Number(request.params.id);
+    const typeIds = Array.isArray(request.body?.typeIds)
+      ? request.body.typeIds
+      : [];
+
+    if (typeIds.length === 0) {
+      return response
+        .status(400)
+        .json({ error: "Debes seleccionar al menos un tipo de estudio." });
+    }
+
+    const { data: patientRow, error: patientError } = await supabase
+      .from("patients")
+      .select("id")
+      .eq("id", patientId)
+      .maybeSingle();
+    if (patientError) throw patientError;
+    if (!patientRow)
+      return response.status(404).json({ error: "Paciente no encontrado" });
+
+    const { data: orderRow, error: orderError } = await supabase
+      .from("imaging_orders")
+      .insert({ patient_id: patientId, status: "ordenado" })
+      .select()
+      .single();
+    if (orderError) throw orderError;
+
+    const orderTypeRows = typeIds.map((typeId) => ({
+      order_id: orderRow.id,
+      imaging_type_id: typeId,
+    }));
+    const { error: orderTypesError } = await supabase
+      .from("imaging_order_types")
+      .insert(orderTypeRows);
+    if (orderTypesError) throw orderTypesError;
+
+    return response.json({ order: shapeImagingOrderRow(orderRow) });
+  } catch (error) {
+    console.error("Error al crear orden de imagenología:", error);
+    return response
+      .status(500)
+      .json({ error: "No fue posible crear la orden de imagenología." });
+  }
+});
+
+app.get("/patients/:id/imaging-orders", async (request, response) => {
+  try {
+    const patientId = Number(request.params.id);
+
+    const { data: orderRows, error: ordersError } = await supabase
+      .from("imaging_orders")
+      .select("*")
+      .eq("patient_id", patientId)
+      .order("requested_at", { ascending: false });
+    if (ordersError) throw ordersError;
+
+    const orderIds = (orderRows ?? []).map((o) => o.id);
+
+    const { data: orderTypeRows, error: orderTypesError } = orderIds.length
+      ? await supabase
+          .from("imaging_order_types")
+          .select("*, imaging_types(name, category, fonasa_code)")
+          .in("order_id", orderIds)
+      : { data: [], error: null };
+    if (orderTypesError) throw orderTypesError;
+
+    const orders = (orderRows ?? []).map((order) => ({
+      ...shapeImagingOrderRow(order),
+      types: (orderTypeRows ?? [])
+        .filter((ot) => ot.order_id === order.id)
+        .map((ot) => ({
+          id: ot.imaging_type_id,
+          name: ot.imaging_types?.name,
+          category: ot.imaging_types?.category,
+          fonasaCode: ot.imaging_types?.fonasa_code,
+        })),
+    }));
+
+    return response.json({ orders });
+  } catch (error) {
+    console.error("Error al obtener órdenes de imagenología:", error);
+    return response
+      .status(500)
+      .json({ error: "No fue posible obtener las órdenes de imagenología." });
+  }
+});
+
+app.get("/patients/:id/imaging-orders/:orderId", async (request, response) => {
+  try {
+    const patientId = Number(request.params.id);
+    const orderId = request.params.orderId;
+
+    const { data: orderRow, error: orderError } = await supabase
+      .from("imaging_orders")
+      .select("*")
+      .eq("id", orderId)
+      .eq("patient_id", patientId)
+      .maybeSingle();
+    if (orderError) throw orderError;
+    if (!orderRow)
+      return response
+        .status(404)
+        .json({ error: "Orden de imagenología no encontrada." });
+
+    const { data: orderTypeRows, error: orderTypesError } = await supabase
+      .from("imaging_order_types")
+      .select("imaging_type_id, imaging_types(id, name, category, fonasa_code)")
+      .eq("order_id", orderId);
+    if (orderTypesError) throw orderTypesError;
+
+    const { data: linkedDocs, error: docsError } = await supabase
+      .from("documents")
+      .select("*")
+      .eq("imaging_order_id", orderId);
+    if (docsError) throw docsError;
+
+    return response.json({
+      order: shapeImagingOrderRow(orderRow),
+      types: (orderTypeRows ?? []).map((ot) => ({
+        id: ot.imaging_type_id,
+        name: ot.imaging_types?.name,
+        category: ot.imaging_types?.category,
+        fonasaCode: ot.imaging_types?.fonasa_code,
+      })),
+      documents: (linkedDocs ?? []).map(shapeDocumentRecord),
+    });
+  } catch (error) {
+    console.error("Error al obtener detalle de orden de imagenología:", error);
+    return response
+      .status(500)
+      .json({ error: "No fue posible obtener el detalle de la orden." });
+  }
+});
+
+app.patch(
+  "/patients/:id/imaging-orders/:orderId/performed",
+  async (request, response) => {
+    try {
+      const patientId = Number(request.params.id);
+      const orderId = request.params.orderId;
+
+      const { data: updatedOrder, error } = await supabase
+        .from("imaging_orders")
+        .update({ status: "realizado", performed_at: new Date().toISOString() })
+        .eq("id", orderId)
+        .eq("patient_id", patientId)
+        .select()
+        .single();
+      if (error) throw error;
+      if (!updatedOrder)
+        return response
+          .status(404)
+          .json({ error: "Orden de imagenología no encontrada." });
+
+      return response.json({ order: shapeImagingOrderRow(updatedOrder) });
+    } catch (error) {
+      console.error("Error al marcar estudio realizado:", error);
+      return response
+        .status(500)
+        .json({ error: "No fue posible marcar el estudio como realizado." });
+    }
+  },
+);
+
 app.post("/chat", async (request, response) => {
   try {
     const message = request.body?.message;

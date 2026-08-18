@@ -14,7 +14,7 @@ class ApiException implements Exception {
 class ApiService {
   ApiService._();
 
-  static const String _baseUrl = 'https://nexa-7avs.onrender.com';
+  static const String _baseUrl = 'https://nexa-backend-v2.onrender.com';
 
   // Token de sesión guardado en memoria luego de iniciar sesión. Se agrega
   // automáticamente a todas las llamadas al backend que lo necesiten.
@@ -349,6 +349,7 @@ class ApiService {
     required Map<String, dynamic> documentData,
     required String filename,
     int? targetPatientId,
+    String? imagingOrderId,
   }) async {
     final http.Response response;
     try {
@@ -359,6 +360,7 @@ class ApiService {
           'documentData': documentData,
           'filename': filename,
           if (targetPatientId != null) 'targetPatientId': targetPatientId,
+          if (imagingOrderId != null) 'imagingOrderId': imagingOrderId,
         }),
       ).timeout(const Duration(seconds: 30));
     } catch (_) { throw const ApiException('No fue posible actualizar la ficha del paciente.'); }
@@ -567,6 +569,154 @@ class ApiService {
     } catch (_) {
       throw const ApiException(
         'No fue posible validar la orden de laboratorio.',
+      );
+    }
+
+    final decodedBody = await _decodeMap(response);
+    final order = decodedBody['order'];
+
+    if (order is! Map) {
+      throw const ApiException('El backend no entregó la orden actualizada.');
+    }
+
+    return Map<String, dynamic>.from(order);
+  }
+
+  // ============================================
+  // MÓDULO DE IMAGENOLOGÍA
+  // ============================================
+
+  static Future<List<Map<String, dynamic>>> getImagingTypes() async {
+    final http.Response response;
+
+    try {
+      response = await http
+          .get(Uri.parse('$_baseUrl/imaging/types'), headers: _headers())
+          .timeout(const Duration(seconds: 30));
+    } catch (_) {
+      throw const ApiException(
+        'No fue posible conectar con el backend de Nexa.',
+      );
+    }
+
+    final decodedBody = await _decodeMap(response);
+    final types = decodedBody['types'];
+
+    if (types is! List) {
+      throw const ApiException(
+        'El backend no entregó el catálogo de imagenología.',
+      );
+    }
+
+    return types
+        .whereType<Map>()
+        .map((type) => Map<String, dynamic>.from(type))
+        .toList();
+  }
+
+  static Future<Map<String, dynamic>> createImagingOrder({
+    required int patientId,
+    required List<String> typeIds,
+  }) async {
+    final http.Response response;
+
+    try {
+      response = await http
+          .post(
+            Uri.parse('$_baseUrl/patients/$patientId/imaging-orders'),
+            headers: _headers(extra: const {'Content-Type': 'application/json'}),
+            body: jsonEncode({'typeIds': typeIds}),
+          )
+          .timeout(const Duration(seconds: 30));
+    } catch (_) {
+      throw const ApiException(
+        'No fue posible crear la orden de imagenología.',
+      );
+    }
+
+    final decodedBody = await _decodeMap(response);
+    final order = decodedBody['order'];
+
+    if (order is! Map) {
+      throw const ApiException('El backend no entregó la orden creada.');
+    }
+
+    return Map<String, dynamic>.from(order);
+  }
+
+  static Future<List<Map<String, dynamic>>> getImagingOrders(
+    int patientId,
+  ) async {
+    final http.Response response;
+
+    try {
+      response = await http
+          .get(
+            Uri.parse('$_baseUrl/patients/$patientId/imaging-orders'),
+            headers: _headers(),
+          )
+          .timeout(const Duration(seconds: 30));
+    } catch (_) {
+      throw const ApiException(
+        'No fue posible conectar con el backend de Nexa.',
+      );
+    }
+
+    final decodedBody = await _decodeMap(response);
+    final orders = decodedBody['orders'];
+
+    if (orders is! List) {
+      throw const ApiException(
+        'El backend no entregó las órdenes de imagenología.',
+      );
+    }
+
+    return orders
+        .whereType<Map>()
+        .map((order) => Map<String, dynamic>.from(order))
+        .toList();
+  }
+
+  static Future<Map<String, dynamic>> getImagingOrderDetail({
+    required int patientId,
+    required String orderId,
+  }) async {
+    final http.Response response;
+
+    try {
+      response = await http
+          .get(
+            Uri.parse('$_baseUrl/patients/$patientId/imaging-orders/$orderId'),
+            headers: _headers(),
+          )
+          .timeout(const Duration(seconds: 30));
+    } catch (_) {
+      throw const ApiException(
+        'No fue posible conectar con el backend de Nexa.',
+      );
+    }
+
+    return _decodeMap(response);
+  }
+
+  static Future<Map<String, dynamic>> markImagingPerformed({
+    required int patientId,
+    required String orderId,
+  }) async {
+    final http.Response response;
+
+    try {
+      response = await http
+          .patch(
+            Uri.parse(
+              '$_baseUrl/patients/$patientId/imaging-orders/$orderId/performed',
+            ),
+            headers: _headers(),
+          )
+          .timeout(const Duration(seconds: 30));
+    } catch (_) {
+      throw const ApiException(
+        'No fue posible marcar el estudio como realizado.',
       );
     }
 

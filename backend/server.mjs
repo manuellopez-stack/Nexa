@@ -3,7 +3,8 @@ import cors from "cors";
 import dotenv from "dotenv";
 import OpenAI from "openai";
 import { createClient } from "@supabase/supabase-js";
-
+import dicomParser from "dicom-parser";
+import sharp from "sharp";
 dotenv.config({ quiet: true });
 
 const app = express();
@@ -11,7 +12,7 @@ const port = 3000;
 const model = process.env.OPENAI_MODEL || "gpt-5-mini";
 
 app.use(cors());
-app.use(express.json({ limit: "20mb" }));
+app.use(express.json({ limit: "50mb" }));
 
 if (!process.env.OPENAI_API_KEY) {
   console.error("");
@@ -1643,7 +1644,289 @@ app.patch(
     }
   },
 );
+// ============================================
+// IMAGENOLOGÍA — ETAPA B: imágenes DICOM
+// ============================================
 
+async function convertDicomToPng(dicomBuffer) {
+  const byteArray = new Uint8Array(dicomBuffer);
+  const dataSet = dicomParser.parseDicom(byteArray);
+
+  const pixelDataElement = dataSet.elements.x7fe00010;
+  if (!pixelDataElement) {
+    throw new Error(
+      "El archivo DICOM no contiene datos de imagen (pixel data).",
+    );
+  }
+
+  if (pixelDataElement.encapsulatedPixelData) {
+    throw new Error(
+      "Este archivo DICOM usa un formato comprimido que Nexa todavía no puede convertir a imagen.",
+    );
+  }
+
+  const rows = dataSet.uint16("x00280010");
+  const columns = dataSet.uint16("x00280011");
+  const bitsAllocated = dataSet.uint16("x00280100") || 16;
+  const pixelRepresentation = dataSet.uint16("x00280103") || 0;
+  const samplesPerPixel = dataSet.uint16("x00280002") || 1;
+  const photometricInterpretation = (
+    dataSet.string("x00280004") || "MONOCHROME2"
+  ).trim();
+
+  if (!rows || !columns) {
+    throw new Error(
+      "No fue posible leer las dimensiones de la imagen DICOM.",
+    );
+  }
+
+  const numPixels = rows * columns * samplesPerPixel;
+
+  if (samplesPerPixel === 3) {
+    const rgbValues = new Uint8Array(
+      dataSet.byteArray.buffer,
+      pixelDataElement.dataOffset,
+      numPixels,
+    );
+    return sharp(Buffer.from(rgbValues), {
+      raw: { width: columns, height: rows, channels: 3 },
+    })
+      .png()
+      .toBuffer();
+  }
+
+  const rescaleSlopeRaw = dataSet.floatString("x00281053");
+  const rescaleInterceptRaw = dataSet.floatString("x00281052");
+  const slope = rescaleSlopeRaw !== undefined ? rescaleSlopeRaw : 1;
+  const intercept = rescaleInterceptRaw !== undefined ? rescaleInterceptRaw : 0;
+
+  let rawValues;
+  if (bitsAllocated === 16) {
+    rawValues =
+      pixelRepresentation === 1
+        ? new Int16Array(
+            dataSet.byteArray.buffer,
+            pixelDataElement.dataOffset,
+            numPixels,
+          )
+        : new Uint16Array(
+            dataSet.byteArray.buffer,
+            pixelDataElement.dataOffset,
+            numPixels,
+          );
+  } else {
+    rawValues = new Uint8Array(
+      dataSet.byteArray.buffer,
+      pixelDataElement.dataOffset,
+      numPixels,
+    );
+  }
+
+  const rescaled = new Float64Array(numPixels);
+  let min = Infinity;
+  let max = -Infinity;
+  for (let i = 0; i < numPixels; i++) {
+    const value = rawValues[i] * slope + intercept;
+    rescaled[i] = value;
+    if (value < min) min = value;
+    if (value > max) max = value;
+  }
+
+  const windowCenterRaw = dataSet.string("x00281050");
+  const windowWidthRaw = dataSet.string("x00281051");
+  let windowCenter = windowCenterRaw
+    ? parseFloat(windowCenterRaw.split("\\")[0])
+    : NaN;
+  let windowWidth = windowWidthRaw
+    ? parseFloat(windowWidthRaw.split("\\")[0])
+    : NaN;
+
+  if (Number.isNaN(windowCenter) || Number.isNaN(windowWidth)) {
+    windowCenter = (max + min) / 2;
+    windowWidth = max - min || 1;
+  }
+
+  const low = windowCenter - windowWidth / 2;
+  const high = windowCenter + windowWidth / 2;
+  const range = high - low || 1;
+  const invert = photometricInterpretation === "MONOCHROME1";
+
+  const output = new Uint8Array(numPixels);
+  for (let i = 0; i < numPixels; i++) {
+    let normalized = ((rescaled[i] - low) / range) * 255;
+    normalized = Math.max(0, Math.min(255, normalized));
+    output[i] = invert ? 255 - normalized : normalized;
+  }
+
+  return sharp(Buffer.from(output), {
+    raw: { width: columns, height: rows, channels: 1 },
+  })
+    .png()
+    .toBuffer();
+}
+
+function shapeImagingFileRow(row) {
+  return {
+    id: row.id,
+    orderId: row.order_id,
+    dicomPath: row.dicom_path,
+    pngPath: row.png_path,
+    uploadedAt: row.uploaded_at,
+  };
+}
+
+app.post(
+  "/patients/:id/imaging-orders/:orderId/image",
+  async (request, response) => {
+    try {
+      const patientId = Number(request.params.id);
+      const orderId = request.params.orderId;
+      const filename = request.body?.filename;
+      const base64Data = request.body?.base64Data;
+
+      if (
+        typeof filename !== "string" ||
+        typeof base64Data !== "string" ||
+        base64Data.trim().length === 0
+      ) {
+        return response
+          .status(400)
+          .json({ error: "Debes enviar un archivo DICOM válido." });
+      }
+
+      const { data: orderRow, error: orderError } = await supabase
+        .from("imaging_orders")
+        .select("id")
+        .eq("id", orderId)
+        .eq("patient_id", patientId)
+        .maybeSingle();
+      if (orderError) throw orderError;
+      if (!orderRow)
+        return response
+          .status(404)
+          .json({ error: "Orden de imagenología no encontrada." });
+
+      const dicomBuffer = Buffer.from(base64Data, "base64");
+      const timestamp = Date.now();
+      const safeFilename = filename.replace(/[^a-zA-Z0-9._-]/g, "_");
+      const dicomPath = `orders/${orderId}/${timestamp}-${safeFilename}`;
+
+      const { error: dicomUploadError } = await supabase.storage
+        .from("imaging")
+        .upload(dicomPath, dicomBuffer, {
+          contentType: "application/dicom",
+        });
+      if (dicomUploadError) throw dicomUploadError;
+
+      let pngPath = null;
+      let conversionError = null;
+
+      try {
+        const pngBuffer = await convertDicomToPng(dicomBuffer);
+        pngPath = `orders/${orderId}/${timestamp}-preview.png`;
+        const { error: pngUploadError } = await supabase.storage
+          .from("imaging")
+          .upload(pngPath, pngBuffer, { contentType: "image/png" });
+        if (pngUploadError) throw pngUploadError;
+      } catch (error) {
+        console.error("Error al convertir DICOM a PNG:", error);
+        conversionError =
+          typeof error?.message === "string"
+            ? error.message
+            : "No fue posible generar una vista previa de la imagen.";
+        pngPath = null;
+      }
+
+      const { data: fileRow, error: fileInsertError } = await supabase
+        .from("imaging_files")
+        .insert({
+          order_id: orderId,
+          dicom_path: dicomPath,
+          png_path: pngPath,
+        })
+        .select()
+        .single();
+      if (fileInsertError) throw fileInsertError;
+
+      return response.json({
+        file: shapeImagingFileRow(fileRow),
+        conversionError,
+      });
+    } catch (error) {
+      console.error("Error al subir la imagen DICOM:", error);
+      return response.status(500).json({
+        error: "No fue posible subir la imagen DICOM.",
+        detalle:
+          typeof error?.message === "string"
+            ? error.message
+            : "Error desconocido.",
+      });
+    }
+  },
+);
+
+app.get(
+  "/patients/:id/imaging-orders/:orderId/images",
+  async (request, response) => {
+    try {
+      const patientId = Number(request.params.id);
+      const orderId = request.params.orderId;
+
+      const { data: orderRow, error: orderError } = await supabase
+        .from("imaging_orders")
+        .select("id")
+        .eq("id", orderId)
+        .eq("patient_id", patientId)
+        .maybeSingle();
+      if (orderError) throw orderError;
+      if (!orderRow)
+        return response
+          .status(404)
+          .json({ error: "Orden de imagenología no encontrada." });
+
+      const { data: fileRows, error: filesError } = await supabase
+        .from("imaging_files")
+        .select("*")
+        .eq("order_id", orderId)
+        .order("uploaded_at", { ascending: false });
+      if (filesError) throw filesError;
+
+      const files = await Promise.all(
+        (fileRows ?? []).map(async (row) => {
+          let pngUrl = null;
+          let dicomUrl = null;
+
+          if (row.png_path) {
+            const { data: pngSigned } = await supabase.storage
+              .from("imaging")
+              .createSignedUrl(row.png_path, 3600);
+            pngUrl = pngSigned?.signedUrl ?? null;
+          }
+
+          if (row.dicom_path) {
+            const { data: dicomSigned } = await supabase.storage
+              .from("imaging")
+              .createSignedUrl(row.dicom_path, 3600);
+            dicomUrl = dicomSigned?.signedUrl ?? null;
+          }
+
+          return {
+            ...shapeImagingFileRow(row),
+            pngUrl,
+            dicomUrl,
+          };
+        }),
+      );
+
+      return response.json({ files });
+    } catch (error) {
+      console.error("Error al obtener imágenes de la orden:", error);
+      return response
+        .status(500)
+        .json({ error: "No fue posible obtener las imágenes de la orden." });
+    }
+  },
+);
 app.post("/chat", async (request, response) => {
   try {
     const message = request.body?.message;

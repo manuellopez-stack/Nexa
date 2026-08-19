@@ -14,7 +14,7 @@ class ApiException implements Exception {
 class ApiService {
   ApiService._();
 
-  static const String _baseUrl = 'https://nexa-backend-v2.onrender.com';
+  static const String _baseUrl = 'https://nexa-7avs.onrender.com';
 
   // Token de sesión guardado en memoria luego de iniciar sesión. Se agrega
   // automáticamente a todas las llamadas al backend que lo necesiten.
@@ -728,5 +728,66 @@ class ApiService {
     }
 
     return Map<String, dynamic>.from(order);
+  }
+
+  static Future<Map<String, dynamic>> uploadImagingImage({
+    required int patientId,
+    required String orderId,
+    required String filename,
+    required String base64Data,
+  }) async {
+    final http.Response response;
+
+    try {
+      response = await http
+          .post(
+            Uri.parse(
+              '$_baseUrl/patients/$patientId/imaging-orders/$orderId/image',
+            ),
+            headers: _headers(extra: const {'Content-Type': 'application/json'}),
+            body: jsonEncode({'filename': filename, 'base64Data': base64Data}),
+          )
+          .timeout(const Duration(minutes: 2));
+    } catch (_) {
+      throw const ApiException('No fue posible subir la imagen DICOM.');
+    }
+
+    return _decodeMap(response);
+  }
+
+  static Future<List<Map<String, dynamic>>> getImagingImages({
+    required int patientId,
+    required String orderId,
+  }) async {
+    final http.Response response;
+
+    try {
+      response = await http
+          .get(
+            Uri.parse(
+              '$_baseUrl/patients/$patientId/imaging-orders/$orderId/images',
+            ),
+            headers: _headers(),
+          )
+          .timeout(const Duration(seconds: 30));
+    } catch (_) {
+      throw const ApiException(
+        'No fue posible conectar con el backend de Nexa.',
+      );
+    }
+
+    final decodedBody = await _decodeMap(response);
+    final files = decodedBody['files'];
+
+    if (files is! List) {
+      throw const ApiException(
+        'El backend no entregó las imágenes de la orden.',
+      );
+    }
+
+    return files
+        .whereType<Map>()
+        .map((file) => Map<String, dynamic>.from(file))
+        .toList();
   }
 }

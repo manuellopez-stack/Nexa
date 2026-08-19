@@ -349,10 +349,13 @@ class _ImagingOrderDetailDialog extends StatefulWidget {
 
 class _ImagingOrderDetailDialogState extends State<_ImagingOrderDetailDialog> {
   late Future<Map<String, dynamic>> _detailFuture;
+  late Future<List<Map<String, dynamic>>> _imagesFuture;
   bool _isMarkingPerformed = false;
   bool _isAnalyzing = false;
   bool _isIncorporating = false;
+  bool _isUploadingImage = false;
   String? _error;
+  String? _imageError;
   String? _analysis;
   Map<String, dynamic>? _documentData;
   String? _documentFilename;
@@ -361,6 +364,7 @@ class _ImagingOrderDetailDialogState extends State<_ImagingOrderDetailDialog> {
   void initState() {
     super.initState();
     _detailFuture = _load();
+    _imagesFuture = _loadImages();
   }
 
   Future<Map<String, dynamic>> _load() {
@@ -370,9 +374,17 @@ class _ImagingOrderDetailDialogState extends State<_ImagingOrderDetailDialog> {
     );
   }
 
+  Future<List<Map<String, dynamic>>> _loadImages() {
+    return ApiService.getImagingImages(
+      patientId: widget.patientId,
+      orderId: widget.orderId,
+    );
+  }
+
   void _reload() {
     setState(() {
       _detailFuture = _load();
+      _imagesFuture = _loadImages();
       _analysis = null;
       _documentData = null;
       _documentFilename = null;
@@ -402,6 +414,95 @@ class _ImagingOrderDetailDialogState extends State<_ImagingOrderDetailDialog> {
     } finally {
       if (mounted) setState(() => _isMarkingPerformed = false);
     }
+  }
+
+  Future<void> _uploadImage() async {
+    if (_isUploadingImage) return;
+
+    final result = await FilePicker.pickFiles(withData: true);
+
+    if (result == null || result.files.isEmpty) return;
+
+    final file = result.files.single;
+    final bytes = file.bytes;
+
+    if (bytes == null) {
+      setState(() {
+        _imageError = 'No fue posible leer el archivo seleccionado.';
+      });
+      return;
+    }
+
+    if (bytes.length > 50 * 1024 * 1024) {
+      setState(() {
+        _imageError = 'El archivo supera el máximo permitido de 50 MB.';
+      });
+      return;
+    }
+
+    setState(() {
+      _isUploadingImage = true;
+      _imageError = null;
+    });
+
+    try {
+      final uploadResult = await ApiService.uploadImagingImage(
+        patientId: widget.patientId,
+        orderId: widget.orderId,
+        filename: file.name,
+        base64Data: base64Encode(bytes),
+      );
+
+      final conversionError = uploadResult['conversionError']?.toString();
+
+      setState(() {
+        _imagesFuture = _loadImages();
+        _imageError = (conversionError != null && conversionError.isNotEmpty)
+            ? 'Se guardó el archivo, pero no fue posible generar una vista previa: $conversionError'
+            : null;
+      });
+    } on ApiException catch (error) {
+      if (mounted) setState(() => _imageError = error.message);
+    } catch (_) {
+      if (mounted) {
+        setState(() => _imageError = 'No fue posible subir la imagen.');
+      }
+    } finally {
+      if (mounted) setState(() => _isUploadingImage = false);
+    }
+  }
+
+  void _openFullImage(String pngUrl) {
+    showDialog<void>(
+      context: context,
+      builder: (dialogContext) => Dialog(
+        insetPadding: const EdgeInsets.all(16),
+        child: Stack(
+          children: [
+            SizedBox(
+              width: double.infinity,
+              height: 600,
+              child: InteractiveViewer(
+                minScale: 0.5,
+                maxScale: 6,
+                child: Image.network(pngUrl, fit: BoxFit.contain),
+              ),
+            ),
+            Positioned(
+              top: 8,
+              right: 8,
+              child: IconButton(
+                style: IconButton.styleFrom(
+                  backgroundColor: Colors.black.withValues(alpha: 0.4),
+                ),
+                icon: const Icon(Icons.close, color: Colors.white),
+                onPressed: () => Navigator.pop(dialogContext),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   Future<void> _analyzeReport() async {
@@ -566,6 +667,127 @@ class _ImagingOrderDetailDialogState extends State<_ImagingOrderDetailDialog> {
                       );
                     }).toList(),
                   ),
+                  const Divider(height: 28),
+                  Row(
+                    children: [
+                      const Expanded(
+                        child: Text(
+                          'Imagen del estudio',
+                          style: TextStyle(fontWeight: FontWeight.w800),
+                        ),
+                      ),
+                      OutlinedButton.icon(
+                        onPressed: _isUploadingImage ? null : _uploadImage,
+                        icon: _isUploadingImage
+                            ? const SizedBox(
+                                width: 16,
+                                height: 16,
+                                child:
+                                    CircularProgressIndicator(strokeWidth: 2),
+                              )
+                            : const Icon(Icons.image_outlined, size: 18),
+                        label: Text(
+                          _isUploadingImage
+                              ? 'Subiendo...'
+                              : 'Subir imagen DICOM',
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 10),
+                  FutureBuilder<List<Map<String, dynamic>>>(
+                    future: _imagesFuture,
+                    builder: (context, imagesSnapshot) {
+                      if (imagesSnapshot.connectionState ==
+                          ConnectionState.waiting) {
+                        return const Padding(
+                          padding: EdgeInsets.symmetric(vertical: 12),
+                          child: Center(child: CircularProgressIndicator()),
+                        );
+                      }
+
+                      if (imagesSnapshot.hasError) {
+                        return const Text(
+                          'No fue posible cargar las imágenes de esta orden.',
+                        );
+                      }
+
+                      final images = imagesSnapshot.data ?? [];
+
+                      if (images.isEmpty) {
+                        return const Text(
+                          'No hay imágenes subidas para este estudio.',
+                        );
+                      }
+
+                      return Wrap(
+                        spacing: 10,
+                        runSpacing: 10,
+                        children: images.map((imageFile) {
+                          final pngUrl = imageFile['pngUrl']?.toString();
+
+                          if (pngUrl == null || pngUrl.isEmpty) {
+                            return Container(
+                              width: 140,
+                              padding: const EdgeInsets.all(10),
+                              decoration: BoxDecoration(
+                                color: const Color(0xFFFEF2F2),
+                                borderRadius: BorderRadius.circular(10),
+                              ),
+                              child: const Text(
+                                'Sin vista previa disponible',
+                                style: TextStyle(
+                                  fontSize: 11,
+                                  color: Color(0xFFB91C1C),
+                                ),
+                              ),
+                            );
+                          }
+
+                          return GestureDetector(
+                            onTap: () => _openFullImage(pngUrl),
+                            child: ClipRRect(
+                              borderRadius: BorderRadius.circular(10),
+                              child: Image.network(
+                                pngUrl,
+                                width: 140,
+                                height: 140,
+                                fit: BoxFit.cover,
+                                loadingBuilder: (context, child, progress) {
+                                  if (progress == null) return child;
+                                  return const SizedBox(
+                                    width: 140,
+                                    height: 140,
+                                    child: Center(
+                                      child: CircularProgressIndicator(
+                                        strokeWidth: 2,
+                                      ),
+                                    ),
+                                  );
+                                },
+                                errorBuilder: (context, error, stackTrace) =>
+                                    Container(
+                                  width: 140,
+                                  height: 140,
+                                  color: NexaColors.background,
+                                  child: const Icon(
+                                    Icons.broken_image_outlined,
+                                  ),
+                                ),
+                              ),
+                            ),
+                          );
+                        }).toList(),
+                      );
+                    },
+                  ),
+                  if (_imageError != null) ...[
+                    const SizedBox(height: 10),
+                    Text(
+                      _imageError!,
+                      style: const TextStyle(color: Color(0xFFB91C1C)),
+                    ),
+                  ],
                   const SizedBox(height: 16),
                   if (status == 'ordenado')
                     OutlinedButton.icon(

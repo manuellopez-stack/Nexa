@@ -14,7 +14,7 @@ class ApiException implements Exception {
 class ApiService {
   ApiService._();
 
-  static const String _baseUrl = 'https://nexa-7avs.onrender.com';
+  static const String _baseUrl = 'https://nexa-backend-v2.onrender.com';
 
   // Token de sesión guardado en memoria luego de iniciar sesión. Se agrega
   // automáticamente a todas las llamadas al backend que lo necesiten.

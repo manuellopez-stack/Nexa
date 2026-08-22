@@ -53,8 +53,18 @@ const supabaseAuth = createClient(
   process.env.SUPABASE_PUBLISHABLE_KEY,
 );
 
-// V13: exige una sesión válida (token entregado por /auth/login) para
-// acceder a cualquier dato de pacientes.
+// ============================================
+// PERMISOS POR ROL
+// ============================================
+
+const ALL_ROLES = ["administrador", "medico", "tecnico", "recepcion"];
+const CLINICAL_STAFF = ["administrador", "medico", "tecnico"];
+const VALIDATORS = ["administrador", "medico"];
+const ADMIN_ONLY = ["administrador"];
+
+// V13: exige una sesión válida (token entregado por /auth/login).
+// Ahora además exige que la cuenta tenga un rol asignado en staff_profiles;
+// si no lo tiene, la cuenta no puede usar Nexa (aunque el login sea válido).
 async function requireAuth(request, response, next) {
   const authHeader = request.headers.authorization || "";
   const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : null;
@@ -69,8 +79,40 @@ async function requireAuth(request, response, next) {
     return response.status(401).json({ error: "Tu sesión expiró o no es válida. Vuelve a iniciar sesión." });
   }
 
+  const { data: profileRow, error: profileError } = await supabase
+    .from("staff_profiles")
+    .select("*")
+    .eq("id", data.user.id)
+    .maybeSingle();
+
+  if (profileError) {
+    console.error("Error al obtener el perfil de personal:", profileError);
+    return response.status(500).json({ error: "No fue posible verificar tu perfil de usuario." });
+  }
+
+  if (!profileRow) {
+    return response.status(403).json({
+      error: "Tu cuenta no tiene un rol asignado en Nexa. Contacta a un administrador.",
+    });
+  }
+
   request.user = data.user;
+  request.staffRole = profileRow.role;
+  request.staffProfile = profileRow;
   next();
+}
+
+// Middleware adicional: exige que el rol de la persona esté dentro de los
+// roles permitidos para esa ruta específica. Se usa después de requireAuth.
+function requireRole(allowedRoles) {
+  return (request, response, next) => {
+    if (!allowedRoles.includes(request.staffRole)) {
+      return response.status(403).json({
+        error: "No tienes permiso para realizar esta acción.",
+      });
+    }
+    next();
+  };
 }
 
 function normalizeRut(value) {
@@ -107,6 +149,21 @@ function shapePatientRow(row) {
   };
 }
 
+// Versión reducida de la ficha, sin datos clínicos, para el rol Recepción.
+function shapePatientRowBasic(row) {
+  return {
+    id: row.id,
+    time: row.time,
+    name: row.name,
+    rut: row.rut,
+    doctor: row.doctor,
+    phone: row.phone,
+    exam: row.exam,
+    room: row.room,
+    status: row.status,
+  };
+}
+
 function shapeDocumentRecord(row) {
   return {
     id: row.id,
@@ -134,6 +191,16 @@ function shapeHistoryEvent(row) {
     date: row.date,
     exam: row.exam,
     summary: row.summary,
+  };
+}
+
+function shapeStaffRow(row) {
+  return {
+    id: row.id,
+    email: row.email,
+    fullName: row.full_name,
+    role: row.role,
+    createdAt: row.created_at,
   };
 }
 
@@ -313,21 +380,33 @@ app.post("/auth/login", async (request, response) => {
     return response.status(401).json({ error: "Email o contraseña incorrectos." });
   }
 
+  const { data: profileRow } = await supabase
+    .from("staff_profiles")
+    .select("*")
+    .eq("id", data.user.id)
+    .maybeSingle();
+
   return response.json({
     accessToken: data.session.access_token,
     user: {
       id: data.user.id,
       email: data.user.email,
+      role: profileRow?.role ?? null,
+      fullName: profileRow?.full_name ?? null,
     },
   });
 });
 
-// A partir de aquí, todas las rutas requieren haber iniciado sesión.
+// A partir de aquí, todas las rutas requieren haber iniciado sesión y
+// tener un rol asignado. Algunas rutas además exigen un rol específico.
 app.use("/patients", requireAuth);
 app.use("/dashboard", requireAuth);
-app.use("/chat", requireAuth);
+app.use("/chat", requireAuth, requireRole(VALIDATORS));
+app.use("/lab", requireAuth);
+app.use("/imaging", requireAuth);
+app.use("/staff", requireAuth, requireRole(ADMIN_ONLY));
 
-app.get("/patients/today", async (_request, response) => {
+app.get("/patients/today", async (request, response) => {
   try {
     const { data, error } = await supabase
       .from("patients")
@@ -336,7 +415,9 @@ app.get("/patients/today", async (_request, response) => {
 
     if (error) throw error;
 
-    const patients = (data ?? []).map(shapePatientRow);
+    const patients = (data ?? []).map(
+      request.staffRole === "recepcion" ? shapePatientRowBasic : shapePatientRow,
+    );
 
     return response.json({
       fecha: new Date().toISOString().split("T")[0],
@@ -396,7 +477,7 @@ app.get("/dashboard/summary", async (_request, response) => {
   }
 });
 
-app.get("/patients/:id", async (request, response) => {
+app.get("/patients/:id", requireRole(CLINICAL_STAFF), async (request, response) => {
   try {
     const patient = await getPatientFull(request.params.id);
     if (!patient) return response.status(404).json({ error: "Paciente no encontrado" });
@@ -427,7 +508,7 @@ app.get("/patients/:id", async (request, response) => {
   }
 });
 
-app.post("/patients/:id/summary", async (request, response) => {
+app.post("/patients/:id/summary", requireRole(CLINICAL_STAFF), async (request, response) => {
   try {
     const patient = await getPatientFull(request.params.id);
     if (!patient) return response.status(404).json({ error: "Paciente no encontrado" });
@@ -449,7 +530,7 @@ app.post("/patients/:id/summary", async (request, response) => {
   }
 });
 
-app.patch("/patients/:id/from-document", async (request, response) => {
+app.patch("/patients/:id/from-document", requireRole(CLINICAL_STAFF), async (request, response) => {
   try {
     const sourcePatient = await getPatientFull(request.params.id);
     if (!sourcePatient) return response.status(404).json({ error: "Paciente de origen no encontrado" });
@@ -692,7 +773,7 @@ app.patch("/patients/:id/from-document", async (request, response) => {
   }
 });
 
-app.get("/patients/:id/documents/:filename", async (request, response) => {
+app.get("/patients/:id/documents/:filename", requireRole(CLINICAL_STAFF), async (request, response) => {
   try {
     const patientId = Number(request.params.id);
     const filename = decodeURIComponent(request.params.filename);
@@ -732,7 +813,7 @@ app.get("/patients/:id/documents/:filename", async (request, response) => {
 });
 
 // V11: validación humana por documento.
-app.patch("/patients/:id/documents/:filename/validate", async (request, response) => {
+app.patch("/patients/:id/documents/:filename/validate", requireRole(VALIDATORS), async (request, response) => {
   try {
     const patientId = Number(request.params.id);
     const filename = decodeURIComponent(request.params.filename);
@@ -805,7 +886,7 @@ app.patch("/patients/:id/documents/:filename/validate", async (request, response
 });
 
 // V8: gestión real de documentos.
-app.delete("/patients/:id/documents/:filename", async (request, response) => {
+app.delete("/patients/:id/documents/:filename", requireRole(VALIDATORS), async (request, response) => {
   try {
     const patientId = Number(request.params.id);
     const filename = decodeURIComponent(request.params.filename);
@@ -851,7 +932,7 @@ app.delete("/patients/:id/documents/:filename", async (request, response) => {
   }
 });
 
-app.post("/patients/:id/documents/:filename/ask", async (request, response) => {
+app.post("/patients/:id/documents/:filename/ask", requireRole(VALIDATORS), async (request, response) => {
   try {
     const patientId = Number(request.params.id);
     const filename = decodeURIComponent(request.params.filename);
@@ -931,7 +1012,7 @@ Reglas estrictas:
   }
 });
 
-app.post("/patients/:id/documents/analyze", async (request, response) => {
+app.post("/patients/:id/documents/analyze", requireRole(CLINICAL_STAFF), async (request, response) => {
   try {
     const patient = await getPatientFull(request.params.id);
     if (!patient) return response.status(404).json({ error: "Paciente no encontrado" });
@@ -1133,9 +1214,7 @@ function isNumericOutOfRange(parameter, value, sexo) {
   return false;
 }
 
-app.use("/lab", requireAuth);
-
-app.get("/lab/panels", async (_request, response) => {
+app.get("/lab/panels", requireRole(CLINICAL_STAFF), async (_request, response) => {
   try {
     const { data: panelRows, error: panelsError } = await supabase
       .from("lab_panels")
@@ -1163,7 +1242,7 @@ app.get("/lab/panels", async (_request, response) => {
   }
 });
 
-app.post("/patients/:id/lab-orders", async (request, response) => {
+app.post("/patients/:id/lab-orders", requireRole(CLINICAL_STAFF), async (request, response) => {
   try {
     const patientId = Number(request.params.id);
     const panelIds = Array.isArray(request.body?.panelIds) ? request.body.panelIds : [];
@@ -1198,7 +1277,7 @@ app.post("/patients/:id/lab-orders", async (request, response) => {
   }
 });
 
-app.get("/patients/:id/lab-orders", async (request, response) => {
+app.get("/patients/:id/lab-orders", requireRole(CLINICAL_STAFF), async (request, response) => {
   try {
     const patientId = Number(request.params.id);
 
@@ -1230,7 +1309,7 @@ app.get("/patients/:id/lab-orders", async (request, response) => {
   }
 });
 
-app.get("/patients/:id/lab-orders/:orderId", async (request, response) => {
+app.get("/patients/:id/lab-orders/:orderId", requireRole(CLINICAL_STAFF), async (request, response) => {
   try {
     const patientId = Number(request.params.id);
     const orderId = request.params.orderId;
@@ -1285,7 +1364,7 @@ app.get("/patients/:id/lab-orders/:orderId", async (request, response) => {
   }
 });
 
-app.patch("/patients/:id/lab-orders/:orderId/sample-taken", async (request, response) => {
+app.patch("/patients/:id/lab-orders/:orderId/sample-taken", requireRole(CLINICAL_STAFF), async (request, response) => {
   try {
     const patientId = Number(request.params.id);
     const orderId = request.params.orderId;
@@ -1307,7 +1386,7 @@ app.patch("/patients/:id/lab-orders/:orderId/sample-taken", async (request, resp
   }
 });
 
-app.patch("/patients/:id/lab-orders/:orderId/results", async (request, response) => {
+app.patch("/patients/:id/lab-orders/:orderId/results", requireRole(CLINICAL_STAFF), async (request, response) => {
   try {
     const patientId = Number(request.params.id);
     const orderId = request.params.orderId;
@@ -1409,7 +1488,7 @@ app.patch("/patients/:id/lab-orders/:orderId/results", async (request, response)
   }
 });
 
-app.patch("/patients/:id/lab-orders/:orderId/validate", async (request, response) => {
+app.patch("/patients/:id/lab-orders/:orderId/validate", requireRole(VALIDATORS), async (request, response) => {
   try {
     const patientId = Number(request.params.id);
     const orderId = request.params.orderId;
@@ -1459,9 +1538,7 @@ function shapeImagingOrderRow(row) {
   };
 }
 
-app.use("/imaging", requireAuth);
-
-app.get("/imaging/types", async (_request, response) => {
+app.get("/imaging/types", requireRole(CLINICAL_STAFF), async (_request, response) => {
   try {
     const { data, error } = await supabase
       .from("imaging_types")
@@ -1479,7 +1556,7 @@ app.get("/imaging/types", async (_request, response) => {
   }
 });
 
-app.post("/patients/:id/imaging-orders", async (request, response) => {
+app.post("/patients/:id/imaging-orders", requireRole(CLINICAL_STAFF), async (request, response) => {
   try {
     const patientId = Number(request.params.id);
     const typeIds = Array.isArray(request.body?.typeIds)
@@ -1526,7 +1603,7 @@ app.post("/patients/:id/imaging-orders", async (request, response) => {
   }
 });
 
-app.get("/patients/:id/imaging-orders", async (request, response) => {
+app.get("/patients/:id/imaging-orders", requireRole(CLINICAL_STAFF), async (request, response) => {
   try {
     const patientId = Number(request.params.id);
 
@@ -1568,7 +1645,7 @@ app.get("/patients/:id/imaging-orders", async (request, response) => {
   }
 });
 
-app.get("/patients/:id/imaging-orders/:orderId", async (request, response) => {
+app.get("/patients/:id/imaging-orders/:orderId", requireRole(CLINICAL_STAFF), async (request, response) => {
   try {
     const patientId = Number(request.params.id);
     const orderId = request.params.orderId;
@@ -1617,6 +1694,7 @@ app.get("/patients/:id/imaging-orders/:orderId", async (request, response) => {
 
 app.patch(
   "/patients/:id/imaging-orders/:orderId/performed",
+  requireRole(CLINICAL_STAFF),
   async (request, response) => {
     try {
       const patientId = Number(request.params.id);
@@ -1777,6 +1855,7 @@ function shapeImagingFileRow(row) {
 
 app.post(
   "/patients/:id/imaging-orders/:orderId/image",
+  requireRole(CLINICAL_STAFF),
   async (request, response) => {
     try {
       const patientId = Number(request.params.id);
@@ -1867,6 +1946,7 @@ app.post(
 
 app.get(
   "/patients/:id/imaging-orders/:orderId/images",
+  requireRole(CLINICAL_STAFF),
   async (request, response) => {
     try {
       const patientId = Number(request.params.id);
@@ -1927,6 +2007,104 @@ app.get(
     }
   },
 );
+
+// ============================================
+// GESTIÓN DE EQUIPO (solo Administrador)
+// ============================================
+
+app.get("/staff", async (_request, response) => {
+  try {
+    const { data, error } = await supabase
+      .from("staff_profiles")
+      .select("*")
+      .order("created_at", { ascending: true });
+    if (error) throw error;
+
+    return response.json({ staff: (data ?? []).map(shapeStaffRow) });
+  } catch (error) {
+    console.error("Error al obtener el equipo:", error);
+    return response.status(500).json({ error: "No fue posible obtener el equipo." });
+  }
+});
+
+app.post("/staff/invite", async (request, response) => {
+  try {
+    const email = typeof request.body?.email === "string" ? request.body.email.trim() : "";
+    const fullName = typeof request.body?.fullName === "string" ? request.body.fullName.trim() : "";
+    const role = request.body?.role;
+
+    if (!email || !ALL_ROLES.includes(role)) {
+      return response.status(400).json({ error: "Debes indicar un email válido y un rol." });
+    }
+
+    const { data: inviteData, error: inviteError } = await supabase.auth.admin.inviteUserByEmail(email);
+    if (inviteError) throw inviteError;
+
+    const newUserId = inviteData?.user?.id;
+    if (!newUserId) {
+      return response.status(500).json({ error: "No fue posible crear el usuario invitado." });
+    }
+
+    const { data: profileRow, error: profileError } = await supabase
+      .from("staff_profiles")
+      .insert({ id: newUserId, email, full_name: fullName || null, role })
+      .select()
+      .single();
+    if (profileError) throw profileError;
+
+    return response.json({ staff: shapeStaffRow(profileRow) });
+  } catch (error) {
+    console.error("Error al invitar al equipo:", error);
+    return response.status(500).json({
+      error: "No fue posible invitar a esta persona.",
+      detalle: typeof error?.message === "string" ? error.message : "Error desconocido.",
+    });
+  }
+});
+
+app.patch("/staff/:id/role", async (request, response) => {
+  try {
+    const staffId = request.params.id;
+    const role = request.body?.role;
+
+    if (!ALL_ROLES.includes(role)) {
+      return response.status(400).json({ error: "Rol inválido." });
+    }
+
+    const { data: updatedRow, error } = await supabase
+      .from("staff_profiles")
+      .update({ role })
+      .eq("id", staffId)
+      .select()
+      .single();
+    if (error) throw error;
+    if (!updatedRow) return response.status(404).json({ error: "Persona no encontrada." });
+
+    return response.json({ staff: shapeStaffRow(updatedRow) });
+  } catch (error) {
+    console.error("Error al actualizar rol:", error);
+    return response.status(500).json({ error: "No fue posible actualizar el rol." });
+  }
+});
+
+app.delete("/staff/:id", async (request, response) => {
+  try {
+    const staffId = request.params.id;
+
+    if (staffId === request.user?.id) {
+      return response.status(400).json({ error: "No puedes quitarte a ti mismo del equipo." });
+    }
+
+    const { error } = await supabase.from("staff_profiles").delete().eq("id", staffId);
+    if (error) throw error;
+
+    return response.json({ ok: true });
+  } catch (error) {
+    console.error("Error al quitar del equipo:", error);
+    return response.status(500).json({ error: "No fue posible quitar a esta persona del equipo." });
+  }
+});
+
 app.post("/chat", async (request, response) => {
   try {
     const message = request.body?.message;

@@ -1791,7 +1791,7 @@ class _SavedDocumentDialogState extends State<_SavedDocumentDialog> {
               spacing: 8,
               runSpacing: 8,
               children: [
-                FilledButton.icon(
+                if (ApiService.role == 'administrador' || ApiService.role == 'medico') ...[FilledButton.icon(
                   onPressed: (_validating || status == 'aprobado')
                       ? null
                       : () => _setValidation('aprobado'),
@@ -1818,6 +1818,7 @@ class _SavedDocumentDialogState extends State<_SavedDocumentDialog> {
                         _validating ? null : () => _setValidation('pendiente'),
                     child: const Text('Volver a pendiente'),
                   ),
+                  ],
               ],
             ),
             if (_validationError != null) ...[

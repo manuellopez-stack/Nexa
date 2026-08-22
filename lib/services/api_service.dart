@@ -20,13 +20,19 @@ class ApiService {
   // automáticamente a todas las llamadas al backend que lo necesiten.
   static String? _accessToken;
   static Map<String, dynamic>? _currentUser;
+    static String? _role;
+  static String? _fullName;
 
   static bool get isLoggedIn => _accessToken != null;
   static Map<String, dynamic>? get currentUser => _currentUser;
+    static String? get role => _role;
+  static String? get fullName => _fullName;
 
-  static void _setSession(String accessToken, Map<String, dynamic> user) {
+  static void _setSession(String accessToken, Map<String, dynamic> user, {String? role, String? fullName}) {
     _accessToken = accessToken;
     _currentUser = user;
+        _role = role;
+    _fullName = fullName;
   }
 
   static void logout() {
@@ -96,13 +102,15 @@ class ApiService {
     final decodedBody = await _decodeMap(response);
     final accessToken = decodedBody['accessToken'];
     final user = decodedBody['user'];
+        final role = decodedBody['role'] as String?;
+    final fullName = decodedBody['fullName'] as String?;
 
     if (accessToken is! String || accessToken.isEmpty || user is! Map) {
       throw const ApiException('El backend no entregó una sesión válida.');
     }
 
-    _setSession(accessToken, Map<String, dynamic>.from(user));
-  }
+    _setSession(accessToken, Map<String, dynamic>.from(user), role: role, fullName: fullName);
+      }
 
   static Future<Map<String, dynamic>> getDashboardSummary() async {
     final http.Response response;

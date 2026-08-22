@@ -838,7 +838,9 @@ $documentsText
                       date: record?['date']?.toString(),
                       validationStatus: record?['validationStatus']?.toString(),
                       onTap: () => _showSavedDocument(document),
-                      onDelete: () => _deleteDocument(document),
+                      onDelete: (ApiService.role == 'administrador' || ApiService.role == 'medico')
+                          ? () => _deleteDocument(document)
+                          : null,
                       isDeleting: _deletingFilename == document,
                     );
                   }).toList(),

@@ -158,7 +158,6 @@ function shapePatientRowBasic(row) {
     rut: row.rut,
     doctor: row.doctor,
     phone: row.phone,
-    exam: row.exam,
     room: row.room,
     status: row.status,
   };

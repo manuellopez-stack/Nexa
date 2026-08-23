@@ -914,18 +914,20 @@ $documentsText
                   ),
                 ),
               ],
-              const SizedBox(height: 20),
-              const Divider(),
-              const SizedBox(height: 12),
-              LabOrdersSection(
-                patientId: patient['id'] is int ? patient['id'] as int : null,
-              ),
-              const SizedBox(height: 20),
-              const Divider(),
-              const SizedBox(height: 12),
-              ImagingOrdersSection(
-                patientId: patient['id'] is int ? patient['id'] as int : null,
-              ),
+              if (ApiService.role != 'recepcion') ...[
+                const SizedBox(height: 20),
+                const Divider(),
+                const SizedBox(height: 12),
+                LabOrdersSection(
+                  patientId: patient['id'] is int ? patient['id'] as int : null,
+                ),
+                const SizedBox(height: 20),
+                const Divider(),
+                const SizedBox(height: 12),
+                ImagingOrdersSection(
+                  patientId: patient['id'] is int ? patient['id'] as int : null,
+                ),
+              ],
               const SizedBox(height: 20),
               const Divider(),
               const SizedBox(height: 12),

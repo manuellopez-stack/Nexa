@@ -677,7 +677,9 @@ class _LabOrderDetailDialogState extends State<_LabOrderDetailDialog> {
                             : const Icon(Icons.save_outlined, size: 18),
                         label: const Text('Guardar resultados'),
                       ),
-                    if (status == 'completado') ...[
+                    if (status == 'completado' &&
+                        (ApiService.role == 'administrador' ||
+                            ApiService.role == 'medico')) ...[
                       const SizedBox(height: 10),
                       FilledButton.icon(
                         onPressed: _isValidating ? null : _validate,

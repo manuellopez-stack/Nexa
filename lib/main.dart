@@ -5,6 +5,7 @@ import 'widgets/dashboard_kpi_section.dart';
 import 'package:flutter/material.dart';
 
 import 'core/nexa_colors.dart';
+import 'screens/staff_management_page.dart';
 import 'services/api_service.dart';
 
 void main() {
@@ -370,6 +371,22 @@ class DashboardPage extends StatelessWidget {
         ),
         backgroundColor: NexaColors.surface,
         actions: [
+          if (ApiService.role == 'administrador')
+            IconButton(
+              tooltip: 'Gestión de equipo',
+              icon: const Icon(
+                Icons.groups_outlined,
+                color: NexaColors.textSecondary,
+              ),
+              onPressed: () {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (_) => const StaffManagementPage(),
+                  ),
+                );
+              },
+            ),
           if (ApiService.currentUser?['email'] != null)
             Padding(
               padding: const EdgeInsets.only(right: 8),

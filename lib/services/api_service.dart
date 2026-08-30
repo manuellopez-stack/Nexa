@@ -38,6 +38,8 @@ class ApiService {
   static void logout() {
     _accessToken = null;
     _currentUser = null;
+    _role = null;
+    _fullName = null;
   }
 
   static Map<String, String> _headers({Map<String, String>? extra}) {
@@ -102,15 +104,16 @@ class ApiService {
     final decodedBody = await _decodeMap(response);
     final accessToken = decodedBody['accessToken'];
     final user = decodedBody['user'];
-        final role = decodedBody['role'] as String?;
-    final fullName = decodedBody['fullName'] as String?;
 
     if (accessToken is! String || accessToken.isEmpty || user is! Map) {
       throw const ApiException('El backend no entregó una sesión válida.');
     }
 
+    final role = user['role'] as String?;
+    final fullName = user['fullName'] as String?;
+
     _setSession(accessToken, Map<String, dynamic>.from(user), role: role, fullName: fullName);
-      }
+  }
 
   static Future<Map<String, dynamic>> getDashboardSummary() async {
     final http.Response response;
@@ -797,5 +800,117 @@ class ApiService {
         .whereType<Map>()
         .map((file) => Map<String, dynamic>.from(file))
         .toList();
+  }
+
+  // ============================================
+  // GESTIÓN DE EQUIPO (solo Administrador)
+  // ============================================
+
+  static Future<List<Map<String, dynamic>>> getStaff() async {
+    final http.Response response;
+
+    try {
+      response = await http
+          .get(Uri.parse('$_baseUrl/staff'), headers: _headers())
+          .timeout(const Duration(seconds: 30));
+    } catch (_) {
+      throw const ApiException(
+        'No fue posible conectar con el backend de Nexa.',
+      );
+    }
+
+    final decodedBody = await _decodeMap(response);
+    final staff = decodedBody['staff'];
+
+    if (staff is! List) {
+      throw const ApiException('El backend no entregó la lista del equipo.');
+    }
+
+    return staff
+        .whereType<Map>()
+        .map((member) => Map<String, dynamic>.from(member))
+        .toList();
+  }
+
+  static Future<Map<String, dynamic>> inviteStaff({
+    required String email,
+    required String fullName,
+    required String role,
+  }) async {
+    final http.Response response;
+
+    try {
+      response = await http
+          .post(
+            Uri.parse('$_baseUrl/staff/invite'),
+            headers: _headers(extra: const {'Content-Type': 'application/json'}),
+            body: jsonEncode({
+              'email': email,
+              'fullName': fullName,
+              'role': role,
+            }),
+          )
+          .timeout(const Duration(seconds: 30));
+    } catch (_) {
+      throw const ApiException('No fue posible invitar a esta persona.');
+    }
+
+    final decodedBody = await _decodeMap(response);
+    final staff = decodedBody['staff'];
+
+    if (staff is! Map) {
+      throw const ApiException('El backend no entregó a la persona invitada.');
+    }
+
+    return Map<String, dynamic>.from(staff);
+  }
+
+  static Future<Map<String, dynamic>> updateStaffRole({
+    required String staffId,
+    required String role,
+  }) async {
+    final http.Response response;
+
+    try {
+      response = await http
+          .patch(
+            Uri.parse('$_baseUrl/staff/$staffId/role'),
+            headers: _headers(extra: const {'Content-Type': 'application/json'}),
+            body: jsonEncode({'role': role}),
+          )
+          .timeout(const Duration(seconds: 30));
+    } catch (_) {
+      throw const ApiException(
+        'No fue posible actualizar el rol de esta persona.',
+      );
+    }
+
+    final decodedBody = await _decodeMap(response);
+    final staff = decodedBody['staff'];
+
+    if (staff is! Map) {
+      throw const ApiException('El backend no entregó la persona actualizada.');
+    }
+
+    return Map<String, dynamic>.from(staff);
+  }
+
+  static Future<void> deleteStaff(String staffId) async {
+    final http.Response response;
+
+    try {
+      response = await http
+          .delete(
+            Uri.parse('$_baseUrl/staff/$staffId'),
+            headers: _headers(extra: const {'Accept': 'application/json'}),
+          )
+          .timeout(const Duration(seconds: 30));
+    } catch (_) {
+      throw const ApiException(
+        'No fue posible quitar a esta persona del equipo.',
+      );
+    }
+
+    await _decodeMap(response);
   }
 }

@@ -40,11 +40,14 @@ class ApiService {
   //   - canValidate  -> VALIDATORS  = administrador, medico
   //   - canUseAi      -> VALIDATORS  = administrador, medico (rutas /chat y /ask)
   //   - canAccessClinical -> CLINICAL_STAFF = administrador, medico, tecnico
+  //   - canManageBilling -> BILLING_STAFF = administrador, recepcion
   //   - isReception   -> recepcion (vista reducida, sin datos clínicos)
   static bool get canValidate => _role == 'administrador' || _role == 'medico';
   static bool get canUseAi => _role == 'administrador' || _role == 'medico';
   static bool get canAccessClinical =>
       _role == 'administrador' || _role == 'medico' || _role == 'tecnico';
+  static bool get canManageBilling =>
+      _role == 'administrador' || _role == 'recepcion';
   static bool get isReception => _role == 'recepcion';
 
   static void _setSession(String accessToken, Map<String, dynamic> user, {String? role, String? fullName}) {
@@ -931,5 +934,105 @@ class ApiService {
     }
 
     await _decodeMap(response);
+  }
+
+  // ============================================
+  // MÓDULO DE CONTABILIDAD Y FACTURACIÓN
+  // ============================================
+
+  static Future<List<Map<String, dynamic>>> getPatientBilling(
+    int patientId,
+  ) async {
+    final http.Response response;
+
+    try {
+      response = await http
+          .get(
+            Uri.parse('$_baseUrl/patients/$patientId/billing'),
+            headers: _headers(),
+          )
+          .timeout(const Duration(seconds: 30));
+    } catch (_) {
+      throw const ApiException(
+        'No fue posible conectar con el backend de Nexa.',
+      );
+    }
+
+    final decodedBody = await _decodeMap(response);
+    final billingOrders = decodedBody['billingOrders'];
+
+    if (billingOrders is! List) {
+      throw const ApiException(
+        'El backend no entregó la lista de cobros.',
+      );
+    }
+
+    return billingOrders
+        .whereType<Map>()
+        .map((order) => Map<String, dynamic>.from(order))
+        .toList();
+  }
+
+  static Future<Map<String, dynamic>> registerPayment({
+    required String billingOrderId,
+    required String method,
+    required num amount,
+    String? reference,
+  }) async {
+    final http.Response response;
+
+    try {
+      response = await http
+          .post(
+            Uri.parse('$_baseUrl/billing/orders/$billingOrderId/payments'),
+            headers: _headers(extra: const {'Content-Type': 'application/json'}),
+            body: jsonEncode({
+              'method': method,
+              'amount': amount,
+              if (reference != null && reference.trim().isNotEmpty)
+                'reference': reference.trim(),
+            }),
+          )
+          .timeout(const Duration(seconds: 30));
+    } catch (_) {
+      throw const ApiException('No fue posible registrar el pago.');
+    }
+
+    final decodedBody = await _decodeMap(response);
+    final order = decodedBody['order'];
+
+    if (order is! Map) {
+      throw const ApiException('El backend no entregó el cobro actualizado.');
+    }
+
+    return {...decodedBody, 'order': Map<String, dynamic>.from(order)};
+  }
+
+  static Future<Map<String, dynamic>> updateBonoFolio({
+    required String billingOrderId,
+    required String? bonoFolio,
+  }) async {
+    final http.Response response;
+
+    try {
+      response = await http
+          .patch(
+            Uri.parse('$_baseUrl/billing/orders/$billingOrderId'),
+            headers: _headers(extra: const {'Content-Type': 'application/json'}),
+            body: jsonEncode({'bonoFolio': bonoFolio}),
+          )
+          .timeout(const Duration(seconds: 30));
+    } catch (_) {
+      throw const ApiException('No fue posible actualizar el folio del bono.');
+    }
+
+    final decodedBody = await _decodeMap(response);
+    final order = decodedBody['order'];
+
+    if (order is! Map) {
+      throw const ApiException('El backend no entregó el cobro actualizado.');
+    }
+
+    return Map<String, dynamic>.from(order);
   }
 }

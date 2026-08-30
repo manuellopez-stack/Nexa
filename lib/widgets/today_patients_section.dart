@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 
 import '../core/nexa_colors.dart';
 import '../services/api_service.dart';
+import 'billing_section.dart';
 import 'imaging_section.dart';
 import 'lab_section.dart';
 
@@ -42,10 +43,15 @@ class _TodayPatientsSectionState extends State<TodayPatientsSection> {
       return;
     }
 
-    // El rol Recepción trabaja con una vista reducida y el backend le niega
-    // el acceso a la ficha clínica completa (/patients/:id -> CLINICAL_STAFF).
+    // El rol Recepción no tiene acceso a la ficha clínica completa
+    // (/patients/:id -> CLINICAL_STAFF), pero sí necesita ver y gestionar
+    // los cobros del paciente. Se le abre un diálogo reducido solo con la
+    // sección "Cobros", sin datos clínicos.
     if (ApiService.isReception) {
-      _showError('Tu rol no tiene acceso a la ficha clínica del paciente.');
+      await showDialog<void>(
+        context: context,
+        builder: (_) => _PatientBillingDialog(preview: preview),
+      );
       return;
     }
 
@@ -219,6 +225,54 @@ class _TodayPatientsSectionState extends State<TodayPatientsSection> {
           ),
         ],
       ),
+    );
+  }
+}
+
+/// Diálogo reducido para el rol Recepción: solo identificación del paciente
+/// y la sección "Cobros". No carga la ficha clínica.
+class _PatientBillingDialog extends StatelessWidget {
+  const _PatientBillingDialog({required this.preview});
+
+  final Map<String, dynamic> preview;
+
+  @override
+  Widget build(BuildContext context) {
+    final name = preview['name']?.toString() ?? 'Paciente';
+    final rut = preview['rut']?.toString() ?? '';
+    final patientId = preview['id'] is int ? preview['id'] as int : null;
+
+    return AlertDialog(
+      title: Row(
+        children: [
+          const Icon(Icons.receipt_long_outlined, color: NexaColors.primary),
+          const SizedBox(width: 10),
+          Expanded(child: Text('Cobros — $name', overflow: TextOverflow.ellipsis)),
+        ],
+      ),
+      content: SizedBox(
+        width: 560,
+        child: SingleChildScrollView(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              if (rut.isNotEmpty)
+                Text(
+                  'RUT: $rut',
+                  style: const TextStyle(color: NexaColors.textSecondary),
+                ),
+              const SizedBox(height: 14),
+              BillingSection(patientId: patientId),
+            ],
+          ),
+        ),
+      ),
+      actions: [
+        FilledButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Cerrar'),
+        ),
+      ],
     );
   }
 }
@@ -932,6 +986,16 @@ $documentsText
                 const Divider(),
                 const SizedBox(height: 12),
                 ImagingOrdersSection(
+                  patientId: patient['id'] is int ? patient['id'] as int : null,
+                ),
+              ],
+              // Sección "Cobros": solo administrador y recepción. Recepción la
+              // ve en un diálogo aparte (no llega hasta aquí).
+              if (ApiService.canManageBilling) ...[
+                const SizedBox(height: 20),
+                const Divider(),
+                const SizedBox(height: 12),
+                BillingSection(
                   patientId: patient['id'] is int ? patient['id'] as int : null,
                 ),
               ],

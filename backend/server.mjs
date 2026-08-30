@@ -61,6 +61,8 @@ const ALL_ROLES = ["administrador", "medico", "tecnico", "recepcion"];
 const CLINICAL_STAFF = ["administrador", "medico", "tecnico"];
 const VALIDATORS = ["administrador", "medico"];
 const ADMIN_ONLY = ["administrador"];
+// Quienes manejan dinero: registran pagos y editan datos de facturación.
+const BILLING_STAFF = ["administrador", "recepcion"];
 
 // V13: exige una sesión válida (token entregado por /auth/login).
 // Ahora además exige que la cuenta tenga un rol asignado en staff_profiles;
@@ -403,6 +405,7 @@ app.use("/dashboard", requireAuth);
 app.use("/chat", requireAuth, requireRole(VALIDATORS));
 app.use("/lab", requireAuth);
 app.use("/imaging", requireAuth);
+app.use("/billing", requireAuth);
 app.use("/staff", requireAuth, requireRole(ADMIN_ONLY));
 
 app.get("/patients/today", async (request, response) => {
@@ -1274,7 +1277,21 @@ app.post("/patients/:id/lab-orders", requireRole(CLINICAL_STAFF), async (request
     const { error: orderPanelsError } = await supabase.from("lab_order_panels").insert(orderPanelsRows);
     if (orderPanelsError) throw orderPanelsError;
 
-    return response.json({ order: shapeLabOrderRow(orderRow) });
+    // Cobro automático: se crea el billing_order sumando el precio de cada
+    // panel pedido. Si algo falla aquí no se cancela la orden clínica.
+    const billing = await createBillingOrderForSource({
+      patientId,
+      sourceType: "lab_order",
+      sourceOrderId: orderRow.id,
+      category: "laboratorio",
+      itemIds: panelIds,
+    });
+
+    return response.json({
+      order: shapeLabOrderRow(orderRow),
+      billing: billing.order ? shapeBillingOrderRow(billing.order) : null,
+      billingWarning: billing.warning,
+    });
   } catch (error) {
     console.error("Error al crear orden de laboratorio:", error);
     return response.status(500).json({ error: "No fue posible crear la orden de laboratorio." });
@@ -1598,7 +1615,21 @@ app.post("/patients/:id/imaging-orders", requireRole(CLINICAL_STAFF), async (req
       .insert(orderTypeRows);
     if (orderTypesError) throw orderTypesError;
 
-    return response.json({ order: shapeImagingOrderRow(orderRow) });
+    // Cobro automático: se crea el billing_order sumando el precio de cada
+    // estudio pedido. Si algo falla aquí no se cancela la orden clínica.
+    const billing = await createBillingOrderForSource({
+      patientId,
+      sourceType: "imaging_order",
+      sourceOrderId: orderRow.id,
+      category: "imagenologia",
+      itemIds: typeIds,
+    });
+
+    return response.json({
+      order: shapeImagingOrderRow(orderRow),
+      billing: billing.order ? shapeBillingOrderRow(billing.order) : null,
+      billingWarning: billing.warning,
+    });
   } catch (error) {
     console.error("Error al crear orden de imagenología:", error);
     return response
@@ -2008,6 +2039,322 @@ app.get(
       return response
         .status(500)
         .json({ error: "No fue posible obtener las imágenes de la orden." });
+    }
+  },
+);
+
+// ============================================
+// MÓDULO DE CONTABILIDAD Y FACTURACIÓN
+// ============================================
+
+const PAYMENT_METHODS = [
+  "efectivo",
+  "tarjeta",
+  "transferencia",
+  "bono_isapre",
+  "bono_fonasa",
+  "convenio",
+];
+
+function shapeBillingOrderRow(row) {
+  return {
+    id: row.id,
+    patientId: row.patient_id,
+    sourceType: row.source_type,
+    sourceOrderId: row.source_order_id,
+    totalAmount: row.total_amount === null ? null : Number(row.total_amount),
+    status: row.status,
+    bonoFolio: row.bono_folio,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function shapePaymentRow(row) {
+  return {
+    id: row.id,
+    billingOrderId: row.billing_order_id,
+    method: row.method,
+    amount: row.amount === null ? null : Number(row.amount),
+    reference: row.reference,
+    paidAt: row.paid_at,
+    registeredBy: row.registered_by,
+  };
+}
+
+// Suma el precio (billing_items.price) de cada examen pedido. `category` es
+// "laboratorio" o "imagenologia"; `itemIds` son ids de lab_panels o de
+// imaging_types. Devuelve el total y la lista de exámenes que no tienen
+// precio en el catálogo.
+async function sumBillingItems(category, itemIds) {
+  const ids = Array.isArray(itemIds) ? itemIds.filter(Boolean) : [];
+  if (ids.length === 0) return { total: 0, missing: [] };
+
+  const { data, error } = await supabase
+    .from("billing_items")
+    .select("item_id, price, active")
+    .eq("category", category)
+    .in("item_id", ids);
+  if (error) throw error;
+
+  const priceByItem = new Map(
+    (data ?? [])
+      .filter((row) => row.active !== false)
+      .map((row) => [row.item_id, Number(row.price) || 0]),
+  );
+
+  let total = 0;
+  const missing = [];
+  for (const id of ids) {
+    if (priceByItem.has(id)) total += priceByItem.get(id);
+    else missing.push(id);
+  }
+  return { total, missing };
+}
+
+// Crea el billing_order asociado a una orden de laboratorio o imagenología.
+// Nunca lanza: si falla, devuelve { order: null, warning } para que la orden
+// clínica no se caiga por un problema de facturación.
+async function createBillingOrderForSource({
+  patientId,
+  sourceType,
+  sourceOrderId,
+  category,
+  itemIds,
+}) {
+  try {
+    const { total, missing } = await sumBillingItems(category, itemIds);
+
+    const { data, error } = await supabase
+      .from("billing_orders")
+      .insert({
+        patient_id: patientId,
+        source_type: sourceType,
+        source_order_id: sourceOrderId,
+        total_amount: total,
+      })
+      .select()
+      .single();
+    if (error) throw error;
+
+    const warning =
+      missing.length > 0
+        ? `${missing.length} examen(es) sin precio en el catálogo: el total puede estar incompleto.`
+        : null;
+
+    return { order: data, warning };
+  } catch (error) {
+    console.error(
+      `No fue posible crear el cobro para ${sourceType} ${sourceOrderId}:`,
+      error,
+    );
+    return {
+      order: null,
+      warning: "No fue posible generar el cobro automático de esta orden.",
+    };
+  }
+}
+
+// Recalcula lo pagado sobre un cobro y, si cubre el total, lo marca "pagado".
+async function refreshBillingOrderStatus(billingOrderRow) {
+  const { data: paymentRows, error } = await supabase
+    .from("payments")
+    .select("amount")
+    .eq("billing_order_id", billingOrderRow.id);
+  if (error) throw error;
+
+  const totalPaid = (paymentRows ?? []).reduce(
+    (sum, row) => sum + (Number(row.amount) || 0),
+    0,
+  );
+
+  let order = billingOrderRow;
+  const total = Number(billingOrderRow.total_amount) || 0;
+  if (
+    billingOrderRow.status === "pendiente" &&
+    totalPaid > 0 &&
+    totalPaid >= total
+  ) {
+    const { data, error: updateError } = await supabase
+      .from("billing_orders")
+      .update({ status: "pagado", updated_at: new Date().toISOString() })
+      .eq("id", billingOrderRow.id)
+      .select()
+      .single();
+    if (updateError) throw updateError;
+    order = data;
+  }
+
+  return { order, totalPaid };
+}
+
+// Lista los cobros de un paciente con sus pagos. Accesible a cualquier rol
+// con sesión: el personal clínico ya ve la ficha y recepción necesita ver
+// los cobros para poder registrar pagos.
+app.get("/patients/:id/billing", async (request, response) => {
+  try {
+    const patientId = Number(request.params.id);
+    if (!Number.isInteger(patientId)) {
+      return response
+        .status(400)
+        .json({ error: "Identificador de paciente inválido." });
+    }
+
+    const { data: orderRows, error: ordersError } = await supabase
+      .from("billing_orders")
+      .select("*")
+      .eq("patient_id", patientId)
+      .order("created_at", { ascending: false });
+    if (ordersError) throw ordersError;
+
+    const orderIds = (orderRows ?? []).map((row) => row.id);
+
+    const { data: paymentRows, error: paymentsError } = orderIds.length
+      ? await supabase
+          .from("payments")
+          .select("*")
+          .in("billing_order_id", orderIds)
+          .order("paid_at", { ascending: true })
+      : { data: [], error: null };
+    if (paymentsError) throw paymentsError;
+
+    const billingOrders = (orderRows ?? []).map((order) => {
+      const payments = (paymentRows ?? []).filter(
+        (p) => p.billing_order_id === order.id,
+      );
+      const totalPaid = payments.reduce(
+        (sum, p) => sum + (Number(p.amount) || 0),
+        0,
+      );
+      const totalAmount = Number(order.total_amount) || 0;
+      return {
+        ...shapeBillingOrderRow(order),
+        payments: payments.map(shapePaymentRow),
+        totalPaid,
+        balance: Math.max(totalAmount - totalPaid, 0),
+      };
+    });
+
+    return response.json({ patientId, billingOrders });
+  } catch (error) {
+    console.error("Error al obtener los cobros del paciente:", error);
+    return response
+      .status(500)
+      .json({ error: "No fue posible obtener los cobros del paciente." });
+  }
+});
+
+// Registra un pago sobre un cobro. Solo administrador y recepción.
+app.post(
+  "/billing/orders/:id/payments",
+  requireRole(BILLING_STAFF),
+  async (request, response) => {
+    try {
+      const billingOrderId = request.params.id;
+      const method = request.body?.method;
+      const amount = Number(request.body?.amount);
+      const referenceRaw = request.body?.reference;
+      const reference =
+        typeof referenceRaw === "string" && referenceRaw.trim() !== ""
+          ? referenceRaw.trim()
+          : null;
+
+      if (!PAYMENT_METHODS.includes(method)) {
+        return response.status(400).json({
+          error: `Método de pago inválido. Debe ser uno de: ${PAYMENT_METHODS.join(", ")}.`,
+        });
+      }
+      if (!Number.isFinite(amount) || amount <= 0) {
+        return response
+          .status(400)
+          .json({ error: "El monto del pago debe ser un número mayor a cero." });
+      }
+
+      const { data: orderRow, error: orderError } = await supabase
+        .from("billing_orders")
+        .select("*")
+        .eq("id", billingOrderId)
+        .maybeSingle();
+      if (orderError) throw orderError;
+      if (!orderRow) {
+        return response.status(404).json({ error: "Cobro no encontrado." });
+      }
+
+      const { data: paymentRow, error: paymentError } = await supabase
+        .from("payments")
+        .insert({
+          billing_order_id: billingOrderId,
+          method,
+          amount,
+          reference,
+          registered_by: request.user?.id ?? null,
+        })
+        .select()
+        .single();
+      if (paymentError) throw paymentError;
+
+      const { order, totalPaid } = await refreshBillingOrderStatus(orderRow);
+
+      return response.json({
+        payment: shapePaymentRow(paymentRow),
+        order: shapeBillingOrderRow(order),
+        totalPaid,
+        balance: Math.max((Number(order.total_amount) || 0) - totalPaid, 0),
+      });
+    } catch (error) {
+      console.error("Error al registrar el pago:", error);
+      return response
+        .status(500)
+        .json({ error: "No fue posible registrar el pago." });
+    }
+  },
+);
+
+// Edita manualmente el folio del bono de un cobro (por ahora solo ese campo).
+// Solo administrador y recepción.
+app.patch(
+  "/billing/orders/:id",
+  requireRole(BILLING_STAFF),
+  async (request, response) => {
+    try {
+      const billingOrderId = request.params.id;
+      const body = request.body ?? {};
+      const hasField = "bonoFolio" in body || "bono_folio" in body;
+      if (!hasField) {
+        return response
+          .status(400)
+          .json({ error: "Debes enviar el campo bonoFolio." });
+      }
+
+      const raw = "bonoFolio" in body ? body.bonoFolio : body.bono_folio;
+      let bonoFolio;
+      if (raw === null) {
+        bonoFolio = null;
+      } else if (typeof raw === "string") {
+        bonoFolio = raw.trim() === "" ? null : raw.trim();
+      } else {
+        return response
+          .status(400)
+          .json({ error: "bonoFolio debe ser texto o null." });
+      }
+
+      const { data: orderRow, error } = await supabase
+        .from("billing_orders")
+        .update({ bono_folio: bonoFolio, updated_at: new Date().toISOString() })
+        .eq("id", billingOrderId)
+        .select()
+        .maybeSingle();
+      if (error) throw error;
+      if (!orderRow) {
+        return response.status(404).json({ error: "Cobro no encontrado." });
+      }
+
+      return response.json({ order: shapeBillingOrderRow(orderRow) });
+    } catch (error) {
+      console.error("Error al editar el folio del bono:", error);
+      return response
+        .status(500)
+        .json({ error: "No fue posible actualizar el folio del bono." });
     }
   },
 );

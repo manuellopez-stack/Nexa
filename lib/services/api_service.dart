@@ -14,7 +14,14 @@ class ApiException implements Exception {
 class ApiService {
   ApiService._();
 
-  static const String _baseUrl = 'https://nexa-backend-v2.onrender.com';
+  // Dirección del backend. Por defecto apunta al backend en producción
+  // (Render). Para probar contra un backend local se puede sobreescribir al
+  // ejecutar la app:
+  //   flutter run --dart-define=NEXA_BACKEND_URL=https://<url-del-backend>
+  static const String _baseUrl = String.fromEnvironment(
+    'NEXA_BACKEND_URL',
+    defaultValue: 'https://nexa-backend-v2.onrender.com',
+  );
 
   // Token de sesión guardado en memoria luego de iniciar sesión. Se agrega
   // automáticamente a todas las llamadas al backend que lo necesiten.
@@ -27,6 +34,18 @@ class ApiService {
   static Map<String, dynamic>? get currentUser => _currentUser;
     static String? get role => _role;
   static String? get fullName => _fullName;
+
+  // Permisos derivados del rol. Deben reflejar exactamente lo que permite el
+  // backend (middleware requireRole en server.mjs).
+  //   - canValidate  -> VALIDATORS  = administrador, medico
+  //   - canUseAi      -> VALIDATORS  = administrador, medico (rutas /chat y /ask)
+  //   - canAccessClinical -> CLINICAL_STAFF = administrador, medico, tecnico
+  //   - isReception   -> recepcion (vista reducida, sin datos clínicos)
+  static bool get canValidate => _role == 'administrador' || _role == 'medico';
+  static bool get canUseAi => _role == 'administrador' || _role == 'medico';
+  static bool get canAccessClinical =>
+      _role == 'administrador' || _role == 'medico' || _role == 'tecnico';
+  static bool get isReception => _role == 'recepcion';
 
   static void _setSession(String accessToken, Map<String, dynamic> user, {String? role, String? fullName}) {
     _accessToken = accessToken;

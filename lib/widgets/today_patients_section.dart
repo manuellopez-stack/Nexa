@@ -42,6 +42,13 @@ class _TodayPatientsSectionState extends State<TodayPatientsSection> {
       return;
     }
 
+    // El rol Recepción trabaja con una vista reducida y el backend le niega
+    // el acceso a la ficha clínica completa (/patients/:id -> CLINICAL_STAFF).
+    if (ApiService.isReception) {
+      _showError('Tu rol no tiene acceso a la ficha clínica del paciente.');
+      return;
+    }
+
     showDialog<void>(
       context: context,
       barrierDismissible: false,
@@ -1850,6 +1857,9 @@ class _SavedDocumentDialogState extends State<_SavedDocumentDialog> {
             const Text('Equipo / técnica', style: TextStyle(fontWeight: FontWeight.w800)),
             const SizedBox(height: 8),
             SelectableText(_value('equipment')),
+            // El backend solo permite consultar la IA sobre un documento
+            // (/documents/:filename/ask) a administrador y medico.
+            if (ApiService.canUseAi) ...[
             const SizedBox(height: 24),
             const Divider(),
             const SizedBox(height: 12),
@@ -1896,6 +1906,7 @@ class _SavedDocumentDialogState extends State<_SavedDocumentDialog> {
                 ),
                 child: SelectableText(_answer!, style: const TextStyle(height: 1.45)),
               ),
+            ],
             ],
           ]),
         ),

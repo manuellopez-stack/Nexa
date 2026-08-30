@@ -414,8 +414,12 @@ app.get("/patients/today", async (request, response) => {
 
     if (error) throw error;
 
+    // Por seguridad, solo el personal clínico (administrador, medico, tecnico)
+    // recibe la ficha completa. Cualquier otro rol (recepcion o un rol no
+    // reconocido) recibe la versión reducida, sin datos clínicos.
+    const canSeeClinicalData = CLINICAL_STAFF.includes(request.staffRole);
     const patients = (data ?? []).map(
-      request.staffRole === "recepcion" ? shapePatientRowBasic : shapePatientRow,
+      canSeeClinicalData ? shapePatientRow : shapePatientRowBasic,
     );
 
     return response.json({
@@ -430,7 +434,8 @@ app.get("/patients/today", async (request, response) => {
 });
 
 // Métricas reales del dashboard, calculadas desde la base de datos.
-app.get("/dashboard/summary", async (_request, response) => {
+// Solo personal clínico: el rol recepcion no ve indicadores agregados.
+app.get("/dashboard/summary", requireRole(CLINICAL_STAFF), async (_request, response) => {
   try {
     const KNOWN_ROOMS = ["Sala 1", "Sala 2", "Sala 3"];
 

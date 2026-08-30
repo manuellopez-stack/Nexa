@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../core/nexa_colors.dart';
 import '../screens/chat_page.dart';
+import '../services/api_service.dart';
 
 class NexaAiSection extends StatelessWidget {
   const NexaAiSection({super.key});
@@ -20,6 +21,12 @@ class NexaAiSection extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // El backend solo permite usar la IA (/chat) a administrador y medico.
+    // Para el resto de roles no mostramos esta sección.
+    if (!ApiService.canUseAi) {
+      return const SizedBox.shrink();
+    }
+
     return Container(
       padding: const EdgeInsets.all(24),
       decoration: BoxDecoration(

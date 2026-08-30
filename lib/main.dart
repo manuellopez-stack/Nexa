@@ -420,24 +420,32 @@ class DashboardPage extends StatelessWidget {
   child: Center(
     child: ConstrainedBox(
       constraints: const BoxConstraints(maxWidth: 1250),
-      child: const Column(
+      child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(
-            'Resumen ejecutivo de la operación de hoy',
-            style: TextStyle(
-              fontSize: 15,
-              color: NexaColors.textSecondary,
+          // Los indicadores agregados de la operación (contadores de pacientes,
+          // documentos y salas) no se muestran al rol recepcion: solo al
+          // personal clínico (administrador, medico, tecnico).
+          if (ApiService.canAccessClinical) ...[
+            const Text(
+              'Resumen ejecutivo de la operación de hoy',
+              style: TextStyle(
+                fontSize: 15,
+                color: NexaColors.textSecondary,
+              ),
             ),
-          ),
-          SizedBox(height: 24),
-          DashboardKpiSection(),
-          SizedBox(height: 28),
-OperationalStatusSection(),
-SizedBox(height: 28),
-NexaAiSection(),
-SizedBox(height: 28),
-TodayPatientsSection(),
+            const SizedBox(height: 24),
+            const DashboardKpiSection(),
+            const SizedBox(height: 28),
+            const OperationalStatusSection(),
+            const SizedBox(height: 28),
+          ],
+          // La IA (/chat) solo está habilitada para administrador y medico.
+          if (ApiService.canUseAi) ...[
+            const NexaAiSection(),
+            const SizedBox(height: 28),
+          ],
+          const TodayPatientsSection(),
         ],
       ),
     ),

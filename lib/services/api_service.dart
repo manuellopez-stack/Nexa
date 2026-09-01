@@ -64,6 +64,19 @@ class ApiService {
     _fullName = null;
   }
 
+  /// True si `url` apunta al propio backend de Nexa (mismo esquema, host y
+  /// puerto). Se usa para decidir qué imágenes de un correo son seguras de
+  /// cargar por red: solo las que ya pasaron por el proxy del backend.
+  static bool esUrlDeBackend(String? url) {
+    if (url == null || url.isEmpty) return false;
+    final base = Uri.tryParse(_baseUrl);
+    final destino = Uri.tryParse(url);
+    if (base == null || destino == null || !destino.hasScheme) return false;
+    return destino.scheme == base.scheme &&
+        destino.host == base.host &&
+        destino.port == base.port;
+  }
+
   static Map<String, String> _headers({Map<String, String>? extra}) {
     return {
       if (_accessToken != null) 'Authorization': 'Bearer $_accessToken',

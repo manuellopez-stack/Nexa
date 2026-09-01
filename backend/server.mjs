@@ -6,6 +6,13 @@ import { createClient } from "@supabase/supabase-js";
 import dicomParser from "dicom-parser";
 import sharp from "sharp";
 import { google } from "googleapis";
+import {
+  crearRegistroImagenesProxy,
+  descargarImagenSegura,
+  reescribirImagenesRemotas,
+  MAX_BYTES_DEFECTO,
+  TIMEOUT_MS_DEFECTO,
+} from "./gmailImageProxy.mjs";
 dotenv.config({ quiet: true });
 
 const app = express();
@@ -2537,6 +2544,64 @@ function getGmailClient() {
   return google.gmail({ version: "v1", auth: oauth2Client });
 }
 
+// Registro en memoria: referencia opaca -> URL de imagen de un correo real.
+// Es lo que evita que el proxy de imágenes sea un proxy abierto (SSRF).
+const registroImagenesProxy = crearRegistroImagenesProxy();
+
+// URL pública base del endpoint de proxy de imágenes. Debe apuntar al host
+// por el que el NAVEGADOR llega al backend (no al interno). Orden:
+//   1. PUBLIC_BACKEND_URL (recomendado fijarlo en backend/.env)
+//   2. RENDER_EXTERNAL_URL (lo pone Render automáticamente)
+//   3. X-Forwarded-Host / -Proto (proxies como GitHub Codespaces, que
+//      reescriben el Host a "localhost:3000" pero conservan el real acá)
+//   4. Host + esquema deducido
+function urlBaseProxyImagenes(request) {
+  const base = (process.env.PUBLIC_BACKEND_URL || process.env.RENDER_EXTERNAL_URL || "")
+    .trim()
+    .replace(/\/+$/, "");
+  if (base) return `${base}/gmail/image-proxy`;
+
+  const primero = (valor) => (valor || "").split(",")[0].trim();
+  const host = primero(request.headers["x-forwarded-host"]) || request.get("host") || "localhost";
+  const esLocal = /^(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/i.test(host);
+  const proto =
+    primero(request.headers["x-forwarded-proto"]) || (esLocal ? "http" : "https");
+  return `${proto}://${host}/gmail/image-proxy`;
+}
+
+// Proxy de imágenes de correos. NO va bajo /notifications (el cargador de
+// imágenes del navegador no puede enviar el token de sesión): la seguridad
+// viene de que solo acepta referencias opacas generadas por el backend a
+// partir de correos reales, más el filtro anti-SSRF de gmailImageProxy.mjs.
+app.get("/gmail/image-proxy", async (request, response) => {
+  response.set(
+    "Access-Control-Allow-Origin",
+    process.env.GMAIL_IMAGE_PROXY_ORIGIN || "*",
+  );
+  response.set("Vary", "Origin");
+  response.set("Cross-Origin-Resource-Policy", "cross-origin");
+
+  const registro = registroImagenesProxy.resolver(request.query.ref);
+  if (!registro) {
+    // Referencia inválida/expirada: 404 sin cuerpo. El frontend cae al
+    // ícono de imagen (mismo comportamiento que cuando no carga).
+    return response.status(404).end();
+  }
+
+  const imagen = await descargarImagenSegura(registro.url, {
+    timeoutMs: TIMEOUT_MS_DEFECTO,
+    maxBytes: MAX_BYTES_DEFECTO,
+  });
+  if (!imagen) {
+    return response.status(502).end();
+  }
+
+  response.set("Content-Type", imagen.contentType);
+  response.set("Content-Length", String(imagen.buffer.length));
+  response.set("Cache-Control", "private, max-age=3600");
+  return response.status(200).end(imagen.buffer);
+});
+
 app.get(
   "/notifications/gmail",
   requireRole(ADMIN_ONLY),
@@ -2674,6 +2739,14 @@ app.get(
 
       const { textoPlano, textoHtml } = extraerCuerpos(message.payload);
 
+      // Reescribe las imágenes remotas del cuerpo para que pasen por nuestro
+      // proxy (así se ven igual que en Gmail en vez de bloquearse por CORS).
+      const cuerpoHtml = reescribirImagenesRemotas(textoHtml, {
+        registrar: (url, msgId) => registroImagenesProxy.registrar(url, msgId),
+        messageId: message.id,
+        urlBaseProxy: urlBaseProxyImagenes(request),
+      });
+
       return response.json({
         id: message.id,
         asunto: getHeader("Subject") || "(sin asunto)",
@@ -2682,7 +2755,7 @@ app.get(
           ? new Date(Number(message.internalDate)).toISOString()
           : getHeader("Date"),
         cuerpoTexto: textoPlano,
-        cuerpoHtml: textoHtml,
+        cuerpoHtml,
       });
     } catch (error) {
       console.error("Error al consultar el correo de Gmail:", error);

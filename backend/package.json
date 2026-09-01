@@ -16,6 +16,7 @@
     "dicom-parser": "^1.8.21",
     "dotenv": "^17.4.2",
     "express": "^5.1.0",
+    "googleapis": "^176.0.0",
     "openai": "^6.49.0",
     "sharp": "^0.35.3"
   }

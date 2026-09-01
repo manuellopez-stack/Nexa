@@ -2,6 +2,7 @@ import 'widgets/today_patients_section.dart';
 import 'widgets/nexa_ai_section.dart';
 import 'widgets/operational_status_section.dart';
 import 'widgets/dashboard_kpi_section.dart';
+import 'widgets/gmail_notifications_button.dart';
 import 'package:flutter/material.dart';
 
 import 'core/nexa_colors.dart';
@@ -371,6 +372,8 @@ class DashboardPage extends StatelessWidget {
         ),
         backgroundColor: NexaColors.surface,
         actions: [
+          if (ApiService.role == 'administrador')
+            const GmailNotificationsButton(),
           if (ApiService.role == 'administrador')
             IconButton(
               tooltip: 'Gestión de equipo',

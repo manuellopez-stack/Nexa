@@ -1035,4 +1035,37 @@ class ApiService {
 
     return Map<String, dynamic>.from(order);
   }
+
+  // Correos no leídos de Gmail (solo lectura). Solo el rol administrador
+  // tiene permiso en el backend para consultar esta ruta.
+  static Future<List<Map<String, dynamic>>> getGmailUnread() async {
+    final http.Response response;
+
+    try {
+      response = await http
+          .get(
+            Uri.parse('$_baseUrl/notifications/gmail'),
+            headers: _headers(),
+          )
+          .timeout(const Duration(seconds: 30));
+    } catch (_) {
+      throw const ApiException(
+        'No fue posible conectar con el backend de Nexa.',
+      );
+    }
+
+    final decodedBody = await _decodeMap(response);
+    final correos = decodedBody['correos'];
+
+    if (correos is! List) {
+      throw const ApiException(
+        'El backend no entregó la lista de correos.',
+      );
+    }
+
+    return correos
+        .whereType<Map>()
+        .map((correo) => Map<String, dynamic>.from(correo))
+        .toList();
+  }
 }

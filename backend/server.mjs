@@ -5,6 +5,7 @@ import OpenAI from "openai";
 import { createClient } from "@supabase/supabase-js";
 import dicomParser from "dicom-parser";
 import sharp from "sharp";
+import { google } from "googleapis";
 dotenv.config({ quiet: true });
 
 const app = express();
@@ -407,6 +408,7 @@ app.use("/lab", requireAuth);
 app.use("/imaging", requireAuth);
 app.use("/billing", requireAuth);
 app.use("/staff", requireAuth, requireRole(ADMIN_ONLY));
+app.use("/notifications", requireAuth);
 
 app.get("/patients/today", async (request, response) => {
   try {
@@ -2512,6 +2514,95 @@ Reglas:
   }
 });
 
+// ============================================
+// NOTIFICACIONES: GMAIL (solo lectura)
+// ============================================
+// Consulta la bandeja de entrada usando credenciales OAuth de Google
+// (scope gmail.readonly) guardadas en backend/.env. Nunca modifica correos.
+// Solo el rol administrador puede acceder a esta información.
+
+const gmailConfigured =
+  Boolean(process.env.GMAIL_CLIENT_ID) &&
+  Boolean(process.env.GMAIL_CLIENT_SECRET) &&
+  Boolean(process.env.GMAIL_REFRESH_TOKEN);
+
+function getGmailClient() {
+  const oauth2Client = new google.auth.OAuth2(
+    process.env.GMAIL_CLIENT_ID,
+    process.env.GMAIL_CLIENT_SECRET,
+  );
+  oauth2Client.setCredentials({
+    refresh_token: process.env.GMAIL_REFRESH_TOKEN,
+  });
+  return google.gmail({ version: "v1", auth: oauth2Client });
+}
+
+app.get(
+  "/notifications/gmail",
+  requireRole(ADMIN_ONLY),
+  async (_request, response) => {
+    if (!gmailConfigured) {
+      return response.status(503).json({
+        error:
+          "La integración con Gmail no está configurada en el servidor (faltan credenciales en backend/.env).",
+      });
+    }
+
+    try {
+      const gmail = getGmailClient();
+
+      // Máximo los 20 correos no leídos más recientes de la bandeja de entrada.
+      const listResult = await gmail.users.messages.list({
+        userId: "me",
+        q: "is:unread in:inbox",
+        maxResults: 20,
+      });
+
+      const messages = listResult.data.messages ?? [];
+
+      const detailed = await Promise.all(
+        messages.map((message) =>
+          gmail.users.messages.get({
+            userId: "me",
+            id: message.id,
+            format: "metadata",
+            metadataHeaders: ["Subject", "From", "Date"],
+          }),
+        ),
+      );
+
+      const correos = detailed.map((result) => {
+        const message = result.data;
+        const headers = message.payload?.headers ?? [];
+        const getHeader = (name) =>
+          headers.find(
+            (header) => (header.name ?? "").toLowerCase() === name.toLowerCase(),
+          )?.value ?? "";
+
+        return {
+          id: message.id,
+          asunto: getHeader("Subject") || "(sin asunto)",
+          remitente: getHeader("From"),
+          fecha: message.internalDate
+            ? new Date(Number(message.internalDate)).toISOString()
+            : getHeader("Date"),
+          // El snippet de Gmail ya es un extracto corto del cuerpo del correo.
+          extracto: (message.snippet ?? "").trim(),
+        };
+      });
+
+      return response.json({ total: correos.length, correos });
+    } catch (error) {
+      console.error("Error al consultar Gmail:", error);
+      return response.status(502).json({
+        error: "No fue posible consultar la bandeja de entrada de Gmail.",
+        detalle:
+          typeof error?.message === "string" ? error.message : "Error desconocido.",
+      });
+    }
+  },
+);
+
 app.listen(port, () => {
   console.log("");
   console.log("========================================");
@@ -2520,6 +2611,7 @@ app.listen(port, () => {
   console.log(`Estado:        http://localhost:${port}/health`);
   console.log(`Modelo:        ${model}`);
   console.log(`Base de datos: Supabase (${process.env.SUPABASE_URL})`);
+  console.log(`Gmail:         ${gmailConfigured ? "configurado (solo lectura)" : "no configurado"}`);
   console.log("========================================");
   console.log("");
 

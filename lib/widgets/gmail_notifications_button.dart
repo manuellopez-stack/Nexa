@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_html/flutter_html.dart';
 
 import '../core/nexa_colors.dart';
 import '../services/api_service.dart';
@@ -442,32 +443,12 @@ class _GmailMessageDetailDialogState extends State<_GmailMessageDetailDialog> {
         '${twoDigits(local.hour)}:${twoDigits(local.minute)}';
   }
 
-  /// Convierte el HTML del correo a texto plano legible cuando no hay una
-  /// versión en texto disponible (la app no incluye un renderizador HTML).
-  String _cuerpoLegible() {
-    final cuerpoTexto = _correo?['cuerpoTexto']?.toString().trim() ?? '';
-    if (cuerpoTexto.isNotEmpty) return cuerpoTexto;
+  String get _cuerpoHtml => _correo?['cuerpoHtml']?.toString().trim() ?? '';
 
-    final cuerpoHtml = _correo?['cuerpoHtml']?.toString() ?? '';
-    if (cuerpoHtml.isEmpty) {
-      return widget.correoResumen['extracto']?.toString().trim() ?? '';
-    }
-
-    final sinEtiquetas = cuerpoHtml
-        .replaceAll(RegExp(r'<(br|/p|/div)[^>]*>', caseSensitive: false), '\n')
-        .replaceAll(RegExp(r'<[^>]+>'), '')
-        .replaceAll('&nbsp;', ' ')
-        .replaceAll('&amp;', '&')
-        .replaceAll('&lt;', '<')
-        .replaceAll('&gt;', '>')
-        .replaceAll('&quot;', '"')
-        .replaceAll('&#39;', "'");
-
-    return sinEtiquetas
-        .split('\n')
-        .map((line) => line.trim())
-        .where((line) => line.isNotEmpty)
-        .join('\n\n');
+  String get _cuerpoTexto {
+    final texto = _correo?['cuerpoTexto']?.toString().trim() ?? '';
+    if (texto.isNotEmpty) return texto;
+    return widget.correoResumen['extracto']?.toString().trim() ?? '';
   }
 
   @override
@@ -576,8 +557,32 @@ class _GmailMessageDetailDialogState extends State<_GmailMessageDetailDialog> {
       );
     }
 
-    final cuerpo = _cuerpoLegible();
-    if (cuerpo.isEmpty) {
+    final cuerpoHtml = _cuerpoHtml;
+    if (cuerpoHtml.isNotEmpty) {
+      return Html(
+        data: cuerpoHtml,
+        style: {
+          'body': Style(
+            margin: Margins.zero,
+            padding: HtmlPaddings.zero,
+            fontSize: FontSize(13.5),
+            color: NexaColors.textPrimary,
+            lineHeight: LineHeight.number(1.5),
+          ),
+          'a': Style(
+            color: NexaColors.primary,
+            textDecoration: TextDecoration.underline,
+          ),
+          'img': Style(
+            width: Width(100, Unit.percent),
+            height: Height.auto(),
+          ),
+        },
+      );
+    }
+
+    final cuerpoTexto = _cuerpoTexto;
+    if (cuerpoTexto.isEmpty) {
       return const Text(
         'Este correo no tiene contenido para mostrar.',
         style: TextStyle(color: NexaColors.textSecondary),
@@ -585,7 +590,7 @@ class _GmailMessageDetailDialogState extends State<_GmailMessageDetailDialog> {
     }
 
     return SelectableText(
-      cuerpo,
+      cuerpoTexto,
       style: const TextStyle(
         fontSize: 13.5,
         color: NexaColors.textPrimary,

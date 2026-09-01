@@ -34,6 +34,13 @@ dependencies:
   cupertino_icons: ^1.0.8
   http: ^1.2.1
   file_picker: 11.0.2
+  flutter_html: ^3.0.0
+dependency_overrides:
+  # flutter_html 3.0.0 llama a una función interna de package:html que fue
+  # removida en 0.15.7 (https://pub.dev/packages/html/versions), lo que
+  # rompe la compilación. Se fija a la última versión compatible.
+  html: 0.15.6
+
 dev_dependencies:
   flutter_test:
     sdk: flutter

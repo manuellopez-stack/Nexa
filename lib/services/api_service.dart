@@ -1068,4 +1068,23 @@ class ApiService {
         .map((correo) => Map<String, dynamic>.from(correo))
         .toList();
   }
+
+  static Future<Map<String, dynamic>> getGmailMessage(String messageId) async {
+    final http.Response response;
+
+    try {
+      response = await http
+          .get(
+            Uri.parse('$_baseUrl/notifications/gmail/$messageId'),
+            headers: _headers(),
+          )
+          .timeout(const Duration(seconds: 30));
+    } catch (_) {
+      throw const ApiException(
+        'No fue posible conectar con el backend de Nexa.',
+      );
+    }
+
+    return _decodeMap(response);
+  }
 }

@@ -2603,6 +2603,102 @@ app.get(
   },
 );
 
+// Recorre recursivamente las partes MIME de un mensaje buscando el cuerpo
+// en texto plano y en HTML (los correos multipart anidan las partes).
+function extraerCuerpos(payload) {
+  let textoPlano = "";
+  let textoHtml = "";
+
+  function decodificar(data) {
+    if (!data) return "";
+    return Buffer.from(data, "base64url").toString("utf-8");
+  }
+
+  function recorrer(part) {
+    if (!part) return;
+    const mimeType = part.mimeType ?? "";
+
+    if (mimeType === "text/plain" && part.body?.data && !textoPlano) {
+      textoPlano = decodificar(part.body.data);
+    } else if (mimeType === "text/html" && part.body?.data && !textoHtml) {
+      textoHtml = decodificar(part.body.data);
+    }
+
+    if (Array.isArray(part.parts)) {
+      part.parts.forEach(recorrer);
+    }
+  }
+
+  recorrer(payload);
+
+  // Mensajes simples (no multipart) traen el cuerpo directo en el payload raíz.
+  if (!textoPlano && !textoHtml && payload?.body?.data) {
+    const contenido = decodificar(payload.body.data);
+    if ((payload.mimeType ?? "").includes("html")) {
+      textoHtml = contenido;
+    } else {
+      textoPlano = contenido;
+    }
+  }
+
+  return { textoPlano, textoHtml };
+}
+
+app.get(
+  "/notifications/gmail/:messageId",
+  requireRole(ADMIN_ONLY),
+  async (request, response) => {
+    if (!gmailConfigured) {
+      return response.status(503).json({
+        error:
+          "La integración con Gmail no está configurada en el servidor (faltan credenciales en backend/.env).",
+      });
+    }
+
+    try {
+      const gmail = getGmailClient();
+      const { messageId } = request.params;
+
+      const result = await gmail.users.messages.get({
+        userId: "me",
+        id: messageId,
+        format: "full",
+      });
+
+      const message = result.data;
+      const headers = message.payload?.headers ?? [];
+      const getHeader = (name) =>
+        headers.find(
+          (header) => (header.name ?? "").toLowerCase() === name.toLowerCase(),
+        )?.value ?? "";
+
+      const { textoPlano, textoHtml } = extraerCuerpos(message.payload);
+
+      return response.json({
+        id: message.id,
+        asunto: getHeader("Subject") || "(sin asunto)",
+        remitente: getHeader("From"),
+        fecha: message.internalDate
+          ? new Date(Number(message.internalDate)).toISOString()
+          : getHeader("Date"),
+        cuerpoTexto: textoPlano,
+        cuerpoHtml: textoHtml,
+      });
+    } catch (error) {
+      console.error("Error al consultar el correo de Gmail:", error);
+      const status = error?.code === 404 ? 404 : 502;
+      return response.status(status).json({
+        error:
+          status === 404
+            ? "El correo solicitado no existe o ya no está disponible."
+            : "No fue posible consultar el correo de Gmail.",
+        detalle:
+          typeof error?.message === "string" ? error.message : "Error desconocido.",
+      });
+    }
+  },
+);
+
 app.listen(port, () => {
   console.log("");
   console.log("========================================");

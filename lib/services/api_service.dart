@@ -41,12 +41,15 @@ class ApiService {
   //   - canUseAi      -> VALIDATORS  = administrador, medico (rutas /chat y /ask)
   //   - canAccessClinical -> CLINICAL_STAFF = administrador, medico, tecnico
   //   - canManageBilling -> BILLING_STAFF = administrador, recepcion
+  //   - canAccessMail -> MAIL_STAFF = administrador, recepcion (rutas /mail y /gmail/reply)
   //   - isReception   -> recepcion (vista reducida, sin datos clínicos)
   static bool get canValidate => _role == 'administrador' || _role == 'medico';
   static bool get canUseAi => _role == 'administrador' || _role == 'medico';
   static bool get canAccessClinical =>
       _role == 'administrador' || _role == 'medico' || _role == 'tecnico';
   static bool get canManageBilling =>
+      _role == 'administrador' || _role == 'recepcion';
+  static bool get canAccessMail =>
       _role == 'administrador' || _role == 'recepcion';
   static bool get isReception => _role == 'recepcion';
 
@@ -1092,6 +1095,85 @@ class ApiService {
             headers: _headers(),
           )
           .timeout(const Duration(seconds: 30));
+    } catch (_) {
+      throw const ApiException(
+        'No fue posible conectar con el backend de Nexa.',
+      );
+    }
+
+    return _decodeMap(response);
+  }
+
+  /// Lista de correos de la sección "Correo" (no solo los no leídos, a
+  /// diferencia de [getGmailUnread]). `q` usa la sintaxis de búsqueda de
+  /// Gmail (por ejemplo `in:inbox`, `is:unread`, `from:alguien@dominio.cl`).
+  static Future<Map<String, dynamic>> getMailMessages({
+    String q = 'in:inbox',
+    String? pageToken,
+  }) async {
+    final uri = Uri.parse('$_baseUrl/mail/messages').replace(
+      queryParameters: {
+        'q': q,
+        if (pageToken != null && pageToken.isNotEmpty) 'pageToken': pageToken,
+      },
+    );
+
+    final http.Response response;
+
+    try {
+      response = await http
+          .get(uri, headers: _headers())
+          .timeout(const Duration(seconds: 30));
+    } catch (_) {
+      throw const ApiException(
+        'No fue posible conectar con el backend de Nexa.',
+      );
+    }
+
+    return _decodeMap(response);
+  }
+
+  static Future<Map<String, dynamic>> getMailMessage(String messageId) async {
+    final http.Response response;
+
+    try {
+      response = await http
+          .get(
+            Uri.parse('$_baseUrl/mail/messages/$messageId'),
+            headers: _headers(),
+          )
+          .timeout(const Duration(seconds: 30));
+    } catch (_) {
+      throw const ApiException(
+        'No fue posible conectar con el backend de Nexa.',
+      );
+    }
+
+    return _decodeMap(response);
+  }
+
+  /// Responde un correo dentro del mismo hilo (In-Reply-To/References,
+  /// asunto "Re: ..."). `adjuntos` es una lista de mapas con `nombre`,
+  /// `mimeType` y `base64Data`.
+  static Future<Map<String, dynamic>> sendMailReply({
+    required String messageId,
+    required String cuerpoTexto,
+    List<Map<String, dynamic>> adjuntos = const [],
+  }) async {
+    final http.Response response;
+
+    try {
+      response = await http
+          .post(
+            Uri.parse('$_baseUrl/gmail/reply'),
+            headers: _headers(extra: const {'Content-Type': 'application/json'}),
+            body: jsonEncode({
+              'messageId': messageId,
+              'cuerpoTexto': cuerpoTexto,
+              'adjuntos': adjuntos,
+            }),
+          )
+          .timeout(const Duration(seconds: 60));
     } catch (_) {
       throw const ApiException(
         'No fue posible conectar con el backend de Nexa.',

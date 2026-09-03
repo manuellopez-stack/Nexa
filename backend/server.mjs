@@ -6,6 +6,7 @@ import { createClient } from "@supabase/supabase-js";
 import dicomParser from "dicom-parser";
 import sharp from "sharp";
 import { google } from "googleapis";
+import MailComposer from "nodemailer/lib/mail-composer/index.js";
 import {
   crearRegistroImagenesProxy,
   descargarImagenSegura,
@@ -71,6 +72,8 @@ const VALIDATORS = ["administrador", "medico"];
 const ADMIN_ONLY = ["administrador"];
 // Quienes manejan dinero: registran pagos y editan datos de facturación.
 const BILLING_STAFF = ["administrador", "recepcion"];
+// Quienes pueden usar el módulo de Correo (leer y responder desde Gmail).
+const MAIL_STAFF = ["administrador", "recepcion"];
 
 // V13: exige una sesión válida (token entregado por /auth/login).
 // Ahora además exige que la cuenta tenga un rol asignado en staff_profiles;
@@ -416,6 +419,7 @@ app.use("/imaging", requireAuth);
 app.use("/billing", requireAuth);
 app.use("/staff", requireAuth, requireRole(ADMIN_ONLY));
 app.use("/notifications", requireAuth);
+app.use("/mail", requireAuth, requireRole(MAIL_STAFF));
 
 app.get("/patients/today", async (request, response) => {
   try {
@@ -2522,11 +2526,12 @@ Reglas:
 });
 
 // ============================================
-// NOTIFICACIONES: GMAIL (solo lectura)
+// GMAIL: credenciales compartidas
 // ============================================
-// Consulta la bandeja de entrada usando credenciales OAuth de Google
-// (scope gmail.readonly) guardadas en backend/.env. Nunca modifica correos.
-// Solo el rol administrador puede acceder a esta información.
+// Credenciales OAuth de Google (scope gmail.modify) guardadas en
+// backend/.env. Las usan tanto la campanita de notificaciones (solo
+// lectura, rol administrador) como el módulo de Correo (lectura y
+// respuesta, roles administrador/recepcion).
 
 const gmailConfigured =
   Boolean(process.env.GMAIL_CLIENT_ID) &&
@@ -2772,6 +2777,350 @@ app.get(
   },
 );
 
+// Recorre las partes MIME buscando adjuntos reales (tienen filename y un
+// attachmentId con el que luego se puede pedir su contenido por separado).
+function extraerAdjuntos(payload) {
+  const adjuntos = [];
+
+  function recorrer(part) {
+    if (!part) return;
+    if ((part.filename ?? "").trim().length > 0 && part.body?.attachmentId) {
+      adjuntos.push({
+        attachmentId: part.body.attachmentId,
+        nombre: part.filename,
+        mimeType: part.mimeType || "application/octet-stream",
+        tamano: part.body.size ?? 0,
+      });
+    }
+    if (Array.isArray(part.parts)) {
+      part.parts.forEach(recorrer);
+    }
+  }
+
+  recorrer(payload);
+  return adjuntos;
+}
+
+// ============================================
+// MÓDULO: CORREO (lectura y respuesta)
+// ============================================
+// Sección "Correo" del menú principal. A diferencia de la campanita de
+// notificaciones (solo administrador, solo no leídos), aquí administrador y
+// recepcion pueden navegar toda la bandeja de entrada y responder correos.
+
+app.get("/mail/messages", async (request, response) => {
+  if (!gmailConfigured) {
+    return response.status(503).json({
+      error:
+        "La integración con Gmail no está configurada en el servidor (faltan credenciales en backend/.env).",
+    });
+  }
+
+  try {
+    const gmail = getGmailClient();
+    const pageToken =
+      typeof request.query.pageToken === "string" && request.query.pageToken.trim()
+        ? request.query.pageToken.trim()
+        : undefined;
+    const q =
+      typeof request.query.q === "string" && request.query.q.trim()
+        ? request.query.q.trim()
+        : "in:inbox";
+
+    const listResult = await gmail.users.messages.list({
+      userId: "me",
+      q,
+      maxResults: 25,
+      pageToken,
+    });
+
+    const messages = listResult.data.messages ?? [];
+
+    const detailed = await Promise.all(
+      messages.map((message) =>
+        gmail.users.messages.get({
+          userId: "me",
+          id: message.id,
+          format: "metadata",
+          metadataHeaders: ["Subject", "From", "Date"],
+        }),
+      ),
+    );
+
+    const correos = detailed.map((result) => {
+      const message = result.data;
+      const headers = message.payload?.headers ?? [];
+      const getHeader = (name) =>
+        headers.find(
+          (header) => (header.name ?? "").toLowerCase() === name.toLowerCase(),
+        )?.value ?? "";
+
+      return {
+        id: message.id,
+        threadId: message.threadId,
+        asunto: getHeader("Subject") || "(sin asunto)",
+        remitente: getHeader("From"),
+        fecha: message.internalDate
+          ? new Date(Number(message.internalDate)).toISOString()
+          : getHeader("Date"),
+        extracto: (message.snippet ?? "").trim(),
+        noLeido: (message.labelIds ?? []).includes("UNREAD"),
+      };
+    });
+
+    return response.json({
+      total: correos.length,
+      correos,
+      siguientePagina: listResult.data.nextPageToken ?? null,
+    });
+  } catch (error) {
+    console.error("Error al consultar Gmail:", error);
+    return response.status(502).json({
+      error: "No fue posible consultar la bandeja de entrada de Gmail.",
+      detalle:
+        typeof error?.message === "string" ? error.message : "Error desconocido.",
+    });
+  }
+});
+
+app.get("/mail/messages/:id", async (request, response) => {
+  if (!gmailConfigured) {
+    return response.status(503).json({
+      error:
+        "La integración con Gmail no está configurada en el servidor (faltan credenciales en backend/.env).",
+    });
+  }
+
+  try {
+    const gmail = getGmailClient();
+    const { id } = request.params;
+
+    const result = await gmail.users.messages.get({
+      userId: "me",
+      id,
+      format: "full",
+    });
+
+    const message = result.data;
+    const headers = message.payload?.headers ?? [];
+    const getHeader = (name) =>
+      headers.find(
+        (header) => (header.name ?? "").toLowerCase() === name.toLowerCase(),
+      )?.value ?? "";
+
+    const { textoPlano, textoHtml } = extraerCuerpos(message.payload);
+
+    const cuerpoHtml = reescribirImagenesRemotas(textoHtml, {
+      registrar: (url, msgId) => registroImagenesProxy.registrar(url, msgId),
+      messageId: message.id,
+      urlBaseProxy: urlBaseProxyImagenes(request),
+    });
+
+    return response.json({
+      id: message.id,
+      threadId: message.threadId,
+      asunto: getHeader("Subject") || "(sin asunto)",
+      remitente: getHeader("From"),
+      destinatarios: getHeader("To"),
+      fecha: message.internalDate
+        ? new Date(Number(message.internalDate)).toISOString()
+        : getHeader("Date"),
+      cuerpoTexto: textoPlano,
+      cuerpoHtml,
+      adjuntos: extraerAdjuntos(message.payload),
+    });
+  } catch (error) {
+    console.error("Error al consultar el correo de Gmail:", error);
+    const status = error?.code === 404 ? 404 : 502;
+    return response.status(status).json({
+      error:
+        status === 404
+          ? "El correo solicitado no existe o ya no está disponible."
+          : "No fue posible consultar el correo de Gmail.",
+      detalle:
+        typeof error?.message === "string" ? error.message : "Error desconocido.",
+    });
+  }
+});
+
+app.get("/mail/messages/:id/attachments/:attachmentId", async (request, response) => {
+  if (!gmailConfigured) {
+    return response.status(503).json({
+      error:
+        "La integración con Gmail no está configurada en el servidor (faltan credenciales en backend/.env).",
+    });
+  }
+
+  try {
+    const gmail = getGmailClient();
+    const { id, attachmentId } = request.params;
+
+    const result = await gmail.users.messages.attachments.get({
+      userId: "me",
+      messageId: id,
+      id: attachmentId,
+    });
+
+    const data = result.data?.data;
+    if (!data) {
+      return response.status(404).end();
+    }
+
+    const nombreCrudo =
+      typeof request.query.nombre === "string" && request.query.nombre.trim()
+        ? request.query.nombre.trim()
+        : "adjunto";
+    // Content-Disposition no admite comillas ni saltos de línea dentro del
+    // valor citado: se sanean para no romper el header.
+    const nombre = nombreCrudo.replace(/["\r\n]/g, "_");
+    const mimeType =
+      typeof request.query.mimeType === "string" && request.query.mimeType.trim()
+        ? request.query.mimeType.trim()
+        : "application/octet-stream";
+
+    response.set("Content-Type", mimeType);
+    response.set("Content-Disposition", `attachment; filename="${nombre}"`);
+    return response.status(200).end(Buffer.from(data, "base64url"));
+  } catch (error) {
+    console.error("Error al descargar el adjunto de Gmail:", error);
+    const status = error?.code === 404 ? 404 : 502;
+    return response.status(status).json({
+      error:
+        status === 404
+          ? "El adjunto solicitado no existe o ya no está disponible."
+          : "No fue posible descargar el adjunto.",
+      detalle:
+        typeof error?.message === "string" ? error.message : "Error desconocido.",
+    });
+  }
+});
+
+function limpiarAsuntoRespuesta(asuntoOriginal) {
+  const asunto = (asuntoOriginal ?? "").trim();
+  if (!asunto) return "Re: (sin asunto)";
+  return /^re:/i.test(asunto) ? asunto : `Re: ${asunto}`;
+}
+
+// Límite del propio Gmail para el tamaño total de un correo saliente
+// (adjuntos incluidos, ya codificados en base64). Se deja algo de margen.
+const LIMITE_TOTAL_ADJUNTOS_BASE64 = 25 * 1024 * 1024;
+
+app.post("/gmail/reply", requireAuth, requireRole(MAIL_STAFF), async (request, response) => {
+  if (!gmailConfigured) {
+    return response.status(503).json({
+      error:
+        "La integración con Gmail no está configurada en el servidor (faltan credenciales en backend/.env).",
+    });
+  }
+
+  const { messageId, cuerpoTexto, adjuntos } = request.body ?? {};
+
+  if (typeof messageId !== "string" || messageId.trim().length === 0) {
+    return response.status(400).json({ error: "Falta el id del correo a responder." });
+  }
+  if (typeof cuerpoTexto !== "string" || cuerpoTexto.trim().length === 0) {
+    return response.status(400).json({ error: "El cuerpo de la respuesta no puede estar vacío." });
+  }
+
+  const listaAdjuntos = Array.isArray(adjuntos) ? adjuntos : [];
+  let tamanoTotalBase64 = 0;
+  for (const adjunto of listaAdjuntos) {
+    if (
+      typeof adjunto?.nombre !== "string" ||
+      adjunto.nombre.trim().length === 0 ||
+      typeof adjunto?.base64Data !== "string" ||
+      adjunto.base64Data.trim().length === 0
+    ) {
+      return response.status(400).json({
+        error: "Cada adjunto necesita al menos nombre y contenido.",
+      });
+    }
+    tamanoTotalBase64 += adjunto.base64Data.length;
+  }
+  if (tamanoTotalBase64 > LIMITE_TOTAL_ADJUNTOS_BASE64) {
+    return response.status(413).json({
+      error: "Los adjuntos superan el límite permitido por Gmail (25 MB en total).",
+    });
+  }
+
+  try {
+    const gmail = getGmailClient();
+
+    const original = await gmail.users.messages.get({
+      userId: "me",
+      id: messageId,
+      format: "metadata",
+      metadataHeaders: ["Subject", "From", "To", "Reply-To", "Message-Id", "References"],
+    });
+
+    const headers = original.data.payload?.headers ?? [];
+    const getHeader = (name) =>
+      headers.find(
+        (header) => (header.name ?? "").toLowerCase() === name.toLowerCase(),
+      )?.value ?? "";
+
+    const destinatario = getHeader("Reply-To") || getHeader("From");
+    if (!destinatario) {
+      return response.status(502).json({
+        error: "No fue posible determinar el destinatario del correo original.",
+      });
+    }
+
+    const messageIdOriginal = getHeader("Message-Id") || undefined;
+    const referencesOriginal = getHeader("References");
+    const references =
+      [referencesOriginal, messageIdOriginal].filter(Boolean).join(" ").trim() || undefined;
+    const asunto = limpiarAsuntoRespuesta(getHeader("Subject"));
+
+    const mail = new MailComposer({
+      to: destinatario,
+      subject: asunto,
+      text: cuerpoTexto,
+      inReplyTo: messageIdOriginal,
+      references,
+      attachments: listaAdjuntos.map((adjunto) => ({
+        filename: adjunto.nombre,
+        contentType:
+          typeof adjunto.mimeType === "string" && adjunto.mimeType.trim()
+            ? adjunto.mimeType.trim()
+            : undefined,
+        content: Buffer.from(adjunto.base64Data, "base64"),
+      })),
+    });
+
+    const mensajeMime = await new Promise((resolve, reject) => {
+      mail.compile().build((error, message) => {
+        if (error) reject(error);
+        else resolve(message);
+      });
+    });
+
+    const enviado = await gmail.users.messages.send({
+      userId: "me",
+      requestBody: {
+        raw: mensajeMime.toString("base64url"),
+        threadId: original.data.threadId,
+      },
+    });
+
+    return response.status(201).json({
+      id: enviado.data.id,
+      threadId: enviado.data.threadId,
+    });
+  } catch (error) {
+    console.error("Error al enviar la respuesta por Gmail:", error);
+    const status = error?.code === 404 ? 404 : 502;
+    return response.status(status).json({
+      error:
+        status === 404
+          ? "El correo original ya no existe o no está disponible."
+          : "No fue posible enviar la respuesta.",
+      detalle:
+        typeof error?.message === "string" ? error.message : "Error desconocido.",
+    });
+  }
+});
+
 app.listen(port, () => {
   console.log("");
   console.log("========================================");
@@ -2780,7 +3129,7 @@ app.listen(port, () => {
   console.log(`Estado:        http://localhost:${port}/health`);
   console.log(`Modelo:        ${model}`);
   console.log(`Base de datos: Supabase (${process.env.SUPABASE_URL})`);
-  console.log(`Gmail:         ${gmailConfigured ? "configurado (solo lectura)" : "no configurado"}`);
+  console.log(`Gmail:         ${gmailConfigured ? "configurado (lectura y respuesta)" : "no configurado"}`);
   console.log("========================================");
   console.log("");
 

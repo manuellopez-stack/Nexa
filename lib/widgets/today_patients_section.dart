@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import '../core/nexa_colors.dart';
 import '../services/api_service.dart';
 import 'billing_section.dart';
+import 'dental_section.dart';
 import 'imaging_section.dart';
 import 'lab_section.dart';
 
@@ -986,6 +987,12 @@ $documentsText
                 const Divider(),
                 const SizedBox(height: 12),
                 ImagingOrdersSection(
+                  patientId: patient['id'] is int ? patient['id'] as int : null,
+                ),
+                const SizedBox(height: 20),
+                const Divider(),
+                const SizedBox(height: 12),
+                DentalOrdersSection(
                   patientId: patient['id'] is int ? patient['id'] as int : null,
                 ),
               ],

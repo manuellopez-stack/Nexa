@@ -666,6 +666,218 @@ class ApiService {
   }
 
   // ============================================
+  // MÓDULO DENTAL
+  // ============================================
+
+  static Future<List<Map<String, dynamic>>> getDentalProcedures() async {
+    final http.Response response;
+
+    try {
+      response = await http
+          .get(Uri.parse('$_baseUrl/dental/procedures'), headers: _headers())
+          .timeout(const Duration(seconds: 30));
+    } catch (_) {
+      throw const ApiException(
+        'No fue posible conectar con el backend de Nexa.',
+      );
+    }
+
+    final decodedBody = await _decodeMap(response);
+    final procedures = decodedBody['procedures'];
+
+    if (procedures is! List) {
+      throw const ApiException(
+        'El backend no entregó el catálogo de prestaciones dentales.',
+      );
+    }
+
+    return procedures
+        .whereType<Map>()
+        .map((procedure) => Map<String, dynamic>.from(procedure))
+        .toList();
+  }
+
+  static Future<Map<String, dynamic>> createDentalOrder({
+    required int patientId,
+    required List<String> procedureIds,
+  }) async {
+    final http.Response response;
+
+    try {
+      response = await http
+          .post(
+            Uri.parse('$_baseUrl/patients/$patientId/dental-orders'),
+            headers: _headers(extra: const {'Content-Type': 'application/json'}),
+            body: jsonEncode({'procedureIds': procedureIds}),
+          )
+          .timeout(const Duration(seconds: 30));
+    } catch (_) {
+      throw const ApiException(
+        'No fue posible crear la orden dental.',
+      );
+    }
+
+    final decodedBody = await _decodeMap(response);
+    final order = decodedBody['order'];
+
+    if (order is! Map) {
+      throw const ApiException('El backend no entregó la orden creada.');
+    }
+
+    return Map<String, dynamic>.from(order);
+  }
+
+  static Future<List<Map<String, dynamic>>> getDentalOrders(
+    int patientId,
+  ) async {
+    final http.Response response;
+
+    try {
+      response = await http
+          .get(
+            Uri.parse('$_baseUrl/patients/$patientId/dental-orders'),
+            headers: _headers(),
+          )
+          .timeout(const Duration(seconds: 30));
+    } catch (_) {
+      throw const ApiException(
+        'No fue posible conectar con el backend de Nexa.',
+      );
+    }
+
+    final decodedBody = await _decodeMap(response);
+    final orders = decodedBody['orders'];
+
+    if (orders is! List) {
+      throw const ApiException(
+        'El backend no entregó las órdenes dentales.',
+      );
+    }
+
+    return orders
+        .whereType<Map>()
+        .map((order) => Map<String, dynamic>.from(order))
+        .toList();
+  }
+
+  static Future<Map<String, dynamic>> getDentalOrderDetail({
+    required int patientId,
+    required String orderId,
+  }) async {
+    final http.Response response;
+
+    try {
+      response = await http
+          .get(
+            Uri.parse('$_baseUrl/patients/$patientId/dental-orders/$orderId'),
+            headers: _headers(),
+          )
+          .timeout(const Duration(seconds: 30));
+    } catch (_) {
+      throw const ApiException(
+        'No fue posible conectar con el backend de Nexa.',
+      );
+    }
+
+    return _decodeMap(response);
+  }
+
+  static Future<Map<String, dynamic>> markDentalPerformed({
+    required int patientId,
+    required String orderId,
+  }) async {
+    final http.Response response;
+
+    try {
+      response = await http
+          .patch(
+            Uri.parse(
+              '$_baseUrl/patients/$patientId/dental-orders/$orderId/performed',
+            ),
+            headers: _headers(),
+          )
+          .timeout(const Duration(seconds: 30));
+    } catch (_) {
+      throw const ApiException(
+        'No fue posible marcar la atención dental como realizada.',
+      );
+    }
+
+    final decodedBody = await _decodeMap(response);
+    final order = decodedBody['order'];
+
+    if (order is! Map) {
+      throw const ApiException('El backend no entregó la orden actualizada.');
+    }
+
+    return Map<String, dynamic>.from(order);
+  }
+
+  static Future<Map<String, dynamic>> saveDentalResults({
+    required int patientId,
+    required String orderId,
+    required List<Map<String, dynamic>> results,
+  }) async {
+    final http.Response response;
+
+    try {
+      response = await http
+          .patch(
+            Uri.parse(
+              '$_baseUrl/patients/$patientId/dental-orders/$orderId/results',
+            ),
+            headers: _headers(extra: const {'Content-Type': 'application/json'}),
+            body: jsonEncode({'results': results}),
+          )
+          .timeout(const Duration(seconds: 30));
+    } catch (_) {
+      throw const ApiException(
+        'No fue posible guardar los resultados dentales.',
+      );
+    }
+
+    final decodedBody = await _decodeMap(response);
+    final order = decodedBody['order'];
+
+    if (order is! Map) {
+      throw const ApiException('El backend no entregó la orden actualizada.');
+    }
+
+    return Map<String, dynamic>.from(order);
+  }
+
+  static Future<Map<String, dynamic>> validateDentalOrder({
+    required int patientId,
+    required String orderId,
+  }) async {
+    final http.Response response;
+
+    try {
+      response = await http
+          .patch(
+            Uri.parse(
+              '$_baseUrl/patients/$patientId/dental-orders/$orderId/validate',
+            ),
+            headers: _headers(),
+          )
+          .timeout(const Duration(seconds: 30));
+    } catch (_) {
+      throw const ApiException(
+        'No fue posible validar la orden dental.',
+      );
+    }
+
+    final decodedBody = await _decodeMap(response);
+    final order = decodedBody['order'];
+
+    if (order is! Map) {
+      throw const ApiException('El backend no entregó la orden actualizada.');
+    }
+
+    return Map<String, dynamic>.from(order);
+  }
+
+  // ============================================
   // MÓDULO DE IMAGENOLOGÍA
   // ============================================
 

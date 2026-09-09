@@ -416,6 +416,7 @@ app.use("/dashboard", requireAuth);
 app.use("/chat", requireAuth, requireRole(VALIDATORS));
 app.use("/lab", requireAuth);
 app.use("/imaging", requireAuth);
+app.use("/dental", requireAuth);
 app.use("/billing", requireAuth);
 app.use("/staff", requireAuth, requireRole(ADMIN_ONLY));
 app.use("/notifications", requireAuth);
@@ -1586,6 +1587,285 @@ app.patch("/patients/:id/lab-orders/:orderId/validate", requireRole(VALIDATORS),
   } catch (error) {
     console.error("Error al validar orden de laboratorio:", error);
     return response.status(500).json({ error: "No fue posible validar la orden de laboratorio." });
+  }
+});
+// ============================================
+// MÓDULO DENTAL
+// ============================================
+
+function shapeDentalProcedureRow(row) {
+  return { id: row.id, fonasaCode: row.fonasa_code, name: row.name };
+}
+
+function shapeDentalOrderRow(row) {
+  return {
+    id: row.id,
+    patientId: row.patient_id,
+    status: row.status,
+    requestedAt: row.requested_at,
+    performedAt: row.performed_at,
+    validatedAt: row.validated_at,
+    validatedBy: row.validated_by,
+  };
+}
+
+function shapeDentalResultRow(row) {
+  return {
+    id: row.id,
+    orderId: row.order_id,
+    procedureId: row.procedure_id,
+    tooth: row.tooth,
+    diagnosis: row.diagnosis,
+    professional: row.professional,
+  };
+}
+
+app.get("/dental/procedures", requireRole(CLINICAL_STAFF), async (_request, response) => {
+  try {
+    const { data, error } = await supabase
+      .from("dental_procedures")
+      .select("*")
+      .order("name", { ascending: true });
+    if (error) throw error;
+
+    return response.json({ procedures: (data ?? []).map(shapeDentalProcedureRow) });
+  } catch (error) {
+    console.error("Error al obtener catálogo dental:", error);
+    return response.status(500).json({ error: "No fue posible obtener el catálogo de prestaciones dentales." });
+  }
+});
+
+app.post("/patients/:id/dental-orders", requireRole(CLINICAL_STAFF), async (request, response) => {
+  try {
+    const patientId = Number(request.params.id);
+    const procedureIds = Array.isArray(request.body?.procedureIds) ? request.body.procedureIds : [];
+
+    if (procedureIds.length === 0) {
+      return response.status(400).json({ error: "Debes seleccionar al menos una prestación." });
+    }
+
+    const { data: patientRow, error: patientError } = await supabase
+      .from("patients")
+      .select("id")
+      .eq("id", patientId)
+      .maybeSingle();
+    if (patientError) throw patientError;
+    if (!patientRow) return response.status(404).json({ error: "Paciente no encontrado" });
+
+    const { data: orderRow, error: orderError } = await supabase
+      .from("dental_orders")
+      .insert({ patient_id: patientId, status: "ordenado" })
+      .select()
+      .single();
+    if (orderError) throw orderError;
+
+    const orderProcedureRows = procedureIds.map((procedureId) => ({
+      order_id: orderRow.id,
+      procedure_id: procedureId,
+    }));
+    const { error: orderProceduresError } = await supabase
+      .from("dental_order_procedures")
+      .insert(orderProcedureRows);
+    if (orderProceduresError) throw orderProceduresError;
+
+    return response.json({ order: shapeDentalOrderRow(orderRow) });
+  } catch (error) {
+    console.error("Error al crear orden dental:", error);
+    return response.status(500).json({ error: "No fue posible crear la orden dental." });
+  }
+});
+
+app.get("/patients/:id/dental-orders", requireRole(CLINICAL_STAFF), async (request, response) => {
+  try {
+    const patientId = Number(request.params.id);
+
+    const { data: orderRows, error: ordersError } = await supabase
+      .from("dental_orders")
+      .select("*")
+      .eq("patient_id", patientId)
+      .order("requested_at", { ascending: false });
+    if (ordersError) throw ordersError;
+
+    const orderIds = (orderRows ?? []).map((o) => o.id);
+
+    const { data: orderProcedureRows, error: orderProceduresError } = orderIds.length
+      ? await supabase
+          .from("dental_order_procedures")
+          .select("*, dental_procedures(name, fonasa_code)")
+          .in("order_id", orderIds)
+      : { data: [], error: null };
+    if (orderProceduresError) throw orderProceduresError;
+
+    const orders = (orderRows ?? []).map((order) => ({
+      ...shapeDentalOrderRow(order),
+      procedures: (orderProcedureRows ?? [])
+        .filter((op) => op.order_id === order.id)
+        .map((op) => ({
+          id: op.procedure_id,
+          name: op.dental_procedures?.name,
+          fonasaCode: op.dental_procedures?.fonasa_code,
+        })),
+    }));
+
+    return response.json({ orders });
+  } catch (error) {
+    console.error("Error al obtener órdenes dentales:", error);
+    return response.status(500).json({ error: "No fue posible obtener las órdenes dentales." });
+  }
+});
+
+app.get("/patients/:id/dental-orders/:orderId", requireRole(CLINICAL_STAFF), async (request, response) => {
+  try {
+    const patientId = Number(request.params.id);
+    const orderId = request.params.orderId;
+
+    const { data: orderRow, error: orderError } = await supabase
+      .from("dental_orders")
+      .select("*")
+      .eq("id", orderId)
+      .eq("patient_id", patientId)
+      .maybeSingle();
+    if (orderError) throw orderError;
+    if (!orderRow) return response.status(404).json({ error: "Orden dental no encontrada." });
+
+    const { data: orderProcedureRows, error: orderProceduresError } = await supabase
+      .from("dental_order_procedures")
+      .select("procedure_id, dental_procedures(id, name, fonasa_code)")
+      .eq("order_id", orderId);
+    if (orderProceduresError) throw orderProceduresError;
+
+    const { data: resultRows, error: resultsError } = await supabase
+      .from("dental_results")
+      .select("*")
+      .eq("order_id", orderId);
+    if (resultsError) throw resultsError;
+
+    const procedures = (orderProcedureRows ?? []).map((op) => {
+      const result = (resultRows ?? []).find((r) => r.procedure_id === op.procedure_id);
+      return {
+        id: op.procedure_id,
+        name: op.dental_procedures?.name,
+        fonasaCode: op.dental_procedures?.fonasa_code,
+        result: result ? shapeDentalResultRow(result) : null,
+      };
+    });
+
+    return response.json({ order: shapeDentalOrderRow(orderRow), procedures });
+  } catch (error) {
+    console.error("Error al obtener detalle de orden dental:", error);
+    return response.status(500).json({ error: "No fue posible obtener el detalle de la orden." });
+  }
+});
+
+app.patch(
+  "/patients/:id/dental-orders/:orderId/performed",
+  requireRole(CLINICAL_STAFF),
+  async (request, response) => {
+    try {
+      const patientId = Number(request.params.id);
+      const orderId = request.params.orderId;
+
+      const { data: updatedOrder, error } = await supabase
+        .from("dental_orders")
+        .update({ status: "realizado", performed_at: new Date().toISOString() })
+        .eq("id", orderId)
+        .eq("patient_id", patientId)
+        .select()
+        .single();
+      if (error) throw error;
+      if (!updatedOrder) return response.status(404).json({ error: "Orden dental no encontrada." });
+
+      return response.json({ order: shapeDentalOrderRow(updatedOrder) });
+    } catch (error) {
+      console.error("Error al marcar atención dental como realizada:", error);
+      return response.status(500).json({ error: "No fue posible marcar la orden como realizada." });
+    }
+  },
+);
+
+app.patch("/patients/:id/dental-orders/:orderId/results", requireRole(CLINICAL_STAFF), async (request, response) => {
+  try {
+    const patientId = Number(request.params.id);
+    const orderId = request.params.orderId;
+    const results = Array.isArray(request.body?.results) ? request.body.results : [];
+
+    if (results.length === 0) {
+      return response.status(400).json({ error: "Debes enviar al menos un resultado." });
+    }
+
+    const { data: orderRow, error: orderError } = await supabase
+      .from("dental_orders")
+      .select("*")
+      .eq("id", orderId)
+      .eq("patient_id", patientId)
+      .maybeSingle();
+    if (orderError) throw orderError;
+    if (!orderRow) return response.status(404).json({ error: "Orden dental no encontrada." });
+
+    for (const item of results) {
+      const procedureId = item.procedureId;
+      if (!procedureId) continue;
+
+      const tooth = typeof item.tooth === "string" ? item.tooth.trim() || null : null;
+      const diagnosis = typeof item.diagnosis === "string" ? item.diagnosis.trim() || null : null;
+      const professional = typeof item.professional === "string" ? item.professional.trim() || null : null;
+
+      const { data: existingResult, error: existingError } = await supabase
+        .from("dental_results")
+        .select("id")
+        .eq("order_id", orderId)
+        .eq("procedure_id", procedureId)
+        .maybeSingle();
+      if (existingError) throw existingError;
+
+      const resultRow = {
+        order_id: orderId,
+        procedure_id: procedureId,
+        tooth,
+        diagnosis,
+        professional,
+        updated_at: new Date().toISOString(),
+      };
+
+      if (existingResult) {
+        const { error } = await supabase.from("dental_results").update(resultRow).eq("id", existingResult.id);
+        if (error) throw error;
+      } else {
+        const { error } = await supabase.from("dental_results").insert(resultRow);
+        if (error) throw error;
+      }
+    }
+
+    return response.json({ order: shapeDentalOrderRow(orderRow) });
+  } catch (error) {
+    console.error("Error al guardar resultados dentales:", error);
+    return response.status(500).json({ error: "No fue posible guardar los resultados." });
+  }
+});
+
+app.patch("/patients/:id/dental-orders/:orderId/validate", requireRole(VALIDATORS), async (request, response) => {
+  try {
+    const patientId = Number(request.params.id);
+    const orderId = request.params.orderId;
+
+    const { data: updatedOrder, error } = await supabase
+      .from("dental_orders")
+      .update({
+        status: "validado",
+        validated_at: new Date().toISOString(),
+        validated_by: request.user?.email ?? null,
+      })
+      .eq("id", orderId)
+      .eq("patient_id", patientId)
+      .select()
+      .single();
+    if (error) throw error;
+    if (!updatedOrder) return response.status(404).json({ error: "Orden dental no encontrada." });
+
+    return response.json({ order: shapeDentalOrderRow(updatedOrder) });
+  } catch (error) {
+    console.error("Error al validar orden dental:", error);
+    return response.status(500).json({ error: "No fue posible validar la orden dental." });
   }
 });
 // ============================================

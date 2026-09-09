@@ -35,6 +35,8 @@ dependencies:
   http: ^1.2.1
   file_picker: 11.0.2
   flutter_html: ^3.0.0
+  pointer_interceptor: ^0.10.1
+  web: ^1.1.0
 dependency_overrides:
   # flutter_html 3.0.0 llama a una función interna de package:html que fue
   # removida en 0.15.7 (https://pub.dev/packages/html/versions), lo que

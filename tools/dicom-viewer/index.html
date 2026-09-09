@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Visor DICOM · Nexa</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: #0c0f10;
+    color: #dfe6e6;
+    font: 13px/1.5 "IBM Plex Sans", system-ui, -apple-system, sans-serif;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  .bar {
+    flex: none;
+    display: flex; align-items: center; gap: 6px;
+    padding: 8px 10px;
+    background: #151b1c; border-bottom: 1px solid #293233;
+    flex-wrap: wrap;
+  }
+  .bar button {
+    font: inherit; font-weight: 500; color: #cdd6d6;
+    background: #1f2728; border: 1px solid #313c3d;
+    border-radius: 7px; padding: 6px 12px; cursor: pointer;
+  }
+  .bar button:hover { background: #273031; }
+  .bar button.active { background: #0c7580; border-color: #0c7580; color: #fff; }
+  .bar .hint { color: #6d7e7e; font-size: 12px; margin-left: auto; }
+  #wrap { flex: 1; position: relative; min-height: 0; }
+  #viewport {
+    position: absolute; inset: 0;
+    background: #000;
+  }
+  #viewport canvas { outline: none; }
+  #status {
+    flex: none; padding: 6px 10px; background: #151b1c;
+    border-top: 1px solid #293233;
+    font: 12px/1.45 "IBM Plex Mono", ui-monospace, Menlo, monospace;
+    color: #9aabab; white-space: pre-wrap;
+    max-height: 120px; overflow-y: auto;
+  }
+  #status .err { color: #df675b; }
+  #status .ok { color: #5db27a; }
+</style>
+</head>
+<body>
+
+<div class="bar">
+  <button data-tool="WindowLevel" class="active">Brillo / Contraste</button>
+  <button data-tool="Zoom">Zoom</button>
+  <button data-tool="Pan">Pan</button>
+  <button id="reset">Reset</button>
+  <span class="hint">arrastrar = herramienta activa · rueda = zoom</span>
+</div>
+
+<div id="wrap"><div id="viewport"></div></div>
+
+<pre id="status">iniciando…</pre>
+
+<script type="module" src="/src/viewer.js"></script>
+</body>
+</html>

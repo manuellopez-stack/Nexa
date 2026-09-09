@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 
 import '../core/nexa_colors.dart';
 import '../services/api_service.dart';
+import 'dicom_viewer.dart';
 
 class ImagingOrdersSection extends StatefulWidget {
   const ImagingOrdersSection({super.key, required this.patientId});
@@ -472,36 +473,11 @@ class _ImagingOrderDetailDialogState extends State<_ImagingOrderDetailDialog> {
     }
   }
 
-  void _openFullImage(String pngUrl) {
-    showDialog<void>(
-      context: context,
-      builder: (dialogContext) => Dialog(
-        insetPadding: const EdgeInsets.all(16),
-        child: Stack(
-          children: [
-            SizedBox(
-              width: double.infinity,
-              height: 600,
-              child: InteractiveViewer(
-                minScale: 0.5,
-                maxScale: 6,
-                child: Image.network(pngUrl, fit: BoxFit.contain),
-              ),
-            ),
-            Positioned(
-              top: 8,
-              right: 8,
-              child: IconButton(
-                style: IconButton.styleFrom(
-                  backgroundColor: Colors.black.withValues(alpha: 0.4),
-                ),
-                icon: const Icon(Icons.close, color: Colors.white),
-                onPressed: () => Navigator.pop(dialogContext),
-              ),
-            ),
-          ],
-        ),
-      ),
+  void _openDicomViewer(String dicomUrl) {
+    showDicomViewer(
+      context,
+      dicomUrls: [dicomUrl],
+      title: 'Imagen del estudio',
     );
   }
 
@@ -725,8 +701,11 @@ class _ImagingOrderDetailDialogState extends State<_ImagingOrderDetailDialog> {
                         runSpacing: 10,
                         children: images.map((imageFile) {
                           final pngUrl = imageFile['pngUrl']?.toString();
+                          final dicomUrl = imageFile['dicomUrl']?.toString();
+                          final hasPng = pngUrl != null && pngUrl.isNotEmpty;
+                          final hasDicom = dicomUrl != null && dicomUrl.isNotEmpty;
 
-                          if (pngUrl == null || pngUrl.isEmpty) {
+                          if (!hasDicom) {
                             return Container(
                               width: 140,
                               padding: const EdgeInsets.all(10),
@@ -735,7 +714,7 @@ class _ImagingOrderDetailDialogState extends State<_ImagingOrderDetailDialog> {
                                 borderRadius: BorderRadius.circular(10),
                               ),
                               child: const Text(
-                                'Sin vista previa disponible',
+                                'Sin imagen disponible',
                                 style: TextStyle(
                                   fontSize: 11,
                                   color: Color(0xFFB91C1C),
@@ -744,38 +723,9 @@ class _ImagingOrderDetailDialogState extends State<_ImagingOrderDetailDialog> {
                             );
                           }
 
-                          return GestureDetector(
-                            onTap: () => _openFullImage(pngUrl),
-                            child: ClipRRect(
-                              borderRadius: BorderRadius.circular(10),
-                              child: Image.network(
-                                pngUrl,
-                                width: 140,
-                                height: 140,
-                                fit: BoxFit.cover,
-                                loadingBuilder: (context, child, progress) {
-                                  if (progress == null) return child;
-                                  return const SizedBox(
-                                    width: 140,
-                                    height: 140,
-                                    child: Center(
-                                      child: CircularProgressIndicator(
-                                        strokeWidth: 2,
-                                      ),
-                                    ),
-                                  );
-                                },
-                                errorBuilder: (context, error, stackTrace) =>
-                                    Container(
-                                  width: 140,
-                                  height: 140,
-                                  color: NexaColors.background,
-                                  child: const Icon(
-                                    Icons.broken_image_outlined,
-                                  ),
-                                ),
-                              ),
-                            ),
+                          return _ImageThumb(
+                            pngUrl: hasPng ? pngUrl : null,
+                            onOpen: () => _openDicomViewer(dicomUrl),
                           );
                         }).toList(),
                       );
@@ -970,6 +920,96 @@ class _ImagingStatusBadge extends StatelessWidget {
           fontWeight: FontWeight.w700,
           fontSize: 12,
         ),
+      ),
+    );
+  }
+}
+
+/// Miniatura de una imagen del estudio. Muestra el PNG de vista previa si el
+/// backend lo generó; si no (DICOM comprimido), muestra un tile neutro. En
+/// ambos casos, al tocarla se abre el visor DICOM real con el archivo original.
+class _ImageThumb extends StatelessWidget {
+  const _ImageThumb({required this.pngUrl, required this.onOpen});
+
+  final String? pngUrl;
+  final VoidCallback onOpen;
+
+  @override
+  Widget build(BuildContext context) {
+    final png = pngUrl;
+
+    Widget content;
+    if (png != null) {
+      content = Image.network(
+        png,
+        width: 140,
+        height: 140,
+        fit: BoxFit.cover,
+        loadingBuilder: (context, child, progress) {
+          if (progress == null) return child;
+          return const SizedBox(
+            width: 140,
+            height: 140,
+            child: Center(child: CircularProgressIndicator(strokeWidth: 2)),
+          );
+        },
+        errorBuilder: (context, error, stackTrace) => const _DicomTileFallback(),
+      );
+    } else {
+      content = const _DicomTileFallback();
+    }
+
+    return GestureDetector(
+      onTap: onOpen,
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(10),
+        child: Stack(
+          children: [
+            content,
+            Positioned(
+              right: 6,
+              bottom: 6,
+              child: Container(
+                padding: const EdgeInsets.all(4),
+                decoration: BoxDecoration(
+                  color: Colors.black.withValues(alpha: 0.55),
+                  borderRadius: BorderRadius.circular(6),
+                ),
+                child: const Icon(
+                  Icons.zoom_out_map,
+                  size: 14,
+                  color: Colors.white,
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _DicomTileFallback extends StatelessWidget {
+  const _DicomTileFallback();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: 140,
+      height: 140,
+      color: const Color(0xFF0F172A),
+      child: const Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(Icons.medical_information_outlined,
+              color: Color(0xFF94A3B8), size: 26),
+          SizedBox(height: 6),
+          Text(
+            'DICOM\nabrir en visor',
+            textAlign: TextAlign.center,
+            style: TextStyle(fontSize: 10, color: Color(0xFF94A3B8)),
+          ),
+        ],
       ),
     );
   }

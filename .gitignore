@@ -4,3 +4,7 @@ backend/node_modules/
 build/
 .vscode/
 *.zip
+
+# Visor DICOM (Cornerstone3D) — deps de build
+tools/dicom-viewer/node_modules/
+tools/dicom-viewer/dist/

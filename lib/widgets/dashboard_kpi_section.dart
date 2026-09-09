@@ -12,15 +12,20 @@ class DashboardKpiSection extends StatefulWidget {
 
 class _DashboardKpiSectionState extends State<DashboardKpiSection> {
   late Future<Map<String, dynamic>> _summaryFuture;
+  late Future<Map<String, dynamic>> _healthFuture;
 
   @override
   void initState() {
     super.initState();
     _summaryFuture = ApiService.getDashboardSummary();
+    _healthFuture = ApiService.getBackendHealth();
   }
 
   void _reload() {
-    setState(() => _summaryFuture = ApiService.getDashboardSummary());
+    setState(() {
+      _summaryFuture = ApiService.getDashboardSummary();
+      _healthFuture = ApiService.getBackendHealth();
+    });
   }
 
   int _asInt(dynamic value) {
@@ -76,10 +81,25 @@ class _DashboardKpiSectionState extends State<DashboardKpiSection> {
         final inAttention = _asInt(summary['inAttention']);
         final scheduled = _asInt(summary['scheduled']);
         final pendingValidation = _asInt(summary['pendingValidation']);
+        final breakdown =
+            summary['pendingValidationBreakdown'] is Map<String, dynamic>
+            ? summary['pendingValidationBreakdown'] as Map<String, dynamic>
+            : const <String, dynamic>{};
+        final pendingDocs = _asInt(breakdown['documents']);
+        final pendingLab = _asInt(breakdown['labOrders']);
+        final pendingImaging = _asInt(breakdown['imagingOrders']);
+        final pendingDental = _asInt(breakdown['dentalOrders']);
         final totalUploaded = _asInt(summary['totalUploadedDocuments']);
         final totalAnalyzed = _asInt(summary['totalAnalyzedDocuments']);
 
-        final cards = [
+        final breakdownParts = <String>[
+          if (pendingDocs > 0) '$pendingDocs docs',
+          if (pendingLab > 0) '$pendingLab lab',
+          if (pendingImaging > 0) '$pendingImaging img',
+          if (pendingDental > 0) '$pendingDental dental',
+        ];
+
+        final cards = <Widget>[
           KpiCard(
             title: 'Pacientes hoy',
             value: '$patientsToday',
@@ -102,19 +122,37 @@ class _DashboardKpiSectionState extends State<DashboardKpiSection> {
             title: 'Pendientes de validación',
             value: '$pendingValidation',
             variation: pendingValidation > 0 ? 'Requiere revisión' : 'Al día',
-            detail: 'de $patientsToday pacientes registrados',
+            detail: breakdownParts.isEmpty
+                ? 'Nada pendiente por revisar'
+                : breakdownParts.join(' · '),
             icon: Icons.fact_check_outlined,
             accentColor: const Color(0xFFF59E0B),
-            progress: patientsToday > 0 ? pendingValidation / patientsToday : 0,
+            progress: pendingValidation > 0 ? 1 : 0,
           ),
-          const KpiCard(
-            title: 'Backend Nexa',
-            value: 'Operativo',
-            variation: 'En línea',
-            detail: 'Conectividad en tiempo real',
-            icon: Icons.cloud_done_outlined,
-            accentColor: Color(0xFF10B981),
-            progress: 1,
+          FutureBuilder<Map<String, dynamic>>(
+            future: _healthFuture,
+            builder: (context, healthSnapshot) {
+              final checking =
+                  healthSnapshot.connectionState == ConnectionState.waiting;
+              final health = healthSnapshot.data;
+              final healthOk = health?['ok'] == true;
+              final latency = health?['latencyMs'];
+              // Llegar a este builder implica que /dashboard/summary (una
+              // llamada autenticada contra la base de datos) respondió bien,
+              // así que el backend está operativo. El endpoint /health añade
+              // la latencia real del chequeo.
+              return KpiCard(
+                title: 'Backend Nexa',
+                value: 'Operativo',
+                variation: checking ? 'Verificando…' : 'En línea',
+                detail: !checking && healthOk && latency != null
+                    ? '/health respondió en $latency ms'
+                    : 'Derivado de /dashboard/summary',
+                icon: Icons.cloud_done_outlined,
+                accentColor: const Color(0xFF10B981),
+                progress: 1,
+              );
+            },
           ),
         ];
 

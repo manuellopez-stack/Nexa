@@ -98,7 +98,8 @@ class _OperationalStatusSectionState extends State<OperationalStatusSection> {
               final totalKnownRooms = _asInt(summary['totalKnownRooms']);
               final waiting = _asInt(summary['waiting']);
               final patientsToday = _asInt(summary['patientsToday']);
-              final pendingValidation = _asInt(summary['pendingValidation']);
+              final documentsToValidate =
+                  _asInt(summary['documentsToValidate']);
               final awaitingAnalysis =
                   _asInt(summary['documentsAwaitingAnalysis']);
               final totalUploaded =
@@ -124,9 +125,10 @@ class _OperationalStatusSectionState extends State<OperationalStatusSection> {
                   const SizedBox(height: 18),
                   StatusBar(
                     title: 'Documentos por validar',
-                    value:
-                        patientsToday > 0 ? pendingValidation / patientsToday : 0,
-                    label: '$pendingValidation fichas pendientes',
+                    value: totalUploaded > 0
+                        ? documentsToValidate / totalUploaded
+                        : 0,
+                    label: '$documentsToValidate documentos pendientes',
                     color: const Color(0xFFF59E0B),
                   ),
                   const SizedBox(height: 18),

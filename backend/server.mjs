@@ -464,11 +464,15 @@ app.get("/dashboard/summary", requireRole(CLINICAL_STAFF), async (_request, resp
     const waiting = patients.filter((p) => p.status === "Esperando").length;
     const inAttention = patients.filter((p) => p.status === "En atención").length;
     const scheduled = patients.filter((p) => p.status === "Programado").length;
-    const pendingValidation = patients.filter(
-      (p) => p.status === "Pendiente de validación",
-    ).length;
+
+    // Salas en uso: solo salas ocupadas por un paciente que está siendo
+    // atendido ahora mismo. El total de salas sigue hardcodeado hasta que
+    // exista el catálogo real de salas.
     const roomsInUse = new Set(
-      patients.map((p) => p.room).filter((room) => KNOWN_ROOMS.includes(room)),
+      patients
+        .filter((p) => p.status === "En atención")
+        .map((p) => (typeof p.room === "string" ? p.room.trim() : ""))
+        .filter((room) => room.length > 0),
     ).size;
 
     const { count: documentsCount, error: docsCountError } = await supabase
@@ -478,6 +482,36 @@ app.get("/dashboard/summary", requireRole(CLINICAL_STAFF), async (_request, resp
 
     const totalDocuments = documentsCount ?? 0;
 
+    // "Pendientes de validación" = todo lo que un profesional todavía tiene
+    // que revisar/aprobar: documentos sin validar + órdenes clínicas ya
+    // listas (con resultado/informe) pero aún no validadas.
+    const countPending = async (table, column, value) => {
+      const { count, error } = await supabase
+        .from(table)
+        .select("id", { count: "exact", head: true })
+        .eq(column, value);
+      if (error) throw error;
+      return count ?? 0;
+    };
+
+    const [
+      pendingDocuments,
+      pendingLabOrders,
+      pendingImagingOrders,
+      pendingDentalOrders,
+    ] = await Promise.all([
+      countPending("documents", "validation_status", "pendiente"),
+      countPending("lab_orders", "status", "completado"),
+      countPending("imaging_orders", "status", "informado"),
+      countPending("dental_orders", "status", "realizado"),
+    ]);
+
+    const pendingValidation =
+      pendingDocuments +
+      pendingLabOrders +
+      pendingImagingOrders +
+      pendingDentalOrders;
+
     return response.json({
       fecha: new Date().toISOString().split("T")[0],
       patientsToday: patients.length,
@@ -485,6 +519,13 @@ app.get("/dashboard/summary", requireRole(CLINICAL_STAFF), async (_request, resp
       inAttention,
       scheduled,
       pendingValidation,
+      pendingValidationBreakdown: {
+        documents: pendingDocuments,
+        labOrders: pendingLabOrders,
+        imagingOrders: pendingImagingOrders,
+        dentalOrders: pendingDentalOrders,
+      },
+      documentsToValidate: pendingDocuments,
       totalUploadedDocuments: totalDocuments,
       totalAnalyzedDocuments: totalDocuments,
       documentsAwaitingAnalysis: 0,

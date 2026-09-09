@@ -169,6 +169,40 @@ class ApiService {
     return _decodeMap(response);
   }
 
+  /// Chequeo real de salud del backend. Consulta el endpoint público
+  /// `/health` y mide la latencia. No lanza excepción: devuelve un mapa con
+  /// `ok` en false cuando no hay respuesta válida.
+  static Future<Map<String, dynamic>> getBackendHealth() async {
+    final stopwatch = Stopwatch()..start();
+
+    try {
+      final response = await http
+          .get(Uri.parse('$_baseUrl/health'))
+          .timeout(const Duration(seconds: 10));
+      stopwatch.stop();
+
+      if (response.statusCode != 200) {
+        return {'ok': false, 'latencyMs': stopwatch.elapsedMilliseconds};
+      }
+
+      Map<String, dynamic> body;
+      try {
+        body = jsonDecode(response.body) as Map<String, dynamic>;
+      } catch (_) {
+        body = const {};
+      }
+
+      return {
+        'ok': body['estado'] == 'OK' || body['estado'] == null,
+        'latencyMs': stopwatch.elapsedMilliseconds,
+        'model': body['modelo'],
+      };
+    } catch (_) {
+      stopwatch.stop();
+      return {'ok': false, 'latencyMs': stopwatch.elapsedMilliseconds};
+    }
+  }
+
   static Future<List<Map<String, dynamic>>> getTodayPatients() async {
     final http.Response response;
 

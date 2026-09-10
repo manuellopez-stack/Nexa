@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../core/nexa_colors.dart';
 import '../services/api_service.dart';
+import '../widgets/patient_form.dart';
 
 // Códigos de estado de una cita (tabla appointments). Deben coincidir con
 // APPOINTMENT_STATUSES en backend/server.mjs.
@@ -1424,6 +1425,18 @@ class _PatientPickerDialogState extends State<_PatientPickerDialog> {
     super.dispose();
   }
 
+  Future<void> _createNewPatient() async {
+    final created = await showDialog<Map<String, dynamic>>(
+      context: context,
+      builder: (_) => const PatientFormDialog(),
+    );
+    // El formulario ya deduplicó y validó; si devolvió un paciente, lo
+    // seleccionamos y cerramos el picker.
+    if (created != null && mounted) {
+      Navigator.pop(context, created);
+    }
+  }
+
   List<Map<String, dynamic>> get _filtered {
     final query = _searchController.text.trim().toLowerCase();
     if (query.isEmpty) return _all;
@@ -1469,8 +1482,19 @@ class _PatientPickerDialogState extends State<_PatientPickerDialog> {
 
                   final patients = _filtered;
                   if (patients.isEmpty) {
-                    return const Center(
-                      child: Text('Sin pacientes que coincidan.'),
+                    return Center(
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const Text('Sin pacientes que coincidan.'),
+                          const SizedBox(height: 10),
+                          OutlinedButton.icon(
+                            onPressed: _createNewPatient,
+                            icon: const Icon(Icons.person_add_alt, size: 18),
+                            label: const Text('Registrar paciente'),
+                          ),
+                        ],
+                      ),
                     );
                   }
 
@@ -1498,6 +1522,12 @@ class _PatientPickerDialogState extends State<_PatientPickerDialog> {
         TextButton(
           onPressed: () => Navigator.pop(context),
           child: const Text('Cancelar'),
+        ),
+        FilledButton.icon(
+          onPressed: _createNewPatient,
+          icon: const Icon(Icons.person_add_alt, size: 18),
+          label: const Text('Paciente nuevo'),
+          style: FilledButton.styleFrom(backgroundColor: NexaColors.primary),
         ),
       ],
     );

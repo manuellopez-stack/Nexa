@@ -135,6 +135,27 @@ function normalizeRut(value) {
   return typeof value === "string" ? value.toUpperCase().replace(/[^0-9K]/g, "") : "";
 }
 
+// Valida un RUT chileno completo: cuerpo numérico + dígito verificador
+// (módulo 11). Acepta cualquier formato de entrada ("12.345.678-5",
+// "123456785", "12345678-K"); normalizeRut se encarga de limpiarlo.
+function isValidRut(value) {
+  const clean = normalizeRut(value);
+  if (clean.length < 2) return false;
+  const body = clean.slice(0, -1);
+  const dv = clean.slice(-1);
+  if (!/^\d+$/.test(body)) return false;
+  let sum = 0;
+  let multiplier = 2;
+  for (let i = body.length - 1; i >= 0; i--) {
+    sum += Number(body[i]) * multiplier;
+    multiplier = multiplier === 7 ? 2 : multiplier + 1;
+  }
+  const remainder = 11 - (sum % 11);
+  const expected =
+    remainder === 11 ? "0" : remainder === 10 ? "K" : String(remainder);
+  return dv === expected;
+}
+
 function normalizeDocumentName(value) {
   return typeof value === "string"
     ? value.trim().toLowerCase().replace(/\.pdf$/i, "").replace(/[^a-z0-9áéíóúüñ]+/gi, "")
@@ -741,6 +762,90 @@ app.get("/patients", requireRole(AGENDA_STAFF), async (request, response) => {
     return response
       .status(500)
       .json({ error: "No fue posible obtener la lista de pacientes." });
+  }
+});
+
+// Alta de un paciente nuevo. Solo captura la IDENTIDAD (nombre, rut, edad,
+// sexo, teléfono); los campos de "cita" heredados de patients (time, room,
+// exam, status, doctor) los llena la cita, no esto. Disponible para el
+// personal de agenda (incluye recepción, que registra pacientes en el mesón).
+//
+// OJO: todavía no existe edición de ficha en la app. Un error al crear no se
+// puede corregir desde Nexa (solo a mano en Supabase). Ver fast-follow.
+app.post("/patients", requireRole(AGENDA_STAFF), async (request, response) => {
+  try {
+    const body = request.body ?? {};
+
+    const name = typeof body.name === "string" ? body.name.trim() : "";
+    if (!name) {
+      return response.status(400).json({ error: "El nombre del paciente es obligatorio." });
+    }
+
+    const rut =
+      typeof body.rut === "string" ? body.rut.trim().replace(/\s+/g, "").toUpperCase() : "";
+    if (!rut) {
+      return response.status(400).json({ error: "El RUT del paciente es obligatorio." });
+    }
+    if (!isValidRut(rut)) {
+      return response
+        .status(400)
+        .json({ error: "El RUT no es válido: revisa el dígito verificador." });
+    }
+
+    let age = null;
+    if (body.age !== undefined && body.age !== null && `${body.age}`.trim() !== "") {
+      const parsed = Number(body.age);
+      if (!Number.isInteger(parsed) || parsed < 0 || parsed > 130) {
+        return response
+          .status(400)
+          .json({ error: "La edad debe ser un número entero entre 0 y 130." });
+      }
+      age = parsed;
+    }
+
+    let sexo = null;
+    if (body.sexo !== undefined && body.sexo !== null && `${body.sexo}`.trim() !== "") {
+      // Codificación 'M'/'F' (una letra), la misma que usa el módulo de
+      // Laboratorio para los rangos de referencia por sexo (isNumericOutOfRange).
+      const s = `${body.sexo}`.trim().toUpperCase();
+      if (s !== "M" && s !== "F") {
+        return response.status(400).json({ error: 'El sexo debe ser "M" o "F".' });
+      }
+      sexo = s;
+    }
+
+    const phone =
+      typeof body.phone === "string" && body.phone.trim() ? body.phone.trim() : null;
+    const observations =
+      typeof body.observations === "string" && body.observations.trim()
+        ? body.observations.trim()
+        : null;
+
+    // Deduplicación por RUT: no se crea una ficha si ya existe otra con el
+    // mismo RUT. Se devuelven las coincidencias para que la UI ofrezca usar
+    // la ficha existente.
+    const duplicates = await findPatientsByRutDb(rut);
+    if (duplicates.length > 0) {
+      return response.status(409).json({
+        error: "Ya existe una ficha con este RUT.",
+        matches: duplicates.map((p) => ({ id: p.id, name: p.name, rut: p.rut })),
+      });
+    }
+
+    // Solo columnas de identidad: el resto queda con el default de la tabla.
+    const { data, error } = await supabase
+      .from("patients")
+      .insert({ name, rut, age, sexo, phone, observations })
+      .select("id, name, rut, phone")
+      .single();
+    if (error) throw error;
+
+    return response.status(201).json({
+      patient: { id: data.id, name: data.name, rut: data.rut, phone: data.phone },
+    });
+  } catch (error) {
+    console.error("Error al crear el paciente:", error);
+    return response.status(500).json({ error: "No fue posible crear el paciente." });
   }
 });
 

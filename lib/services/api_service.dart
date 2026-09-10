@@ -1503,6 +1503,46 @@ class ApiService {
         .toList();
   }
 
+  /// Registra un paciente nuevo (solo identidad: nombre, rut, edad, sexo,
+  /// teléfono). Devuelve `{id, name, rut, phone}`. Lanza [ApiException] con el
+  /// mensaje del backend si el RUT ya existe (409) o no es válido.
+  static Future<Map<String, dynamic>> createPatient({
+    required String name,
+    required String rut,
+    int? age,
+    String? sexo,
+    String? phone,
+  }) async {
+    final http.Response response;
+
+    try {
+      response = await http
+          .post(
+            Uri.parse('$_baseUrl/patients'),
+            headers: _headers(extra: const {'Content-Type': 'application/json'}),
+            body: jsonEncode({
+              'name': name,
+              'rut': rut,
+              'age': ?age,
+              'sexo': ?sexo,
+              'phone': ?phone,
+            }),
+          )
+          .timeout(const Duration(seconds: 30));
+    } catch (_) {
+      throw const ApiException('No fue posible crear el paciente.');
+    }
+
+    final decodedBody = await _decodeMap(response);
+    final patient = decodedBody['patient'];
+
+    if (patient is! Map) {
+      throw const ApiException('El backend no entregó el paciente creado.');
+    }
+
+    return Map<String, dynamic>.from(patient);
+  }
+
   /// Agenda de citas. Sin `date` devuelve el día de hoy (día local de Chile).
   /// `statuses` filtra por uno o más estados (códigos: programada, en_espera,
   /// en_atencion, atendida, cancelada, no_asistio).

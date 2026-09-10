@@ -2088,6 +2088,21 @@ class _StatusBadge extends StatelessWidget {
         textColor = const Color(0xFFC2410C);
         icon = Icons.schedule;
         break;
+      case 'Atendido':
+        backgroundColor = const Color(0xFFF1F5F9);
+        textColor = const Color(0xFF475569);
+        icon = Icons.task_alt;
+        break;
+      case 'No asistió':
+        backgroundColor = const Color(0xFFFEE2E2);
+        textColor = const Color(0xFFB91C1C);
+        icon = Icons.person_off_outlined;
+        break;
+      case 'Cancelada':
+        backgroundColor = const Color(0xFFF1F5F9);
+        textColor = const Color(0xFF64748B);
+        icon = Icons.event_busy_outlined;
+        break;
       default:
         backgroundColor = const Color(0xFFEFF6FF);
         textColor = const Color(0xFF1D4ED8);

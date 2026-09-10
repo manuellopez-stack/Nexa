@@ -91,6 +91,8 @@ class _DashboardKpiSectionState extends State<DashboardKpiSection> {
         final pendingDental = _asInt(breakdown['dentalOrders']);
         final totalUploaded = _asInt(summary['totalUploadedDocuments']);
         final totalAnalyzed = _asInt(summary['totalAnalyzedDocuments']);
+        final awaitingAnalysis = _asInt(summary['documentsAwaitingAnalysis']);
+        final patientsWithAiSummary = _asInt(summary['patientsWithAiSummary']);
 
         final breakdownParts = <String>[
           if (pendingDocs > 0) '$pendingDocs docs',
@@ -113,7 +115,9 @@ class _DashboardKpiSectionState extends State<DashboardKpiSection> {
             title: 'Documentos analizados por IA',
             value: '$totalAnalyzed',
             variation: 'de $totalUploaded cargados',
-            detail: '${(totalUploaded - totalAnalyzed).clamp(0, totalUploaded)} por procesar',
+            detail: patientsWithAiSummary > 0
+                ? '$awaitingAnalysis sin analizar · $patientsWithAiSummary fichas resumidas'
+                : '$awaitingAnalysis sin analizar',
             icon: Icons.description_outlined,
             accentColor: const Color(0xFF06B6D4),
             progress: totalUploaded > 0 ? totalAnalyzed / totalUploaded : 0,

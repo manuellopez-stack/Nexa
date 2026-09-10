@@ -52,6 +52,13 @@ class ApiService {
   static bool get canAccessMail =>
       _role == 'administrador' || _role == 'recepcion';
   static bool get isReception => _role == 'recepcion';
+  //   - canAccessAgenda -> AGENDA_STAFF = administrador, medico, tecnico, recepcion
+  //     (gestión de citas: pantalla nueva en el AppBar del dashboard)
+  static bool get canAccessAgenda =>
+      _role == 'administrador' ||
+      _role == 'medico' ||
+      _role == 'tecnico' ||
+      _role == 'recepcion';
 
   static void _setSession(String accessToken, Map<String, dynamic> user, {String? role, String? fullName}) {
     _accessToken = accessToken;
@@ -1427,5 +1434,190 @@ class ApiService {
     }
 
     return _decodeMap(response);
+  }
+
+  // ============================================
+  // AGENDA DE CITAS
+  // ============================================
+
+  /// Catálogo de salas activas (para el selector de sala de una cita).
+  static Future<List<Map<String, dynamic>>> getRooms() async {
+    final http.Response response;
+
+    try {
+      response = await http
+          .get(Uri.parse('$_baseUrl/rooms'), headers: _headers())
+          .timeout(const Duration(seconds: 30));
+    } catch (_) {
+      throw const ApiException(
+        'No fue posible conectar con el backend de Nexa.',
+      );
+    }
+
+    final decodedBody = await _decodeMap(response);
+    final rooms = decodedBody['rooms'];
+
+    if (rooms is! List) {
+      throw const ApiException('El backend no entregó el catálogo de salas.');
+    }
+
+    return rooms
+        .whereType<Map>()
+        .map((room) => Map<String, dynamic>.from(room))
+        .toList();
+  }
+
+  /// Lista liviana de pacientes (id / nombre / rut / teléfono) para el
+  /// selector de "nueva cita". `search` filtra por nombre o rut.
+  static Future<List<Map<String, dynamic>>> getPatientsList({
+    String? search,
+  }) async {
+    final uri = Uri.parse('$_baseUrl/patients').replace(
+      queryParameters: {
+        if (search != null && search.trim().isNotEmpty) 'search': search.trim(),
+      },
+    );
+
+    final http.Response response;
+
+    try {
+      response = await http
+          .get(uri, headers: _headers())
+          .timeout(const Duration(seconds: 30));
+    } catch (_) {
+      throw const ApiException(
+        'No fue posible conectar con el backend de Nexa.',
+      );
+    }
+
+    final decodedBody = await _decodeMap(response);
+    final patients = decodedBody['patients'];
+
+    if (patients is! List) {
+      throw const ApiException('El backend no entregó la lista de pacientes.');
+    }
+
+    return patients
+        .whereType<Map>()
+        .map((patient) => Map<String, dynamic>.from(patient))
+        .toList();
+  }
+
+  /// Agenda de citas. Sin `date` devuelve el día de hoy (día local de Chile).
+  /// `statuses` filtra por uno o más estados (códigos: programada, en_espera,
+  /// en_atencion, atendida, cancelada, no_asistio).
+  static Future<List<Map<String, dynamic>>> getAppointments({
+    String? date,
+    List<String>? statuses,
+    String? roomId,
+    int? patientId,
+  }) async {
+    final uri = Uri.parse('$_baseUrl/appointments').replace(
+      queryParameters: {
+        if (date != null && date.isNotEmpty) 'date': date,
+        if (statuses != null && statuses.isNotEmpty) 'status': statuses.join(','),
+        if (roomId != null && roomId.isNotEmpty) 'roomId': roomId,
+        if (patientId != null) 'patientId': '$patientId',
+      },
+    );
+
+    final http.Response response;
+
+    try {
+      response = await http
+          .get(uri, headers: _headers())
+          .timeout(const Duration(seconds: 30));
+    } catch (_) {
+      throw const ApiException(
+        'No fue posible conectar con el backend de Nexa.',
+      );
+    }
+
+    final decodedBody = await _decodeMap(response);
+    final appointments = decodedBody['appointments'];
+
+    if (appointments is! List) {
+      throw const ApiException('El backend no entregó la agenda de citas.');
+    }
+
+    return appointments
+        .whereType<Map>()
+        .map((appointment) => Map<String, dynamic>.from(appointment))
+        .toList();
+  }
+
+  /// Crea una cita. `scheduledAt` es un instante ISO 8601 (UTC).
+  static Future<Map<String, dynamic>> createAppointment({
+    required int patientId,
+    required String scheduledAt,
+    String? roomId,
+    int? durationMin,
+    String? professional,
+    String? reason,
+    String? notes,
+    String? status,
+  }) async {
+    final http.Response response;
+
+    try {
+      response = await http
+          .post(
+            Uri.parse('$_baseUrl/appointments'),
+            headers: _headers(extra: const {'Content-Type': 'application/json'}),
+            body: jsonEncode({
+              'patientId': patientId,
+              'scheduledAt': scheduledAt,
+              if (roomId != null && roomId.isNotEmpty) 'roomId': roomId,
+              'durationMin': ?durationMin,
+              'professional': ?professional,
+              'reason': ?reason,
+              'notes': ?notes,
+              'status': ?status,
+            }),
+          )
+          .timeout(const Duration(seconds: 30));
+    } catch (_) {
+      throw const ApiException('No fue posible crear la cita.');
+    }
+
+    final decodedBody = await _decodeMap(response);
+    final appointment = decodedBody['appointment'];
+
+    if (appointment is! Map) {
+      throw const ApiException('El backend no entregó la cita creada.');
+    }
+
+    return Map<String, dynamic>.from(appointment);
+  }
+
+  /// Actualiza una cita: reprogramar (`scheduledAt`), cambiar sala (`roomId`,
+  /// cadena vacía para quitarla), cambiar estado (`status`) o editar datos.
+  /// Solo se envían los campos presentes en `changes`.
+  static Future<Map<String, dynamic>> updateAppointment(
+    String appointmentId,
+    Map<String, dynamic> changes,
+  ) async {
+    final http.Response response;
+
+    try {
+      response = await http
+          .patch(
+            Uri.parse('$_baseUrl/appointments/$appointmentId'),
+            headers: _headers(extra: const {'Content-Type': 'application/json'}),
+            body: jsonEncode(changes),
+          )
+          .timeout(const Duration(seconds: 30));
+    } catch (_) {
+      throw const ApiException('No fue posible actualizar la cita.');
+    }
+
+    final decodedBody = await _decodeMap(response);
+    final appointment = decodedBody['appointment'];
+
+    if (appointment is! Map) {
+      throw const ApiException('El backend no entregó la cita actualizada.');
+    }
+
+    return Map<String, dynamic>.from(appointment);
   }
 }

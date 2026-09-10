@@ -74,6 +74,9 @@ const ADMIN_ONLY = ["administrador"];
 const BILLING_STAFF = ["administrador", "recepcion"];
 // Quienes pueden usar el módulo de Correo (leer y responder desde Gmail).
 const MAIL_STAFF = ["administrador", "recepcion"];
+// Quienes gestionan la agenda de citas: el personal clínico + recepción, que
+// es quien agenda, recibe y reprograma pacientes en el mesón.
+const AGENDA_STAFF = ["administrador", "medico", "tecnico", "recepcion"];
 
 // V13: exige una sesión válida (token entregado por /auth/login).
 // Ahora además exige que la cuenta tenga un rol asignado en staff_profiles;
@@ -136,6 +139,29 @@ function normalizeDocumentName(value) {
   return typeof value === "string"
     ? value.trim().toLowerCase().replace(/\.pdf$/i, "").replace(/[^a-z0-9áéíóúüñ]+/gi, "")
     : "";
+}
+
+// Registro best-effort de una operación de IA, para las métricas del dashboard
+// ("Documentos analizados por IA"). Cuenta documentos/fichas distintos, no cada
+// re-análisis: la deduplicación (patient_id + doc_key) la hace la consulta.
+// Nunca hace fallar la respuesta al usuario: si el insert falla (por ejemplo,
+// la tabla ai_analyses todavía no existe), solo deja un warning en el log.
+async function logAiAnalysis({ patientId, filename = null, kind, staffEmail = null }) {
+  try {
+    const numericId = Number(patientId);
+    const { error } = await supabase.from("ai_analyses").insert({
+      patient_id: Number.isFinite(numericId) ? numericId : null,
+      filename: filename || null,
+      doc_key: filename ? normalizeDocumentName(filename) || null : null,
+      kind,
+      staff_email: staffEmail || null,
+    });
+    if (error) {
+      console.warn("No fue posible registrar el análisis de IA:", error.message);
+    }
+  } catch (error) {
+    console.warn("No fue posible registrar el análisis de IA:", error?.message ?? error);
+  }
 }
 
 // ---- Helpers para transformar filas de Supabase (snake_case) al formato
@@ -204,6 +230,209 @@ function shapeHistoryEvent(row) {
     exam: row.exam,
     summary: row.summary,
   };
+}
+
+function shapeRoomRow(row) {
+  return {
+    id: row.id,
+    name: row.name,
+    kind: row.kind,
+    capacity: row.capacity,
+    active: row.active,
+    sortOrder: row.sort_order,
+  };
+}
+
+// Estados de cita (tabla appointments) <-> etiqueta que la app ya sabe pintar
+// en el badge de "Pacientes del día". Mantener alineado con el CHECK de
+// appointments.status en backend/sql/appointments.sql.
+const APPOINTMENT_STATUSES = [
+  "programada",
+  "en_espera",
+  "en_atencion",
+  "atendida",
+  "cancelada",
+  "no_asistio",
+];
+
+const APPOINTMENT_STATUS_LABEL = {
+  programada: "Programado",
+  en_espera: "Esperando",
+  en_atencion: "En atención",
+  atendida: "Atendido",
+  cancelada: "Cancelada",
+  no_asistio: "No asistió",
+};
+
+function shapeAppointmentRow(row) {
+  return {
+    id: row.id,
+    patientId: row.patient_id,
+    roomId: row.room_id,
+    roomName: row.room?.name ?? null,
+    patientName: row.patient?.name ?? null,
+    scheduledAt: row.scheduled_at,
+    // Hora "HH:MM" y día "YYYY-MM-DD" ya resueltos en zona de la clínica, para
+    // que la app no tenga que repetir la conversión de zona horaria.
+    clock: formatClinicClock(row.scheduled_at),
+    scheduledDate: formatClinicDate(row.scheduled_at),
+    durationMin: row.duration_min,
+    status: row.status,
+    statusLabel: APPOINTMENT_STATUS_LABEL[row.status] ?? row.status,
+    professional: row.professional,
+    reason: row.reason,
+    notes: row.notes,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+// Zona horaria de la clínica. El resto del backend trabaja en UTC, pero la
+// agenda de citas ("hoy" y la hora que se muestra) tiene que seguir el día
+// local de Chile: una cita de las 21:00 en Chile no puede quedar clasificada
+// como del día siguiente por el desfase con UTC.
+const CLINIC_TIME_ZONE = "America/Santiago";
+
+// Offset en minutos de la zona de la clínica respecto de UTC en un instante
+// concreto (negativo para Chile). Se evalúa sobre la fecha real, así que
+// maneja el cambio de horario de verano.
+function clinicOffsetMinutes(at) {
+  const local = new Date(at.toLocaleString("en-US", { timeZone: CLINIC_TIME_ZONE }));
+  const utc = new Date(at.toLocaleString("en-US", { timeZone: "UTC" }));
+  return Math.round((local.getTime() - utc.getTime()) / 60000);
+}
+
+// Rango [startUtc, endUtc) en UTC que cubre un día local completo de la clínica.
+// `ymd` opcional (YYYY-MM-DD); por defecto, el día de hoy en Chile.
+function clinicDayRangeUtc(ymd) {
+  const day =
+    ymd ||
+    new Intl.DateTimeFormat("en-CA", {
+      timeZone: CLINIC_TIME_ZONE,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).format(new Date());
+  const [y, m, d] = day.split("-").map(Number);
+  // Offset calculado a mediodía para no caer justo sobre el salto de horario.
+  const offsetMin = clinicOffsetMinutes(new Date(Date.UTC(y, m - 1, d, 12)));
+  const startUtc = new Date(Date.UTC(y, m - 1, d, 0, 0, 0) - offsetMin * 60000);
+  const endUtc = new Date(startUtc.getTime() + 24 * 60 * 60 * 1000);
+  return { day, startUtc, endUtc };
+}
+
+// "HH:MM" de una cita, en hora de Chile (no UTC).
+function formatClinicClock(value) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  return new Intl.DateTimeFormat("en-GB", {
+    timeZone: CLINIC_TIME_ZONE,
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).format(date);
+}
+
+// "YYYY-MM-DD" de una cita, en día local de Chile (no UTC).
+function formatClinicDate(value) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: CLINIC_TIME_ZONE,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(date);
+}
+
+// ---- Puente cita -> ficha del paciente -----------------------------------
+// El estado del paciente (patients.status) alimenta el dashboard y la vista
+// "Pacientes del día". Cuando una cita pasa a 'en_atencion' o 'atendida', ese
+// estado tiene que moverse con ella, o el tablero queda desincronizado desde
+// el primer uso de la agenda. Best-effort: si el update falla, solo se deja un
+// warning y la operación sobre la cita no se cae.
+const APPOINTMENT_STATUS_TO_PATIENT_STATUS = {
+  en_atencion: "En atención",
+  atendida: "Atendido",
+};
+
+async function syncPatientStatusFromAppointment(patientId, appointmentStatus) {
+  const target = APPOINTMENT_STATUS_TO_PATIENT_STATUS[appointmentStatus];
+  if (!target) return;
+  const numericId = Number(patientId);
+  if (!Number.isInteger(numericId)) return;
+  const { error } = await supabase
+    .from("patients")
+    .update({ status: target })
+    .eq("id", numericId);
+  if (error) {
+    console.warn(
+      "No fue posible sincronizar el estado del paciente con la cita:",
+      error.message,
+    );
+  }
+}
+
+// ---- Choque de agenda ----------------------------------------------------
+// Dos citas activas no pueden solaparse en el tiempo si comparten sala o
+// profesional. Devuelve { appointment, reason } de la primera cita en
+// conflicto, o null. La hora de término se calcula acá (no hay columna end_at:
+// depende de duration_min), así que se trae una ventana amplia y el solape
+// exacto se filtra en memoria.
+async function findAppointmentConflict({
+  scheduledAt,
+  durationMin,
+  roomId,
+  professional,
+  excludeId,
+}) {
+  const start = scheduledAt.getTime();
+  const end = start + (Number(durationMin) || 30) * 60000;
+  const prof = (professional ?? "").trim();
+  // Sin sala ni profesional no hay nada con qué chocar.
+  if (!roomId && !prof) return null;
+
+  const windowStart = new Date(start - 12 * 60 * 60 * 1000).toISOString();
+  const windowEnd = new Date(end + 12 * 60 * 60 * 1000).toISOString();
+
+  const { data, error } = await supabase
+    .from("appointments")
+    .select(
+      "id, scheduled_at, duration_min, room_id, professional, status, patient:patients(name), room:rooms(name)",
+    )
+    .gte("scheduled_at", windowStart)
+    .lt("scheduled_at", windowEnd)
+    .not("status", "in", "(cancelada,no_asistio)");
+  if (error) throw error;
+
+  for (const row of data ?? []) {
+    if (excludeId && row.id === excludeId) continue;
+    const sameRoom = Boolean(roomId) && row.room_id === roomId;
+    const sameProf =
+      prof.length > 0 &&
+      (row.professional ?? "").trim().toLowerCase() === prof.toLowerCase();
+    if (!sameRoom && !sameProf) continue;
+
+    const rowStart = new Date(row.scheduled_at).getTime();
+    const rowEnd = rowStart + (Number(row.duration_min) || 30) * 60000;
+    if (rowStart < end && rowEnd > start) {
+      return { appointment: row, reason: sameRoom ? "sala" : "profesional" };
+    }
+  }
+  return null;
+}
+
+function appointmentConflictMessage({ appointment, reason }) {
+  const clock = formatClinicClock(appointment.scheduled_at);
+  const patientName = appointment.patient?.name;
+  const detail = patientName ? ` con ${patientName}` : "";
+  if (reason === "sala") {
+    const roomName = appointment.room?.name ?? "asignada";
+    return `La sala "${roomName}" ya tiene una cita a las ${clock}${detail}.`;
+  }
+  return `El profesional ya tiene una cita a las ${clock}${detail}.`;
 }
 
 function shapeStaffRow(row) {
@@ -413,6 +642,8 @@ app.post("/auth/login", async (request, response) => {
 // tener un rol asignado. Algunas rutas además exigen un rol específico.
 app.use("/patients", requireAuth);
 app.use("/dashboard", requireAuth);
+app.use("/rooms", requireAuth);
+app.use("/appointments", requireAuth);
 app.use("/chat", requireAuth, requireRole(VALIDATORS));
 app.use("/lab", requireAuth);
 app.use("/imaging", requireAuth);
@@ -422,8 +653,116 @@ app.use("/staff", requireAuth, requireRole(ADMIN_ONLY));
 app.use("/notifications", requireAuth);
 app.use("/mail", requireAuth, requireRole(MAIL_STAFF));
 
+// Agenda del día leída desde la tabla appointments. Devuelve filas con la MISMA
+// forma que /patients/today esperaba (id = id del paciente, para abrir la
+// ficha), sobrescribiendo hora / sala / estado / examen con los datos de la
+// cita. Devuelve null si la tabla appointments todavía no existe (SQL no
+// corrido) o si no hay citas para hoy: en ese caso el endpoint cae al
+// comportamiento anterior (leer patients.time) y la vista no se rompe.
+async function loadTodayAgendaFromAppointments(canSeeClinicalData) {
+  // Ventana "de hoy" = día local completo de la clínica (Chile), convertido a
+  // límites UTC. El backfill del SQL fecha las citas con el mismo criterio
+  // (timezone('America/Santiago', now())).
+  const { startUtc, endUtc } = clinicDayRangeUtc();
+
+  const { data, error } = await supabase
+    .from("appointments")
+    .select("*, patient:patients(*), room:rooms(name)")
+    .gte("scheduled_at", startUtc.toISOString())
+    .lt("scheduled_at", endUtc.toISOString())
+    .neq("status", "cancelada")
+    .order("scheduled_at", { ascending: true });
+
+  if (error) {
+    console.warn("No fue posible leer la agenda de citas:", error.message);
+    return null;
+  }
+  if (!data || data.length === 0) return null;
+
+  const shapePatient = canSeeClinicalData ? shapePatientRow : shapePatientRowBasic;
+
+  return data
+    .filter((row) => row.patient)
+    .map((row) => {
+      const base = shapePatient(row.patient);
+      return {
+        ...base,
+        // id se mantiene = id del paciente (lo usa la app para abrir la ficha).
+        appointmentId: row.id,
+        appointmentStatus: row.status,
+        scheduledAt: row.scheduled_at,
+        durationMin: row.duration_min,
+        roomId: row.room_id,
+        time: formatClinicClock(row.scheduled_at),
+        room: row.room?.name ?? base.room ?? "",
+        status: APPOINTMENT_STATUS_LABEL[row.status] ?? base.status,
+        exam: row.reason ?? base.exam ?? "",
+        doctor: row.professional ?? base.doctor ?? "",
+      };
+    });
+}
+
+// Lista liviana de pacientes para selectores (por ejemplo, "nueva cita" en la
+// agenda). Solo identificación, sin datos clínicos. Disponible para el
+// personal de agenda, que incluye recepción.
+app.get("/patients", requireRole(AGENDA_STAFF), async (request, response) => {
+  try {
+    // ilike con comodines: se limpian los caracteres que rompen el filtro .or()
+    // de PostgREST (comas y paréntesis) y el propio patrón (%).
+    const search = (request.query.search ?? "")
+      .toString()
+      .trim()
+      .replace(/[,()%*]/g, "")
+      .slice(0, 80);
+
+    let query = supabase
+      .from("patients")
+      .select("id, name, rut, phone")
+      .order("name", { ascending: true })
+      .limit(500);
+
+    if (search) {
+      query = query.or(`name.ilike.%${search}%,rut.ilike.%${search}%`);
+    }
+
+    const { data, error } = await query;
+    if (error) throw error;
+
+    return response.json({
+      patients: (data ?? []).map((row) => ({
+        id: row.id,
+        name: row.name,
+        rut: row.rut,
+        phone: row.phone,
+      })),
+    });
+  } catch (error) {
+    console.error("Error al obtener la lista de pacientes:", error);
+    return response
+      .status(500)
+      .json({ error: "No fue posible obtener la lista de pacientes." });
+  }
+});
+
 app.get("/patients/today", async (request, response) => {
   try {
+    // Por seguridad, solo el personal clínico (administrador, medico, tecnico)
+    // recibe la ficha completa. Cualquier otro rol (recepcion o un rol no
+    // reconocido) recibe la versión reducida, sin datos clínicos.
+    const canSeeClinicalData = CLINICAL_STAFF.includes(request.staffRole);
+    const { day } = clinicDayRangeUtc();
+
+    const agenda = await loadTodayAgendaFromAppointments(canSeeClinicalData);
+    if (agenda) {
+      return response.json({
+        fecha: day,
+        total: agenda.length,
+        patients: agenda,
+        source: "appointments",
+      });
+    }
+
+    // Fallback: agenda derivada de patients.time (comportamiento previo a Citas).
     const { data, error } = await supabase
       .from("patients")
       .select("*")
@@ -431,18 +770,15 @@ app.get("/patients/today", async (request, response) => {
 
     if (error) throw error;
 
-    // Por seguridad, solo el personal clínico (administrador, medico, tecnico)
-    // recibe la ficha completa. Cualquier otro rol (recepcion o un rol no
-    // reconocido) recibe la versión reducida, sin datos clínicos.
-    const canSeeClinicalData = CLINICAL_STAFF.includes(request.staffRole);
     const patients = (data ?? []).map(
       canSeeClinicalData ? shapePatientRow : shapePatientRowBasic,
     );
 
     return response.json({
-      fecha: new Date().toISOString().split("T")[0],
+      fecha: day,
       total: patients.length,
       patients,
+      source: "patients",
     });
   } catch (error) {
     console.error("Error al obtener pacientes de hoy:", error);
@@ -454,7 +790,17 @@ app.get("/patients/today", async (request, response) => {
 // Solo personal clínico: el rol recepcion no ve indicadores agregados.
 app.get("/dashboard/summary", requireRole(CLINICAL_STAFF), async (_request, response) => {
   try {
-    const KNOWN_ROOMS = ["Sala 1", "Sala 2", "Sala 3"];
+    // Total de salas: catálogo real (rooms activas). Si la tabla todavía no
+    // existe o está vacía, se cae al valor histórico para no romper la métrica.
+    const FALLBACK_ROOM_COUNT = 3;
+    let totalKnownRooms = FALLBACK_ROOM_COUNT;
+    const { count: activeRoomCount, error: roomsError } = await supabase
+      .from("rooms")
+      .select("id", { count: "exact", head: true })
+      .eq("active", true);
+    if (!roomsError && typeof activeRoomCount === "number" && activeRoomCount > 0) {
+      totalKnownRooms = activeRoomCount;
+    }
 
     const { data: patientRows, error: patientsError } = await supabase
       .from("patients")
@@ -482,6 +828,24 @@ app.get("/dashboard/summary", requireRole(CLINICAL_STAFF), async (_request, resp
     if (docsCountError) throw docsCountError;
 
     const totalDocuments = documentsCount ?? 0;
+
+    // Análisis de IA (histórico, sin backfill). Cuenta documentos/fichas
+    // distintos, no cada re-análisis. Mientras la función ai_analysis_metrics
+    // no exista (SQL no corrido), se mantiene el comportamiento anterior para
+    // no regresar la UI: analizados = total, sin analizar = 0.
+    let documentsAnalyzedByAi = totalDocuments;
+    let documentsAwaitingAnalysis = 0;
+    let patientsWithAiSummary = 0;
+    let aiAnalysesTotal = totalDocuments;
+    const { data: aiMetrics, error: aiMetricsError } = await supabase.rpc("ai_analysis_metrics");
+    if (aiMetricsError) {
+      console.warn("No fue posible obtener métricas de análisis de IA:", aiMetricsError.message);
+    } else if (aiMetrics && typeof aiMetrics === "object") {
+      documentsAnalyzedByAi = Number(aiMetrics.documentsAnalyzed) || 0;
+      documentsAwaitingAnalysis = Number(aiMetrics.documentsAwaiting) || 0;
+      patientsWithAiSummary = Number(aiMetrics.patientSummaries) || 0;
+      aiAnalysesTotal = Number(aiMetrics.total) || 0;
+    }
 
     // "Pendientes de validación" = todo lo que un profesional todavía tiene
     // que revisar/aprobar: documentos sin validar + órdenes clínicas ya
@@ -528,14 +892,291 @@ app.get("/dashboard/summary", requireRole(CLINICAL_STAFF), async (_request, resp
       },
       documentsToValidate: pendingDocuments,
       totalUploadedDocuments: totalDocuments,
-      totalAnalyzedDocuments: totalDocuments,
-      documentsAwaitingAnalysis: 0,
+      totalAnalyzedDocuments: documentsAnalyzedByAi,
+      documentsAwaitingAnalysis,
+      patientsWithAiSummary,
+      aiAnalysesTotal,
       roomsInUse,
-      totalKnownRooms: KNOWN_ROOMS.length,
+      totalKnownRooms,
     });
   } catch (error) {
     console.error("Error al calcular el resumen del dashboard:", error);
     return response.status(500).json({ error: "No fue posible calcular el resumen." });
+  }
+});
+
+// Catálogo de salas. Lo consume el dashboard (Fase 2) y, más adelante, el
+// selector de sala de Citas. Por defecto solo salas activas; ?all=1 devuelve
+// también las inactivas.
+app.get("/rooms", requireRole(AGENDA_STAFF), async (request, response) => {
+  try {
+    let query = supabase
+      .from("rooms")
+      .select("id, name, kind, capacity, active, sort_order")
+      .order("sort_order", { ascending: true })
+      .order("name", { ascending: true });
+
+    if (request.query.all !== "1" && request.query.all !== "true") {
+      query = query.eq("active", true);
+    }
+
+    const { data, error } = await query;
+    if (error) throw error;
+
+    return response.json({ rooms: (data ?? []).map(shapeRoomRow) });
+  } catch (error) {
+    console.error("Error al obtener las salas:", error);
+    return response.status(500).json({ error: "No fue posible obtener las salas." });
+  }
+});
+
+// ---- Agenda de citas (tabla appointments). Personal clínico + recepción.
+
+// GET /appointments?date=YYYY-MM-DD&from=&to=&status=&roomId=&patientId=
+// Sin filtros de fecha devuelve la agenda del día local de la clínica (Chile).
+app.get("/appointments", requireRole(AGENDA_STAFF), async (request, response) => {
+  try {
+    const { date, from, to, status, roomId, patientId } = request.query;
+
+    let rangeStart;
+    let rangeEnd;
+    if (from || to) {
+      // Instantes ISO explícitos: se usan tal cual.
+      if (from) rangeStart = new Date(from);
+      if (to) rangeEnd = new Date(to);
+      if ((from && Number.isNaN(rangeStart.getTime())) || (to && Number.isNaN(rangeEnd.getTime()))) {
+        return response.status(400).json({ error: "El rango de fechas indicado no es válido." });
+      }
+    } else {
+      // `date` (o el día de hoy): día local completo de la clínica -> límites UTC.
+      if (date && !/^\d{4}-\d{2}-\d{2}$/.test(String(date))) {
+        return response.status(400).json({ error: "La fecha debe tener el formato YYYY-MM-DD." });
+      }
+      const { startUtc, endUtc } = clinicDayRangeUtc(date || undefined);
+      rangeStart = startUtc;
+      rangeEnd = endUtc;
+    }
+
+    let query = supabase
+      .from("appointments")
+      .select("*, patient:patients(name), room:rooms(name)")
+      .order("scheduled_at", { ascending: true });
+
+    if (rangeStart) query = query.gte("scheduled_at", rangeStart.toISOString());
+    if (rangeEnd) query = query.lt("scheduled_at", rangeEnd.toISOString());
+    if (status) {
+      const wanted = String(status).split(",").map((s) => s.trim()).filter(Boolean);
+      const invalid = wanted.filter((s) => !APPOINTMENT_STATUSES.includes(s));
+      if (invalid.length) {
+        return response.status(400).json({ error: `Estado no válido: ${invalid.join(", ")}` });
+      }
+      query = wanted.length === 1 ? query.eq("status", wanted[0]) : query.in("status", wanted);
+    }
+    if (roomId) query = query.eq("room_id", roomId);
+    if (patientId) query = query.eq("patient_id", Number(patientId));
+
+    const { data, error } = await query;
+    if (error) throw error;
+
+    return response.json({ appointments: (data ?? []).map(shapeAppointmentRow) });
+  } catch (error) {
+    console.error("Error al obtener la agenda de citas:", error);
+    return response.status(500).json({ error: "No fue posible obtener la agenda de citas." });
+  }
+});
+
+// POST /appointments
+// { patientId, scheduledAt, roomId?, durationMin?, professional?, reason?, notes?, status? }
+app.post("/appointments", requireRole(AGENDA_STAFF), async (request, response) => {
+  try {
+    const body = request.body ?? {};
+    const patientId = Number(body.patientId);
+    if (!Number.isInteger(patientId)) {
+      return response.status(400).json({ error: "Debes indicar el paciente de la cita." });
+    }
+
+    const scheduledAt = body.scheduledAt ? new Date(body.scheduledAt) : null;
+    if (!scheduledAt || Number.isNaN(scheduledAt.getTime())) {
+      return response.status(400).json({ error: "Debes indicar una fecha y hora válidas para la cita." });
+    }
+
+    const status = body.status ?? "programada";
+    if (!APPOINTMENT_STATUSES.includes(status)) {
+      return response.status(400).json({ error: "El estado de la cita no es válido." });
+    }
+
+    let durationMin = 30;
+    if (body.durationMin !== undefined && body.durationMin !== null) {
+      durationMin = Number(body.durationMin);
+      if (!Number.isFinite(durationMin) || durationMin <= 0) {
+        return response.status(400).json({ error: "La duración debe ser un número de minutos mayor que cero." });
+      }
+    }
+
+    const { data: patientRow, error: patientError } = await supabase
+      .from("patients")
+      .select("id")
+      .eq("id", patientId)
+      .maybeSingle();
+    if (patientError) throw patientError;
+    if (!patientRow) return response.status(404).json({ error: "Paciente no encontrado" });
+
+    if (body.roomId) {
+      const { data: roomRow, error: roomError } = await supabase
+        .from("rooms")
+        .select("id")
+        .eq("id", body.roomId)
+        .maybeSingle();
+      if (roomError) throw roomError;
+      if (!roomRow) return response.status(404).json({ error: "La sala indicada no existe." });
+    }
+
+    // Choque de agenda: misma sala o mismo profesional a una hora que se
+    // solapa. Los estados cancelada/no_asistio no bloquean.
+    if (!["cancelada", "no_asistio"].includes(status)) {
+      const conflict = await findAppointmentConflict({
+        scheduledAt,
+        durationMin,
+        roomId: body.roomId || null,
+        professional: body.professional,
+      });
+      if (conflict) {
+        return response.status(409).json({ error: appointmentConflictMessage(conflict) });
+      }
+    }
+
+    const { data, error } = await supabase
+      .from("appointments")
+      .insert({
+        patient_id: patientId,
+        room_id: body.roomId || null,
+        scheduled_at: scheduledAt.toISOString(),
+        duration_min: durationMin,
+        status,
+        professional: body.professional?.trim() || null,
+        reason: body.reason?.trim() || null,
+        notes: body.notes?.trim() || null,
+      })
+      .select("*, patient:patients(name), room:rooms(name)")
+      .single();
+    if (error) throw error;
+
+    // Si la cita nace ya "en atención" o "atendida", arrastra el estado del
+    // paciente para no dejar el dashboard desincronizado.
+    await syncPatientStatusFromAppointment(patientId, status);
+
+    return response.status(201).json({ appointment: shapeAppointmentRow(data) });
+  } catch (error) {
+    console.error("Error al crear la cita:", error);
+    return response.status(500).json({ error: "No fue posible crear la cita." });
+  }
+});
+
+// PATCH /appointments/:id
+// Reprograma, reasigna sala, cambia estado (incluye 'cancelada') o edita datos.
+app.patch("/appointments/:id", requireRole(AGENDA_STAFF), async (request, response) => {
+  try {
+    const body = request.body ?? {};
+    const patch = {};
+
+    if (body.scheduledAt !== undefined) {
+      const scheduledAt = body.scheduledAt ? new Date(body.scheduledAt) : null;
+      if (!scheduledAt || Number.isNaN(scheduledAt.getTime())) {
+        return response.status(400).json({ error: "La fecha y hora de la cita no son válidas." });
+      }
+      patch.scheduled_at = scheduledAt.toISOString();
+    }
+
+    if (body.status !== undefined) {
+      if (!APPOINTMENT_STATUSES.includes(body.status)) {
+        return response.status(400).json({ error: "El estado de la cita no es válido." });
+      }
+      patch.status = body.status;
+    }
+
+    if (body.durationMin !== undefined) {
+      const durationMin = Number(body.durationMin);
+      if (!Number.isFinite(durationMin) || durationMin <= 0) {
+        return response.status(400).json({ error: "La duración debe ser un número de minutos mayor que cero." });
+      }
+      patch.duration_min = durationMin;
+    }
+
+    if (body.roomId !== undefined) {
+      if (body.roomId) {
+        const { data: roomRow, error: roomError } = await supabase
+          .from("rooms")
+          .select("id")
+          .eq("id", body.roomId)
+          .maybeSingle();
+        if (roomError) throw roomError;
+        if (!roomRow) return response.status(404).json({ error: "La sala indicada no existe." });
+        patch.room_id = body.roomId;
+      } else {
+        patch.room_id = null;
+      }
+    }
+
+    if (body.professional !== undefined) patch.professional = body.professional?.trim() || null;
+    if (body.reason !== undefined) patch.reason = body.reason?.trim() || null;
+    if (body.notes !== undefined) patch.notes = body.notes?.trim() || null;
+
+    if (Object.keys(patch).length === 0) {
+      return response.status(400).json({ error: "No se recibieron cambios para la cita." });
+    }
+
+    const { data: existing, error: existingError } = await supabase
+      .from("appointments")
+      .select("*")
+      .eq("id", request.params.id)
+      .maybeSingle();
+    if (existingError) throw existingError;
+    if (!existing) return response.status(404).json({ error: "Cita no encontrada" });
+
+    // Revalida el choque de agenda si cambió algo que afecta el solape (hora,
+    // duración, sala o profesional). Los estados cancelada/no_asistio liberan
+    // el bloque, así que en ese caso no se valida.
+    const effectiveStatus = patch.status ?? existing.status;
+    const touchesOverlap =
+      patch.scheduled_at !== undefined ||
+      patch.duration_min !== undefined ||
+      patch.room_id !== undefined ||
+      patch.professional !== undefined;
+    if (touchesOverlap && !["cancelada", "no_asistio"].includes(effectiveStatus)) {
+      const conflict = await findAppointmentConflict({
+        scheduledAt: new Date(patch.scheduled_at ?? existing.scheduled_at),
+        durationMin: patch.duration_min ?? existing.duration_min ?? 30,
+        roomId: patch.room_id !== undefined ? patch.room_id : existing.room_id,
+        professional:
+          patch.professional !== undefined ? patch.professional : existing.professional,
+        excludeId: existing.id,
+      });
+      if (conflict) {
+        return response.status(409).json({ error: appointmentConflictMessage(conflict) });
+      }
+    }
+
+    patch.updated_at = new Date().toISOString();
+
+    const { data, error } = await supabase
+      .from("appointments")
+      .update(patch)
+      .eq("id", request.params.id)
+      .select("*, patient:patients(name), room:rooms(name)")
+      .maybeSingle();
+    if (error) throw error;
+    if (!data) return response.status(404).json({ error: "Cita no encontrada" });
+
+    // Puente hacia la ficha: si la cita pasó a 'en_atencion' o 'atendida',
+    // mueve también patients.status.
+    if (patch.status) {
+      await syncPatientStatusFromAppointment(data.patient_id, patch.status);
+    }
+
+    return response.json({ appointment: shapeAppointmentRow(data) });
+  } catch (error) {
+    console.error("Error al actualizar la cita:", error);
+    return response.status(500).json({ error: "No fue posible actualizar la cita." });
   }
 });
 
@@ -553,6 +1194,11 @@ app.get("/patients/:id", requireRole(CLINICAL_STAFF), async (request, response) 
           .eq("id", patient.id);
         if (updateError) throw updateError;
         patient.aiSummary = aiSummary;
+        await logAiAnalysis({
+          patientId: patient.id,
+          kind: "patient_summary",
+          staffEmail: request.user?.email,
+        });
       } catch (summaryError) {
         console.error("Error al generar resumen del paciente:", summaryError);
         return response.json({
@@ -581,6 +1227,12 @@ app.post("/patients/:id/summary", requireRole(CLINICAL_STAFF), async (request, r
       .update({ ai_summary: aiSummary })
       .eq("id", patient.id);
     if (updateError) throw updateError;
+
+    await logAiAnalysis({
+      patientId: patient.id,
+      kind: "patient_summary",
+      staffEmail: request.user?.email,
+    });
 
     return response.json({ patientId: patient.id, aiSummary });
   } catch (error) {
@@ -812,6 +1464,11 @@ app.patch("/patients/:id/from-document", requireRole(CLINICAL_STAFF), async (req
       const aiSummary = await generatePatientSummary(refreshedPatient);
       await supabase.from("patients").update({ ai_summary: aiSummary }).eq("id", targetPatient.id);
       refreshedPatient.aiSummary = aiSummary;
+      await logAiAnalysis({
+        patientId: targetPatient.id,
+        kind: "patient_summary",
+        staffEmail: request.user?.email,
+      });
     } catch (error) {
       console.error("No fue posible regenerar el resumen:", error);
     }
@@ -1063,6 +1720,14 @@ Reglas estrictas:
 
     const answer = result.output_text?.trim();
     if (!answer) return response.status(502).json({ error: "OpenAI no entregó una respuesta de texto." });
+
+    await logAiAnalysis({
+      patientId,
+      filename: record.filename,
+      kind: "document_ask",
+      staffEmail: request.user?.email,
+    });
+
     return response.json({ patientId, filename: record.filename, respuesta: answer });
   } catch (error) {
     console.error("Error al consultar documento con Nexa:", error);
@@ -1190,6 +1855,13 @@ Si el documento no es clínico, usa isClinical=false y extrae igualmente la info
       `Datos faltantes: ${missing.length ? missing.join(", ") : "Ninguno informado"}`,
       `Diferencias con la ficha: ${differences.length ? differences.join(" | ") : "No se informaron diferencias"}`,
     ];
+
+    await logAiAnalysis({
+      patientId: patient.id,
+      filename,
+      kind: "document_analysis",
+      staffEmail: request.user?.email,
+    });
 
     return response.json({
       patientId: patient.id,

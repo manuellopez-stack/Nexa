@@ -6,6 +6,7 @@ import 'widgets/gmail_notifications_button.dart';
 import 'package:flutter/material.dart';
 
 import 'core/nexa_colors.dart';
+import 'screens/appointments_page.dart';
 import 'screens/mail_page.dart';
 import 'screens/staff_management_page.dart';
 import 'services/api_service.dart';
@@ -375,6 +376,20 @@ class DashboardPage extends StatelessWidget {
         actions: [
           if (ApiService.role == 'administrador')
             const GmailNotificationsButton(),
+          if (ApiService.canAccessAgenda)
+            IconButton(
+              tooltip: 'Gestión de citas',
+              icon: const Icon(
+                Icons.event_note_outlined,
+                color: NexaColors.textSecondary,
+              ),
+              onPressed: () {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (_) => const AppointmentsPage()),
+                );
+              },
+            ),
           if (ApiService.canAccessMail)
             IconButton(
               tooltip: 'Correo',

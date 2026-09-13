@@ -1064,25 +1064,54 @@ app.get("/dashboard/summary", requireRole(CLINICAL_STAFF), async (_request, resp
       totalKnownRooms = activeRoomCount;
     }
 
-    const { data: patientRows, error: patientsError } = await supabase
-      .from("patients")
-      .select("id, status, room");
-    if (patientsError) throw patientsError;
+    // Pacientes de hoy / estados / salas en uso: se derivan de la agenda real
+    // (tabla appointments), igual que /patients/today — así ambas vistas
+    // siempre coinciden. `appointmentStatus` es el enum crudo de la cita
+    // ('en_espera', 'en_atencion', 'programada', ...), no la etiqueta en
+    // español. "Pacientes hoy" incluye no_asistio (seguían siendo la agenda
+    // del día), solo excluye cancelada (ya lo hace loadTodayAgendaFromAppointments).
+    //
+    // Fallback si la tabla todavía no existe o no hay citas para hoy:
+    // comportamiento histórico (todos los pacientes de la tabla patients),
+    // para no romper el dashboard entre el deploy y el Run del SQL.
+    const todayAgenda = await loadTodayAgendaFromAppointments(true);
 
-    const patients = patientRows ?? [];
-    const waiting = patients.filter((p) => p.status === "Esperando").length;
-    const inAttention = patients.filter((p) => p.status === "En atención").length;
-    const scheduled = patients.filter((p) => p.status === "Programado").length;
+    let patientsToday;
+    let waiting;
+    let inAttention;
+    let scheduled;
+    let roomsInUse;
 
-    // Salas en uso: solo salas ocupadas por un paciente que está siendo
-    // atendido ahora mismo. El total de salas sigue hardcodeado hasta que
-    // exista el catálogo real de salas.
-    const roomsInUse = new Set(
-      patients
-        .filter((p) => p.status === "En atención")
-        .map((p) => (typeof p.room === "string" ? p.room.trim() : ""))
-        .filter((room) => room.length > 0),
-    ).size;
+    if (todayAgenda) {
+      patientsToday = todayAgenda.length;
+      waiting = todayAgenda.filter((p) => p.appointmentStatus === "en_espera").length;
+      inAttention = todayAgenda.filter((p) => p.appointmentStatus === "en_atencion").length;
+      scheduled = todayAgenda.filter((p) => p.appointmentStatus === "programada").length;
+      // Salas en uso: catálogo real (appointments.room_id -> rooms), no el
+      // string libre patients.room, acotado a las citas de HOY en atención.
+      roomsInUse = new Set(
+        todayAgenda
+          .filter((p) => p.appointmentStatus === "en_atencion" && p.roomId)
+          .map((p) => p.roomId),
+      ).size;
+    } else {
+      const { data: patientRows, error: patientsError } = await supabase
+        .from("patients")
+        .select("id, status, room");
+      if (patientsError) throw patientsError;
+
+      const patients = patientRows ?? [];
+      patientsToday = patients.length;
+      waiting = patients.filter((p) => p.status === "Esperando").length;
+      inAttention = patients.filter((p) => p.status === "En atención").length;
+      scheduled = patients.filter((p) => p.status === "Programado").length;
+      roomsInUse = new Set(
+        patients
+          .filter((p) => p.status === "En atención")
+          .map((p) => (typeof p.room === "string" ? p.room.trim() : ""))
+          .filter((room) => room.length > 0),
+      ).size;
+    }
 
     const { count: documentsCount, error: docsCountError } = await supabase
       .from("documents")
@@ -1141,7 +1170,7 @@ app.get("/dashboard/summary", requireRole(CLINICAL_STAFF), async (_request, resp
 
     return response.json({
       fecha: new Date().toISOString().split("T")[0],
-      patientsToday: patients.length,
+      patientsToday,
       waiting,
       inAttention,
       scheduled,

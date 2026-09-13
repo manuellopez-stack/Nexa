@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
-import '../core/nexa_colors.dart';
 import '../services/api_service.dart';
 
 /// Valida un RUT chileno completo (cuerpo + dígito verificador, módulo 11).
@@ -26,16 +25,26 @@ String? validateRut(String raw) {
   return dv == expected ? null : 'El dígito verificador no corresponde';
 }
 
-/// Diálogo para registrar un paciente nuevo (solo identidad).
+/// Diálogo para registrar un paciente nuevo o editar la identidad de uno
+/// existente (nombre, rut, edad, sexo, teléfono, observaciones).
 ///
-/// Devuelve, vía `Navigator.pop`, el mapa del paciente creado
-/// (`{id, name, rut, phone}` — misma forma que `ApiService.getPatientsList`)
-/// o `null` si se cancela.
+/// - `PatientFormDialog()` -> alta.
+/// - `PatientFormDialog.edit(patient: ...)` -> edición; `patient` debe traer
+///   al menos `id` y, si están disponibles, `name/rut/age/sexo/phone/
+///   observations` (ver `ApiService.getPatientIdentity`).
 ///
-/// Todavía NO hay edición de ficha en la app: un error acá solo se corrige
-/// a mano en Supabase.
+/// Devuelve, vía `Navigator.pop`, el mapa del paciente creado/editado
+/// (`{id, name, rut, age, sexo, phone, observations}`) o `null` si se
+/// cancela.
 class PatientFormDialog extends StatefulWidget {
-  const PatientFormDialog({super.key});
+  const PatientFormDialog({super.key}) : editPatient = null;
+
+  const PatientFormDialog.edit({super.key, required Map<String, dynamic> patient})
+      : editPatient = patient;
+
+  final Map<String, dynamic>? editPatient;
+
+  bool get isEditing => editPatient != null;
 
   @override
   State<PatientFormDialog> createState() => _PatientFormDialogState();
@@ -47,6 +56,7 @@ class _PatientFormDialogState extends State<PatientFormDialog> {
   final _rutController = TextEditingController();
   final _ageController = TextEditingController();
   final _phoneController = TextEditingController();
+  final _observationsController = TextEditingController();
 
   String? _sexo; // 'M' | 'F' | null
 
@@ -54,11 +64,27 @@ class _PatientFormDialogState extends State<PatientFormDialog> {
   String? _error;
 
   @override
+  void initState() {
+    super.initState();
+    final patient = widget.editPatient;
+    if (patient != null) {
+      _nameController.text = patient['name']?.toString() ?? '';
+      _rutController.text = patient['rut']?.toString() ?? '';
+      _ageController.text = patient['age'] == null ? '' : '${patient['age']}';
+      _phoneController.text = patient['phone']?.toString() ?? '';
+      _observationsController.text = patient['observations']?.toString() ?? '';
+      final sexo = patient['sexo']?.toString().trim().toUpperCase();
+      _sexo = (sexo == 'M' || sexo == 'F') ? sexo : null;
+    }
+  }
+
+  @override
   void dispose() {
     _nameController.dispose();
     _rutController.dispose();
     _ageController.dispose();
     _phoneController.dispose();
+    _observationsController.dispose();
     super.dispose();
   }
 
@@ -73,21 +99,56 @@ class _PatientFormDialogState extends State<PatientFormDialog> {
 
     try {
       final ageText = _ageController.text.trim();
-      final patient = await ApiService.createPatient(
-        name: _nameController.text.trim(),
-        rut: _rutController.text.trim(),
-        age: ageText.isEmpty ? null : int.tryParse(ageText),
-        sexo: _sexo,
-        phone: _phoneController.text.trim().isEmpty
-            ? null
-            : _phoneController.text.trim(),
-      );
+      final age = ageText.isEmpty ? null : int.tryParse(ageText);
+      final name = _nameController.text.trim();
+      final rut = _rutController.text.trim();
+      final phone =
+          _phoneController.text.trim().isEmpty ? null : _phoneController.text.trim();
+      final observations = _observationsController.text.trim().isEmpty
+          ? null
+          : _observationsController.text.trim();
+
+      Map<String, dynamic> patient;
+      if (widget.isEditing) {
+        final id = widget.editPatient!['id'];
+        patient = await ApiService.updatePatient(
+          id: id is int ? id : int.parse('$id'),
+          name: name,
+          rut: rut,
+          age: age,
+          sexo: _sexo,
+          phone: phone,
+          observations: observations,
+        );
+        // El backend solo devuelve la identidad corta (id/name/rut/phone);
+        // completamos con lo que el propio formulario acaba de guardar para
+        // que quien llame pueda refrescar la ficha entera sin otro round-trip.
+        patient = {
+          ...patient,
+          'age': age,
+          'sexo': _sexo,
+          'observations': observations,
+        };
+      } else {
+        patient = await ApiService.createPatient(
+          name: name,
+          rut: rut,
+          age: age,
+          sexo: _sexo,
+          phone: phone,
+          observations: observations,
+        );
+      }
       if (mounted) Navigator.pop(context, patient);
     } on ApiException catch (error) {
       if (mounted) setState(() => _error = error.message);
     } catch (_) {
       if (mounted) {
-        setState(() => _error = 'No fue posible crear el paciente.');
+        setState(
+          () => _error = widget.isEditing
+              ? 'No fue posible actualizar el paciente.'
+              : 'No fue posible crear el paciente.',
+        );
       }
     } finally {
       if (mounted) setState(() => _isSubmitting = false);
@@ -97,7 +158,7 @@ class _PatientFormDialogState extends State<PatientFormDialog> {
   @override
   Widget build(BuildContext context) {
     return AlertDialog(
-      title: const Text('Registrar paciente'),
+      title: Text(widget.isEditing ? 'Editar ficha' : 'Registrar paciente'),
       content: SizedBox(
         width: 420,
         child: SingleChildScrollView(
@@ -186,6 +247,16 @@ class _PatientFormDialogState extends State<PatientFormDialog> {
                     border: OutlineInputBorder(),
                   ),
                 ),
+                const SizedBox(height: 14),
+                TextFormField(
+                  controller: _observationsController,
+                  minLines: 2,
+                  maxLines: 4,
+                  decoration: const InputDecoration(
+                    labelText: 'Observaciones',
+                    border: OutlineInputBorder(),
+                  ),
+                ),
                 if (_error != null) ...[
                   const SizedBox(height: 14),
                   Text(
@@ -196,15 +267,6 @@ class _PatientFormDialogState extends State<PatientFormDialog> {
                     ),
                   ),
                 ],
-                const SizedBox(height: 6),
-                const Text(
-                  'La ficha aún no se puede editar desde la app: revisa los '
-                  'datos antes de guardar.',
-                  style: TextStyle(
-                    fontSize: 12,
-                    color: NexaColors.textSecondary,
-                  ),
-                ),
               ],
             ),
           ),
@@ -226,7 +288,7 @@ class _PatientFormDialogState extends State<PatientFormDialog> {
                     color: Colors.white,
                   ),
                 )
-              : const Text('Crear paciente'),
+              : Text(widget.isEditing ? 'Guardar cambios' : 'Crear paciente'),
         ),
       ],
     );

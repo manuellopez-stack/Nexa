@@ -9,6 +9,7 @@ import 'billing_section.dart';
 import 'dental_section.dart';
 import 'imaging_section.dart';
 import 'lab_section.dart';
+import 'patient_form.dart';
 
 class TodayPatientsSection extends StatefulWidget {
   const TodayPatientsSection({super.key});
@@ -307,6 +308,22 @@ class _PatientDialogState extends State<_PatientDialog> {
   void dispose() {
     _questionController.dispose();
     super.dispose();
+  }
+
+  Future<void> _editFicha() async {
+    final id = widget.patient['id'];
+    if (id is! int) return;
+
+    final updated = await showDialog<Map<String, dynamic>>(
+      context: context,
+      builder: (_) => PatientFormDialog.edit(patient: widget.patient),
+    );
+
+    if (updated != null && mounted) {
+      setState(() {
+        widget.patient.addAll(updated);
+      });
+    }
   }
 
   List<Map<String, dynamic>> _mapList(dynamic value) {
@@ -1029,6 +1046,11 @@ $documentsText
         ),
       ),
       actions: [
+        TextButton.icon(
+          onPressed: _editFicha,
+          icon: const Icon(Icons.edit_outlined, size: 18),
+          label: const Text('Editar ficha'),
+        ),
         TextButton(
           onPressed: () => Navigator.pop(context),
           child: const Text('Cerrar'),

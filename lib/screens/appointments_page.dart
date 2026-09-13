@@ -1437,6 +1437,44 @@ class _PatientPickerDialogState extends State<_PatientPickerDialog> {
     }
   }
 
+  Future<void> _editPatient(Map<String, dynamic> row) async {
+    final id = row['id'];
+    if (id is! int) return;
+
+    Map<String, dynamic> identity;
+    try {
+      identity = await ApiService.getPatientIdentity(id);
+    } on ApiException catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text(error.message)));
+      }
+      return;
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('No fue posible cargar la ficha del paciente.')),
+        );
+      }
+      return;
+    }
+
+    if (!mounted) return;
+    final updated = await showDialog<Map<String, dynamic>>(
+      context: context,
+      builder: (_) => PatientFormDialog.edit(patient: identity),
+    );
+
+    // Solo refrescamos la fila en el picker (nombre/rut visibles); no cierra
+    // el picker, para que se pueda seguir eligiendo un paciente.
+    if (updated != null && mounted) {
+      setState(() {
+        final index = _all.indexWhere((patient) => patient['id'] == id);
+        if (index != -1) _all[index] = {..._all[index], ...updated};
+      });
+    }
+  }
+
   List<Map<String, dynamic>> get _filtered {
     final query = _searchController.text.trim().toLowerCase();
     if (query.isEmpty) return _all;
@@ -1508,6 +1546,11 @@ class _PatientPickerDialogState extends State<_PatientPickerDialog> {
                         dense: true,
                         title: Text(name),
                         subtitle: rut.isEmpty ? null : Text(rut),
+                        trailing: IconButton(
+                          tooltip: 'Editar ficha',
+                          icon: const Icon(Icons.edit_outlined, size: 18),
+                          onPressed: () => _editPatient(patient),
+                        ),
                         onTap: () => Navigator.pop(context, patient),
                       );
                     },

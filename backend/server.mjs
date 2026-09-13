@@ -20,7 +20,44 @@ const app = express();
 const port = 3000;
 const model = process.env.OPENAI_MODEL || "gpt-5-mini";
 
-app.use(cors());
+// CORS. Comportamiento histórico: si no se configura FRONTEND_ORIGIN, se
+// acepta cualquier origen (como hacía el `cors()` sin opciones de antes) —
+// no es un agujero de seguridad nuevo: la app Flutter no usa cookies, se
+// autentica con Bearer token, así que un origen abierto no expone la sesión
+// de nadie (un sitio malicioso no puede leer ni forjar el token de otra
+// pestaña). Si se define FRONTEND_ORIGIN (uno o más orígenes separados por
+// coma) se restringe a esa lista, para asegurar producción cuando se quiera.
+//
+// Siempre se aceptan, además, los orígenes de desarrollo local: localhost/
+// 127.0.0.1 en cualquier puerto y los `*.app.github.dev` que asigna GitHub
+// Codespaces al reenviar un puerto — cambian de URL en cada preview y de
+// puerto en cada reinicio de `flutter run`, por eso no se pueden listar a
+// mano vía FRONTEND_ORIGIN.
+const configuredOrigins = (process.env.FRONTEND_ORIGIN || "")
+  .split(",")
+  .map((origin) => origin.trim())
+  .filter(Boolean);
+
+const LOCALHOST_ORIGIN_RE = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i;
+const CODESPACES_ORIGIN_RE = /^https:\/\/[a-z0-9-]+\.app\.github\.dev$/i;
+
+function isOriginAllowed(origin) {
+  // Sin header Origin (apps nativas, curl, healthchecks): no es una llamada
+  // de navegador, CORS no aplica.
+  if (!origin) return true;
+  if (LOCALHOST_ORIGIN_RE.test(origin) || CODESPACES_ORIGIN_RE.test(origin)) return true;
+  // Sin FRONTEND_ORIGIN configurado: mismo comportamiento abierto de antes.
+  if (configuredOrigins.length === 0) return true;
+  return configuredOrigins.includes(origin);
+}
+
+app.use(
+  cors({
+    origin(origin, callback) {
+      callback(null, isOriginAllowed(origin));
+    },
+  }),
+);
 app.use(express.json({ limit: "50mb" }));
 
 if (!process.env.OPENAI_API_KEY) {
@@ -154,6 +191,81 @@ function isValidRut(value) {
   const expected =
     remainder === 11 ? "0" : remainder === 10 ? "K" : String(remainder);
   return dv === expected;
+}
+
+// Valida y normaliza los campos de IDENTIDAD de una ficha de paciente
+// (nombre, rut, edad, sexo, teléfono, observaciones). Compartida entre el alta
+// (POST /patients) y la edición (PATCH /patients/:id).
+//
+//   - partial: false (alta) -> exige nombre y rut.
+//   - partial: true  (edición) -> solo revisa las claves presentes en el body;
+//     una clave con null o "" limpia el campo (salvo nombre y rut, que no
+//     pueden quedar vacíos).
+//
+// Devuelve `{ values }` con solo las claves a escribir, o `{ error }` con el
+// mensaje 400 correspondiente.
+function parsePatientIdentityInput(body, { partial }) {
+  const source = body ?? {};
+  const has = (key) => Object.prototype.hasOwnProperty.call(source, key);
+  const values = {};
+
+  if (!partial || has("name")) {
+    const name = typeof source.name === "string" ? source.name.trim() : "";
+    if (!name) return { error: "El nombre del paciente es obligatorio." };
+    values.name = name;
+  }
+
+  if (!partial || has("rut")) {
+    const rut =
+      typeof source.rut === "string"
+        ? source.rut.trim().replace(/\s+/g, "").toUpperCase()
+        : "";
+    if (!rut) return { error: "El RUT del paciente es obligatorio." };
+    if (!isValidRut(rut)) {
+      return { error: "El RUT no es válido: revisa el dígito verificador." };
+    }
+    values.rut = rut;
+  }
+
+  if (has("age")) {
+    if (source.age === null || `${source.age}`.trim() === "") {
+      values.age = null;
+    } else {
+      const parsed = Number(source.age);
+      if (!Number.isInteger(parsed) || parsed < 0 || parsed > 130) {
+        return { error: "La edad debe ser un número entero entre 0 y 130." };
+      }
+      values.age = parsed;
+    }
+  }
+
+  if (has("sexo")) {
+    if (source.sexo === null || `${source.sexo}`.trim() === "") {
+      values.sexo = null;
+    } else {
+      // Codificación 'M'/'F' (una letra), la misma que usa el módulo de
+      // Laboratorio para los rangos de referencia por sexo (isNumericOutOfRange).
+      const s = `${source.sexo}`.trim().toUpperCase();
+      if (s !== "M" && s !== "F") {
+        return { error: 'El sexo debe ser "M" o "F".' };
+      }
+      values.sexo = s;
+    }
+  }
+
+  if (has("phone")) {
+    values.phone =
+      typeof source.phone === "string" && source.phone.trim() ? source.phone.trim() : null;
+  }
+
+  if (has("observations")) {
+    values.observations =
+      typeof source.observations === "string" && source.observations.trim()
+        ? source.observations.trim()
+        : null;
+  }
+
+  return { values };
 }
 
 function normalizeDocumentName(value) {
@@ -766,65 +878,23 @@ app.get("/patients", requireRole(AGENDA_STAFF), async (request, response) => {
 });
 
 // Alta de un paciente nuevo. Solo captura la IDENTIDAD (nombre, rut, edad,
-// sexo, teléfono); los campos de "cita" heredados de patients (time, room,
-// exam, status, doctor) los llena la cita, no esto. Disponible para el
-// personal de agenda (incluye recepción, que registra pacientes en el mesón).
-//
-// OJO: todavía no existe edición de ficha en la app. Un error al crear no se
-// puede corregir desde Nexa (solo a mano en Supabase). Ver fast-follow.
+// sexo, teléfono, observaciones); los campos de "cita" heredados de patients
+// (time, room, exam, status, doctor) los llena la cita, no esto. Disponible
+// para el personal de agenda (incluye recepción, que registra pacientes en el
+// mesón). La corrección posterior se hace vía PATCH /patients/:id.
 app.post("/patients", requireRole(AGENDA_STAFF), async (request, response) => {
   try {
-    const body = request.body ?? {};
-
-    const name = typeof body.name === "string" ? body.name.trim() : "";
-    if (!name) {
-      return response.status(400).json({ error: "El nombre del paciente es obligatorio." });
+    const { values, error: validationError } = parsePatientIdentityInput(request.body, {
+      partial: false,
+    });
+    if (validationError) {
+      return response.status(400).json({ error: validationError });
     }
-
-    const rut =
-      typeof body.rut === "string" ? body.rut.trim().replace(/\s+/g, "").toUpperCase() : "";
-    if (!rut) {
-      return response.status(400).json({ error: "El RUT del paciente es obligatorio." });
-    }
-    if (!isValidRut(rut)) {
-      return response
-        .status(400)
-        .json({ error: "El RUT no es válido: revisa el dígito verificador." });
-    }
-
-    let age = null;
-    if (body.age !== undefined && body.age !== null && `${body.age}`.trim() !== "") {
-      const parsed = Number(body.age);
-      if (!Number.isInteger(parsed) || parsed < 0 || parsed > 130) {
-        return response
-          .status(400)
-          .json({ error: "La edad debe ser un número entero entre 0 y 130." });
-      }
-      age = parsed;
-    }
-
-    let sexo = null;
-    if (body.sexo !== undefined && body.sexo !== null && `${body.sexo}`.trim() !== "") {
-      // Codificación 'M'/'F' (una letra), la misma que usa el módulo de
-      // Laboratorio para los rangos de referencia por sexo (isNumericOutOfRange).
-      const s = `${body.sexo}`.trim().toUpperCase();
-      if (s !== "M" && s !== "F") {
-        return response.status(400).json({ error: 'El sexo debe ser "M" o "F".' });
-      }
-      sexo = s;
-    }
-
-    const phone =
-      typeof body.phone === "string" && body.phone.trim() ? body.phone.trim() : null;
-    const observations =
-      typeof body.observations === "string" && body.observations.trim()
-        ? body.observations.trim()
-        : null;
 
     // Deduplicación por RUT: no se crea una ficha si ya existe otra con el
     // mismo RUT. Se devuelven las coincidencias para que la UI ofrezca usar
     // la ficha existente.
-    const duplicates = await findPatientsByRutDb(rut);
+    const duplicates = await findPatientsByRutDb(values.rut);
     if (duplicates.length > 0) {
       return response.status(409).json({
         error: "Ya existe una ficha con este RUT.",
@@ -833,9 +903,11 @@ app.post("/patients", requireRole(AGENDA_STAFF), async (request, response) => {
     }
 
     // Solo columnas de identidad: el resto queda con el default de la tabla.
+    // Los campos opcionales ausentes se insertan como null (comportamiento
+    // histórico), luego `values` sobreescribe lo que llegó en el body.
     const { data, error } = await supabase
       .from("patients")
-      .insert({ name, rut, age, sexo, phone, observations })
+      .insert({ age: null, sexo: null, phone: null, observations: null, ...values })
       .select("id, name, rut, phone")
       .single();
     if (error) throw error;
@@ -846,6 +918,91 @@ app.post("/patients", requireRole(AGENDA_STAFF), async (request, response) => {
   } catch (error) {
     console.error("Error al crear el paciente:", error);
     return response.status(500).json({ error: "No fue posible crear el paciente." });
+  }
+});
+
+// Ficha de identidad para editar. A diferencia de GET /patients/:id, es de
+// solo lectura pura: no dispara la generación del resumen IA ni carga
+// documentos/historial. Mismo rol que el alta (AGENDA_STAFF).
+app.get("/patients/:id/identity", requireRole(AGENDA_STAFF), async (request, response) => {
+  try {
+    const patientId = Number(request.params.id);
+    if (!Number.isInteger(patientId)) {
+      return response.status(400).json({ error: "Identificador de paciente inválido." });
+    }
+
+    const { data, error } = await supabase
+      .from("patients")
+      .select("id, name, rut, age, sexo, phone, observations")
+      .eq("id", patientId)
+      .maybeSingle();
+    if (error) throw error;
+    if (!data) return response.status(404).json({ error: "Paciente no encontrado" });
+
+    return response.json({ patient: data });
+  } catch (error) {
+    console.error("Error al obtener la identidad del paciente:", error);
+    return response
+      .status(500)
+      .json({ error: "No fue posible obtener la ficha del paciente." });
+  }
+});
+
+// Edición de la ficha de identidad. Body PARCIAL: solo se actualizan las
+// claves presentes; un valor null/"" limpia el campo (salvo nombre y rut).
+// Los campos de "cita" (time, room, exam, status, doctor) y los derivados
+// clínicos/IA (priority, risk, ai_summary) no se tocan desde acá.
+app.patch("/patients/:id", requireRole(AGENDA_STAFF), async (request, response) => {
+  try {
+    const patientId = Number(request.params.id);
+    if (!Number.isInteger(patientId)) {
+      return response.status(400).json({ error: "Identificador de paciente inválido." });
+    }
+
+    const { data: existing, error: lookupError } = await supabase
+      .from("patients")
+      .select("id")
+      .eq("id", patientId)
+      .maybeSingle();
+    if (lookupError) throw lookupError;
+    if (!existing) return response.status(404).json({ error: "Paciente no encontrado" });
+
+    const { values, error: validationError } = parsePatientIdentityInput(request.body, {
+      partial: true,
+    });
+    if (validationError) {
+      return response.status(400).json({ error: validationError });
+    }
+    if (Object.keys(values).length === 0) {
+      return response.status(400).json({ error: "No se recibieron campos para actualizar." });
+    }
+
+    // Si cambia el RUT, misma deduplicación que el alta, excluyendo la propia
+    // ficha.
+    if (values.rut !== undefined) {
+      const duplicates = await findPatientsByRutDb(values.rut, patientId);
+      if (duplicates.length > 0) {
+        return response.status(409).json({
+          error: "Ya existe otra ficha con este RUT.",
+          matches: duplicates.map((p) => ({ id: p.id, name: p.name, rut: p.rut })),
+        });
+      }
+    }
+
+    const { data, error } = await supabase
+      .from("patients")
+      .update(values)
+      .eq("id", patientId)
+      .select("id, name, rut, phone")
+      .single();
+    if (error) throw error;
+
+    return response.json({
+      patient: { id: data.id, name: data.name, rut: data.rut, phone: data.phone },
+    });
+  } catch (error) {
+    console.error("Error al actualizar el paciente:", error);
+    return response.status(500).json({ error: "No fue posible actualizar el paciente." });
   }
 });
 

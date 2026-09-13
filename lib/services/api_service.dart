@@ -1504,14 +1504,16 @@ class ApiService {
   }
 
   /// Registra un paciente nuevo (solo identidad: nombre, rut, edad, sexo,
-  /// teléfono). Devuelve `{id, name, rut, phone}`. Lanza [ApiException] con el
-  /// mensaje del backend si el RUT ya existe (409) o no es válido.
+  /// teléfono, observaciones). Devuelve `{id, name, rut, phone}`. Lanza
+  /// [ApiException] con el mensaje del backend si el RUT ya existe (409) o no
+  /// es válido.
   static Future<Map<String, dynamic>> createPatient({
     required String name,
     required String rut,
     int? age,
     String? sexo,
     String? phone,
+    String? observations,
   }) async {
     final http.Response response;
 
@@ -1526,6 +1528,7 @@ class ApiService {
               'age': ?age,
               'sexo': ?sexo,
               'phone': ?phone,
+              'observations': ?observations,
             }),
           )
           .timeout(const Duration(seconds: 30));
@@ -1538,6 +1541,79 @@ class ApiService {
 
     if (patient is! Map) {
       throw const ApiException('El backend no entregó el paciente creado.');
+    }
+
+    return Map<String, dynamic>.from(patient);
+  }
+
+  /// Ficha de identidad de un paciente para precargar la edición
+  /// (`{id, name, rut, age, sexo, phone, observations}`). A diferencia de
+  /// [getPatient], no trae datos clínicos ni dispara la generación del
+  /// resumen IA.
+  static Future<Map<String, dynamic>> getPatientIdentity(int id) async {
+    final http.Response response;
+
+    try {
+      response = await http
+          .get(Uri.parse('$_baseUrl/patients/$id/identity'), headers: _headers())
+          .timeout(const Duration(seconds: 30));
+    } catch (_) {
+      throw const ApiException(
+        'No fue posible conectar con el backend de Nexa.',
+      );
+    }
+
+    final decodedBody = await _decodeMap(response);
+    final patient = decodedBody['patient'];
+
+    if (patient is! Map) {
+      throw const ApiException('El backend no entregó la ficha del paciente.');
+    }
+
+    return Map<String, dynamic>.from(patient);
+  }
+
+  /// Actualiza la identidad de un paciente existente (nombre, rut, edad,
+  /// sexo, teléfono, observaciones). A diferencia de [createPatient], acá
+  /// `age`/`sexo`/`phone`/`observations` en `null` explícito BORRA el campo
+  /// (se envían siempre, a diferencia del alta). Lanza [ApiException] con el
+  /// mensaje del backend si el RUT ya pertenece a otra ficha (409) o no es
+  /// válido.
+  static Future<Map<String, dynamic>> updatePatient({
+    required int id,
+    required String name,
+    required String rut,
+    int? age,
+    String? sexo,
+    String? phone,
+    String? observations,
+  }) async {
+    final http.Response response;
+
+    try {
+      response = await http
+          .patch(
+            Uri.parse('$_baseUrl/patients/$id'),
+            headers: _headers(extra: const {'Content-Type': 'application/json'}),
+            body: jsonEncode({
+              'name': name,
+              'rut': rut,
+              'age': age,
+              'sexo': sexo,
+              'phone': phone,
+              'observations': observations,
+            }),
+          )
+          .timeout(const Duration(seconds: 30));
+    } catch (_) {
+      throw const ApiException('No fue posible actualizar el paciente.');
+    }
+
+    final decodedBody = await _decodeMap(response);
+    final patient = decodedBody['patient'];
+
+    if (patient is! Map) {
+      throw const ApiException('El backend no entregó el paciente actualizado.');
     }
 
     return Map<String, dynamic>.from(patient);

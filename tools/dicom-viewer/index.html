@@ -30,6 +30,14 @@
   }
   .bar button:hover { background: #273031; }
   .bar button.active { background: #0c7580; border-color: #0c7580; color: #fff; }
+  .bar button:disabled { opacity: .35; cursor: default; }
+  .bar .nav { display: flex; align-items: center; gap: 6px; padding-left: 6px; border-left: 1px solid #293233; }
+  /* display:flex de arriba pisa el display:none implícito del atributo
+     [hidden] (mayor especificidad); sin esto, con 1 sola imagen el bloque de
+     navegación se veía igual aunque updateNavUI() ya le pusiera hidden=true. */
+  .bar .nav[hidden] { display: none; }
+  .bar .nav button { padding: 6px 10px; }
+  .bar .nav span { color: #cdd6d6; font-variant-numeric: tabular-nums; min-width: 52px; text-align: center; }
   .bar .hint { color: #6d7e7e; font-size: 12px; margin-left: auto; }
   #wrap { flex: 1; position: relative; min-height: 0; }
   #viewport {
@@ -55,6 +63,11 @@
   <button data-tool="Zoom">Zoom</button>
   <button data-tool="Pan">Pan</button>
   <button id="reset">Reset</button>
+  <span class="nav" id="nav" hidden>
+    <button id="prevImg" title="Imagen anterior (←)">◀</button>
+    <span id="navCount">1 / 1</span>
+    <button id="nextImg" title="Imagen siguiente (→)">▶</button>
+  </span>
   <span class="hint">arrastrar = herramienta activa · rueda = zoom</span>
 </div>
 

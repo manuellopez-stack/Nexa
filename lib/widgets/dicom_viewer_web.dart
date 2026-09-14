@@ -13,6 +13,7 @@ int _seq = 0;
 Future<void> showDicomViewer(
   BuildContext context, {
   required List<String> dicomUrls,
+  int initialIndex = 0,
   String? title,
 }) {
   final urls = dicomUrls
@@ -28,20 +29,33 @@ Future<void> showDicomViewer(
     );
   }
 
+  // Clamp defensivo: si el índice llega fuera de rango (por ejemplo, la lista
+  // cambió entre que se armaron las miniaturas y el click), abre en la 0 en
+  // vez de mandarle un índice inválido al visor.
+  final safeInitialIndex = (initialIndex >= 0 && initialIndex < urls.length)
+      ? initialIndex
+      : 0;
+
   return showDialog<void>(
     context: context,
     barrierColor: Colors.black.withValues(alpha: 0.75),
     builder: (dialogContext) => _DicomViewerDialog(
       dicomUrls: urls,
+      initialIndex: safeInitialIndex,
       title: title ?? 'Visor DICOM',
     ),
   );
 }
 
 class _DicomViewerDialog extends StatefulWidget {
-  const _DicomViewerDialog({required this.dicomUrls, required this.title});
+  const _DicomViewerDialog({
+    required this.dicomUrls,
+    required this.initialIndex,
+    required this.title,
+  });
 
   final List<String> dicomUrls;
+  final int initialIndex;
   final String title;
 
   @override
@@ -90,6 +104,7 @@ class _DicomViewerDialogState extends State<_DicomViewerDialog> {
     final payload = <String, Object?>{
       'type': 'nexa:load',
       'urls': widget.dicomUrls,
+      'initialIndex': widget.initialIndex,
     }.jsify();
     _iframe?.contentWindow?.postMessage(payload, '*'.toJS);
   }

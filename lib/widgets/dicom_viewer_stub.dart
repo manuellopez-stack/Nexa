@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 Future<void> showDicomViewer(
   BuildContext context, {
   required List<String> dicomUrls,
+  int initialIndex = 0,
   String? title,
 }) {
   return showDialog<void>(

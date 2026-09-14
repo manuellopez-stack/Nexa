@@ -8,10 +8,20 @@ import 'dicom_viewer_stub.dart'
 /// En web incrusta `web/dicom-viewer/index.html` dentro de un `<iframe>` y le
 /// pasa las signed URLs por `postMessage`. En otras plataformas muestra un
 /// aviso (la app hoy solo se usa en web).
+///
+/// [initialIndex]: posición del stack en la que debe abrir el visor (por
+/// ejemplo, la imagen cuya miniatura se clickeó). Navegar entre imágenes una
+/// vez abierto (flechas/teclado) lo maneja el propio visor.
 Future<void> showDicomViewer(
   BuildContext context, {
   required List<String> dicomUrls,
+  int initialIndex = 0,
   String? title,
 }) {
-  return impl.showDicomViewer(context, dicomUrls: dicomUrls, title: title);
+  return impl.showDicomViewer(
+    context,
+    dicomUrls: dicomUrls,
+    initialIndex: initialIndex,
+    title: title,
+  );
 }

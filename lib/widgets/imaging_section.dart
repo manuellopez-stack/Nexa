@@ -473,10 +473,11 @@ class _ImagingOrderDetailDialogState extends State<_ImagingOrderDetailDialog> {
     }
   }
 
-  void _openDicomViewer(String dicomUrl) {
+  void _openDicomViewer(List<String> dicomUrls, int initialIndex) {
     showDicomViewer(
       context,
-      dicomUrls: [dicomUrl],
+      dicomUrls: dicomUrls,
+      initialIndex: initialIndex,
       title: 'Imagen del estudio',
     );
   }
@@ -696,6 +697,16 @@ class _ImagingOrderDetailDialogState extends State<_ImagingOrderDetailDialog> {
                         );
                       }
 
+                      // Solo los archivos con DICOM válido entran al visor;
+                      // este es el mismo orden (y los mismos índices) que se
+                      // le pasa al visor para que "siguiente/anterior" navegue
+                      // exactamente por lo que se ve acá.
+                      final dicomUrls = images
+                          .map((f) => f['dicomUrl']?.toString())
+                          .whereType<String>()
+                          .where((u) => u.isNotEmpty)
+                          .toList(growable: false);
+
                       return Wrap(
                         spacing: 10,
                         runSpacing: 10,
@@ -725,7 +736,10 @@ class _ImagingOrderDetailDialogState extends State<_ImagingOrderDetailDialog> {
 
                           return _ImageThumb(
                             pngUrl: hasPng ? pngUrl : null,
-                            onOpen: () => _openDicomViewer(dicomUrl),
+                            onOpen: () => _openDicomViewer(
+                              dicomUrls,
+                              dicomUrls.indexOf(dicomUrl),
+                            ),
                           );
                         }).toList(),
                       );

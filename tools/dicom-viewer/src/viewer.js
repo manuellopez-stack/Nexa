@@ -2,12 +2,18 @@
 // `npm run build` (Vite) lo compila a web/dicom-viewer/, que la app Flutter
 // sirve e incrusta en un <iframe> (ver lib/widgets/dicom_viewer_web.dart).
 //
+// Navegación entre varias imágenes de una misma orden (stack): es enteramente
+// interna a este visor (flechas de la barra + teclado ← →). Flutter solo le
+// dice en qué índice abrir; no hace falta que Flutter conozca ni sincronice
+// el índice actual.
+//
 // Comunicación con la app Flutter (window.postMessage):
-//   recibe  { type: 'nexa:load',  urls: [signedUrl, ...] }
+//   recibe  { type: 'nexa:load',  urls: [signedUrl, ...], initialIndex? }
 //   recibe  { type: 'nexa:tool',  tool: 'WindowLevel' | 'Zoom' | 'Pan' }
 //   recibe  { type: 'nexa:reset' }
 //   emite   { type: 'nexa:ready' }
 //   emite   { type: 'nexa:loaded', count }
+//   emite   { type: 'nexa:index',  index, count }  (cambia la imagen del stack)
 //   emite   { type: 'nexa:error', message }
 
 import {
@@ -51,7 +57,10 @@ function post(msg) {
 let viewport = null;
 let toolGroup = null;
 let cornerstoneReady = false;
-let pendingUrls = null;
+let pendingLoad = null;
+// Estado del stack actual, para la navegación (flechas/teclado) y su UI.
+let stackImageIds = [];
+let currentIndex = 0;
 const embedded = window.parent !== window;
 
 // El listener se registra ya (antes de que termine el init async) para no
@@ -59,14 +68,56 @@ const embedded = window.parent !== window;
 window.addEventListener('message', (ev) => {
   const d = ev.data || {};
   if (d.type === 'nexa:load') {
-    if (cornerstoneReady) loadUrls(d.urls);
-    else pendingUrls = d.urls;
+    const load = {
+      urls: d.urls,
+      initialIndex: Number.isInteger(d.initialIndex) ? d.initialIndex : 0,
+    };
+    if (cornerstoneReady) loadUrls(load.urls, load.initialIndex);
+    else pendingLoad = load;
   } else if (d.type === 'nexa:tool') {
     setPrimaryTool(d.tool);
   } else if (d.type === 'nexa:reset') {
     resetView();
   }
 });
+
+// ---- Navegación entre imágenes del stack (flechas de la barra + teclado) --
+
+const navEl = () => document.getElementById('nav');
+const navCountEl = () => document.getElementById('navCount');
+const prevBtnEl = () => document.getElementById('prevImg');
+const nextBtnEl = () => document.getElementById('nextImg');
+
+// Muestra/oculta el bloque de navegación (solo tiene sentido con 2+
+// imágenes) y actualiza el contador y el estado disabled de las flechas.
+function updateNavUI() {
+  const nav = navEl();
+  if (!nav) return;
+  const total = stackImageIds.length;
+  nav.hidden = total <= 1;
+  if (total <= 1) return;
+
+  const countEl = navCountEl();
+  if (countEl) countEl.textContent = `${currentIndex + 1} / ${total}`;
+  const prev = prevBtnEl();
+  if (prev) prev.disabled = currentIndex <= 0;
+  const next = nextBtnEl();
+  if (next) next.disabled = currentIndex >= total - 1;
+}
+
+// Cambia la imagen actual dentro del stack ya cargado (sin recargar nada:
+// setImageIdIndex reutiliza el caché de Cornerstone). Mantiene zoom/pan/
+// windowing tal como estaban, como en cualquier visor de series.
+async function goToIndex(index) {
+  if (!viewport || stackImageIds.length === 0) return;
+  const clamped = Math.max(0, Math.min(index, stackImageIds.length - 1));
+  if (clamped === currentIndex) return;
+  await viewport.setImageIdIndex(clamped);
+  currentIndex = clamped;
+  viewport.render();
+  updateNavUI();
+  post({ type: 'nexa:index', index: currentIndex, count: stackImageIds.length });
+}
 
 function setPrimaryTool(name) {
   if (!toolGroup || !PRIMARY_TOOLS.includes(name)) return;
@@ -92,7 +143,7 @@ function resetView() {
   log('reset');
 }
 
-async function loadUrls(urls) {
+async function loadUrls(urls, initialIndex = 0) {
   if (!viewport) return;
   const clean = (urls || [])
     .filter((u) => typeof u === 'string' && u.length > 0)
@@ -101,12 +152,16 @@ async function loadUrls(urls) {
     .map((u) => new URL(u, document.baseURI).href);
   if (clean.length === 0) { log('sin URLs para cargar', 'err'); return; }
   const imageIds = clean.map((u) => `wadouri:${u}`);
+  const startIndex = Math.max(0, Math.min(initialIndex, imageIds.length - 1));
   const t0 = performance.now();
   log(`cargando ${imageIds.length} imagen(es)…`);
   try {
-    await viewport.setStack(imageIds, 0);
+    await viewport.setStack(imageIds, startIndex);
+    stackImageIds = imageIds;
+    currentIndex = startIndex;
     resetView();
     setPrimaryTool(WindowLevelTool.toolName);
+    updateNavUI();
     log(`listo ✓ (${Math.round(performance.now() - t0)} ms)`, 'ok');
     post({ type: 'nexa:loaded', count: imageIds.length });
   } catch (err) {
@@ -157,6 +212,24 @@ async function main() {
   const resetBtn = document.getElementById('reset');
   if (resetBtn) resetBtn.addEventListener('click', resetView);
 
+  const prevBtn = prevBtnEl();
+  if (prevBtn) prevBtn.addEventListener('click', () => goToIndex(currentIndex - 1));
+  const nextBtn = nextBtnEl();
+  if (nextBtn) nextBtn.addEventListener('click', () => goToIndex(currentIndex + 1));
+
+  // Flechas del teclado = siguiente/anterior imagen del stack. La rueda del
+  // mouse se queda en Zoom (ver listener de 'wheel' más arriba), así que no
+  // hay conflicto entre ambos gestos.
+  window.addEventListener('keydown', (e) => {
+    if (e.key === 'ArrowLeft') {
+      e.preventDefault();
+      goToIndex(currentIndex - 1);
+    } else if (e.key === 'ArrowRight') {
+      e.preventDefault();
+      goToIndex(currentIndex + 1);
+    }
+  });
+
   window.addEventListener('resize', () => {
     try { renderingEngine.resize(true); } catch (_) { /* noop */ }
   });
@@ -166,9 +239,9 @@ async function main() {
   post({ type: 'nexa:ready' });
 
   const params = new URLSearchParams(location.search);
-  if (pendingUrls) {
-    await loadUrls(pendingUrls);
-    pendingUrls = null;
+  if (pendingLoad) {
+    await loadUrls(pendingLoad.urls, pendingLoad.initialIndex);
+    pendingLoad = null;
   } else if (params.get('url')) {
     await loadUrls([params.get('url')]);
   } else if (!embedded) {

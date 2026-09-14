@@ -39,6 +39,15 @@
   .bar .nav button { padding: 6px 10px; }
   .bar .nav span { color: #cdd6d6; font-variant-numeric: tabular-nums; min-width: 52px; text-align: center; }
   .bar .hint { color: #6d7e7e; font-size: 12px; margin-left: auto; }
+  .meta-overlay {
+    position: absolute; top: 8px; left: 8px; z-index: 1;
+    background: rgba(12, 15, 16, .6);
+    padding: 6px 10px; border-radius: 6px;
+    font: 11px/1.5 "IBM Plex Mono", ui-monospace, Menlo, monospace;
+    color: #cdd6d6; white-space: pre-line;
+    max-width: 60%; pointer-events: none;
+  }
+  .meta-overlay[hidden] { display: none; }
   #wrap { flex: 1; position: relative; min-height: 0; }
   #viewport {
     position: absolute; inset: 0;
@@ -62,7 +71,9 @@
   <button data-tool="WindowLevel" class="active">Brillo / Contraste</button>
   <button data-tool="Zoom">Zoom</button>
   <button data-tool="Pan">Pan</button>
+  <button data-tool="Length">Medir</button>
   <button id="reset">Reset</button>
+  <button id="clearMeasurements">Borrar mediciones</button>
   <span class="nav" id="nav" hidden>
     <button id="prevImg" title="Imagen anterior (←)">◀</button>
     <span id="navCount">1 / 1</span>
@@ -71,7 +82,10 @@
   <span class="hint">arrastrar = herramienta activa · rueda = zoom</span>
 </div>
 
-<div id="wrap"><div id="viewport"></div></div>
+<div id="wrap">
+  <div id="viewport"></div>
+  <div id="metaOverlay" class="meta-overlay" hidden></div>
+</div>
 
 <pre id="status">iniciando…</pre>
 

@@ -9,7 +9,7 @@
 //
 // Comunicación con la app Flutter (window.postMessage):
 //   recibe  { type: 'nexa:load',  urls: [signedUrl, ...], initialIndex? }
-//   recibe  { type: 'nexa:tool',  tool: 'WindowLevel' | 'Zoom' | 'Pan' }
+//   recibe  { type: 'nexa:tool',  tool: 'WindowLevel' | 'Zoom' | 'Pan' | 'Length' }
 //   recibe  { type: 'nexa:reset' }
 //   emite   { type: 'nexa:ready' }
 //   emite   { type: 'nexa:loaded', count }
@@ -19,6 +19,7 @@
 import {
   RenderingEngine,
   Enums,
+  metaData,
   init as coreInit,
 } from '@cornerstonejs/core';
 import * as csTools from '@cornerstonejs/tools';
@@ -29,7 +30,9 @@ const {
   PanTool,
   ZoomTool,
   WindowLevelTool,
+  LengthTool,
   ToolGroupManager,
+  annotation,
   Enums: csToolsEnums,
 } = csTools;
 const { MouseBindings } = csToolsEnums;
@@ -37,7 +40,14 @@ const { MouseBindings } = csToolsEnums;
 const RENDERING_ENGINE_ID = 'nexa-engine';
 const VIEWPORT_ID = 'nexa-stack';
 const TOOL_GROUP_ID = 'nexa-tools';
-const PRIMARY_TOOLS = [WindowLevelTool.toolName, ZoomTool.toolName, PanTool.toolName];
+// Length (medición) se activa/desactiva con el mismo mecanismo que las demás
+// herramientas primarias (botón mutuamente excluyente, ver setPrimaryTool).
+const PRIMARY_TOOLS = [
+  WindowLevelTool.toolName,
+  ZoomTool.toolName,
+  PanTool.toolName,
+  LengthTool.toolName,
+];
 
 const statusEl = () => document.getElementById('status');
 const DEBUG = new URLSearchParams(location.search).has('debug');
@@ -116,6 +126,7 @@ async function goToIndex(index) {
   currentIndex = clamped;
   viewport.render();
   updateNavUI();
+  updateMetadataOverlay(stackImageIds[currentIndex]);
   post({ type: 'nexa:index', index: currentIndex, count: stackImageIds.length });
 }
 
@@ -133,6 +144,65 @@ function setPrimaryTool(name) {
   for (const b of document.querySelectorAll('.bar button[data-tool]')) {
     b.classList.toggle('active', b.dataset.tool === name);
   }
+}
+
+// ---- Overlay de metadata DICOM (tags que ya vienen parseados por el loader,
+// sin pedirle nada al backend) ------------------------------------------
+
+// DICOM DA: "YYYYMMDD" -> "YYYY-MM-DD". Cualquier otra cosa se descarta.
+function formatDicomDate(raw) {
+  if (typeof raw !== 'string' || raw.length < 8) return null;
+  return `${raw.slice(0, 4)}-${raw.slice(4, 6)}-${raw.slice(6, 8)}`;
+}
+
+// PixelSpacing DICOM es [espaciado-filas, espaciado-columnas] en mm.
+function formatPixelSpacing(spacing) {
+  if (!Array.isArray(spacing) || spacing.length < 2) return null;
+  const [rowSpacing, colSpacing] = spacing.map(Number);
+  if (!Number.isFinite(rowSpacing) || !Number.isFinite(colSpacing)) return null;
+  return `${rowSpacing.toFixed(2)} × ${colSpacing.toFixed(2)} mm`;
+}
+
+function updateMetadataOverlay(imageId) {
+  const el = document.getElementById('metaOverlay');
+  if (!el) return;
+  if (!imageId) {
+    el.hidden = true;
+    return;
+  }
+
+  // Cada módulo puede faltar según el tipo de estudio; get() nunca tira.
+  const series = metaData.get('generalSeriesModule', imageId) || {};
+  const study = metaData.get('generalStudyModule', imageId) || {};
+  const pixel = metaData.get('imagePixelModule', imageId) || {};
+  const image = metaData.get('generalImageModule', imageId) || {};
+  const plane = metaData.get('imagePlaneModule', imageId) || {};
+
+  const lines = [];
+  if (series.modality) lines.push(`Modalidad: ${series.modality}`);
+
+  const studyDate = formatDicomDate(study.studyDate);
+  if (studyDate || study.studyDescription) {
+    lines.push(`Estudio: ${[studyDate, study.studyDescription].filter(Boolean).join(' · ')}`);
+  }
+  if (series.seriesDescription) lines.push(`Serie: ${series.seriesDescription}`);
+  if (pixel.rows && pixel.columns) lines.push(`Dimensiones: ${pixel.columns} × ${pixel.rows} px`);
+
+  // Sin esto el usuario no tiene forma de saber si "Medir" da mm reales o
+  // solo píxeles (Cornerstone calibra solo si el DICOM trae PixelSpacing).
+  lines.push(`Pixel spacing: ${formatPixelSpacing(image.pixelSpacing) || 'sin calibrar'}`);
+
+  const sliceThickness = Number(plane.sliceThickness);
+  if (Number.isFinite(sliceThickness)) {
+    lines.push(`Grosor de corte: ${sliceThickness.toFixed(2)} mm`);
+  }
+
+  if (lines.length === 0) {
+    el.hidden = true;
+    return;
+  }
+  el.textContent = lines.join('\n');
+  el.hidden = false;
 }
 
 function resetView() {
@@ -162,6 +232,7 @@ async function loadUrls(urls, initialIndex = 0) {
     resetView();
     setPrimaryTool(WindowLevelTool.toolName);
     updateNavUI();
+    updateMetadataOverlay(imageIds[startIndex]);
     log(`listo ✓ (${Math.round(performance.now() - t0)} ms)`, 'ok');
     post({ type: 'nexa:loaded', count: imageIds.length });
   } catch (err) {
@@ -179,6 +250,7 @@ async function main() {
   csTools.addTool(WindowLevelTool);
   csTools.addTool(ZoomTool);
   csTools.addTool(PanTool);
+  csTools.addTool(LengthTool);
 
   toolGroup = ToolGroupManager.createToolGroup(TOOL_GROUP_ID);
   for (const toolName of PRIMARY_TOOLS) toolGroup.addTool(toolName);
@@ -211,6 +283,16 @@ async function main() {
   }
   const resetBtn = document.getElementById('reset');
   if (resetBtn) resetBtn.addEventListener('click', resetView);
+
+  // Borra las mediciones (independiente de Reset, que solo toca cámara/zoom).
+  const clearBtn = document.getElementById('clearMeasurements');
+  if (clearBtn) {
+    clearBtn.addEventListener('click', () => {
+      annotation.state.removeAllAnnotations();
+      viewport.render();
+      log('mediciones borradas');
+    });
+  }
 
   const prevBtn = prevBtnEl();
   if (prevBtn) prevBtn.addEventListener('click', () => goToIndex(currentIndex - 1));

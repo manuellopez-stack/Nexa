@@ -1,3 +1,5 @@
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
@@ -59,6 +61,16 @@ app.use(
   }),
 );
 app.use(express.json({ limit: "50mb" }));
+// Página pública de autoagendamiento (Etapa 2 del plan de autoagendamiento
+// web). Es HTML/CSS/JS estático, sin build: no lleva login, ni menú, ni
+// acceso a datos de otros pacientes -- solo llama a los endpoints públicos
+// /public/booking/* definidos más abajo. Vive en /reservar porque es la URL
+// que el plan usa como ejemplo (claude/plan-autoagendamiento-web.md).
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+app.use(express.static(path.join(__dirname, "public")));
+app.get("/reservar", (request, response) => {
+  response.sendFile(path.join(__dirname, "public", "reservar.html"));
+});
 
 if (!process.env.OPENAI_API_KEY) {
   console.error("");
@@ -106,6 +118,11 @@ const supabaseAuth = createClient(
 const ALL_ROLES = ["administrador", "medico", "tecnico", "recepcion"];
 const CLINICAL_STAFF = ["administrador", "medico", "tecnico"];
 const VALIDATORS = ["administrador", "medico"];
+// Quienes pueden usar la IA (chat y "preguntar sobre un documento"). A
+// diferencia de VALIDATORS, incluye a los 4 roles: abrir la IA no debe
+// aflojar quién puede validar resultados clínicos, así que se mantiene como
+// un grupo aparte.
+const AI_STAFF = ["administrador", "medico", "tecnico", "recepcion"];
 const ADMIN_ONLY = ["administrador"];
 // Quienes manejan dinero: registran pagos y editan datos de facturación.
 const BILLING_STAFF = ["administrador", "recepcion"];
@@ -415,6 +432,9 @@ function shapeAppointmentRow(row) {
     professional: row.professional,
     reason: row.reason,
     notes: row.notes,
+    // 'staff' (creada por el personal) o 'web' (reservada por el paciente,
+    // sin sala/profesional asignado todavía). Ver sql/public_booking.sql.
+    origin: row.origin ?? "staff",
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -777,7 +797,7 @@ app.use("/patients", requireAuth);
 app.use("/dashboard", requireAuth);
 app.use("/rooms", requireAuth);
 app.use("/appointments", requireAuth);
-app.use("/chat", requireAuth, requireRole(VALIDATORS));
+app.use("/chat", requireAuth, requireRole(AI_STAFF));
 app.use("/lab", requireAuth);
 app.use("/imaging", requireAuth);
 app.use("/dental", requireAuth);
@@ -1471,6 +1491,281 @@ app.patch("/appointments/:id", requireRole(AGENDA_STAFF), async (request, respon
   }
 });
 
+// ============================================================================
+// AUTOAGENDAMIENTO WEB (RESERVA PÚBLICA) — Etapa 1
+// ----------------------------------------------------------------------------
+// El paciente reserva hora sin iniciar sesión y SIN elegir sala ni
+// profesional (eso lo asigna después el personal, desde Agendamiento). La
+// cita nace con origin = 'web' y room_id = null.
+// Requiere haber corrido sql/public_booking.sql (agrega la columna `origin`
+// a appointments).
+//
+// Reglas de partida (ajustables, ver claude/plan-autoagendamiento-web.md):
+//   - Horario de atención: 08:00 a 18:00, hora de Chile.
+//   - Bloques de 30 minutos.
+//   - Cupo por bloque = cantidad de salas activas (mismo criterio que
+//     "Salas en uso" del dashboard) -- no distingue sala ni profesional a
+//     propósito, porque el paciente todavía no elige ninguno de los dos.
+//   - Anticipación mínima: 2 horas. Anticipación máxima: 30 días.
+// Estas rutas son públicas (sin requireAuth/requireRole): cualquiera en
+// internet puede llamarlas, por eso llevan su propio límite de intentos.
+// ============================================================================
+
+const BOOKING_START_HOUR = 8;
+const BOOKING_END_HOUR = 18;
+const BOOKING_SLOT_MINUTES = 30;
+const BOOKING_MIN_LEAD_MINUTES = 120;
+const BOOKING_MAX_DAYS_AHEAD = 30;
+
+// Límite de intentos por IP, en memoria. Alcanza para partir; si el backend
+// llega a correr en más de una instancia a la vez habría que moverlo a algo
+// compartido (ej. Redis) en vez de una variable en memoria del proceso.
+const publicBookingHits = new Map(); // ip -> [timestamps en ms]
+function isRateLimited(ip, { max, windowMs }) {
+  const now = Date.now();
+  const hits = (publicBookingHits.get(ip) ?? []).filter((t) => now - t < windowMs);
+  hits.push(now);
+  publicBookingHits.set(ip, hits);
+  return hits.length > max;
+}
+
+function bookingSlotLabel(hour, minute) {
+  return `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
+}
+
+// Todos los horarios posibles del día, independiente de disponibilidad.
+function allBookingSlots() {
+  const slots = [];
+  let totalMinutes = BOOKING_START_HOUR * 60;
+  const endMinutes = BOOKING_END_HOUR * 60;
+  while (totalMinutes < endMinutes) {
+    slots.push(bookingSlotLabel(Math.floor(totalMinutes / 60), totalMinutes % 60));
+    totalMinutes += BOOKING_SLOT_MINUTES;
+  }
+  return slots;
+}
+
+// Convierte fecha (YYYY-MM-DD) + hora (HH:MM), interpretadas en hora de
+// Chile, al instante UTC real. Mismo criterio que clinicDayRangeUtc.
+function chileLocalToUtc(ymd, hour, minute) {
+  const [y, m, d] = ymd.split("-").map(Number);
+  const offsetMin = clinicOffsetMinutes(new Date(Date.UTC(y, m - 1, d, 12)));
+  return new Date(Date.UTC(y, m - 1, d, hour, minute, 0) - offsetMin * 60000);
+}
+
+// "YYYY-MM-DD" que queda a N días desde hoy, en día local de Chile.
+function chileDateLabelDaysFromNow(days) {
+  return new Intl.DateTimeFormat("en-CA", { timeZone: CLINIC_TIME_ZONE }).format(
+    new Date(Date.now() + days * 24 * 60 * 60 * 1000),
+  );
+}
+
+async function getActiveRoomCount() {
+  const { count, error } = await supabase
+    .from("rooms")
+    .select("id", { count: "exact", head: true })
+    .eq("active", true);
+  if (error) throw error;
+  return count ?? 0;
+}
+
+// Cuenta, para un día completo, cuántas citas activas hay en cada bloque de
+// BOOKING_SLOT_MINUTES (agrupando cada cita por el bloque en el que cae su
+// hora de inicio). Es un cupo global del centro, no por sala ni profesional.
+async function countAppointmentsPerBookingSlot(ymd) {
+  const { startUtc, endUtc } = clinicDayRangeUtc(ymd);
+  const { data, error } = await supabase
+    .from("appointments")
+    .select("scheduled_at")
+    .gte("scheduled_at", startUtc.toISOString())
+    .lt("scheduled_at", endUtc.toISOString())
+    .not("status", "in", "(cancelada,no_asistio)");
+  if (error) throw error;
+
+  const counts = new Map(); // "HH:MM" -> cantidad de citas en ese bloque
+  for (const row of data ?? []) {
+    const [hh, mm] = formatClinicClock(row.scheduled_at).split(":").map(Number);
+    if (Number.isNaN(hh) || Number.isNaN(mm)) continue;
+    const totalMinutes = hh * 60 + mm;
+    const bucketStart =
+      BOOKING_START_HOUR * 60 +
+      Math.floor((totalMinutes - BOOKING_START_HOUR * 60) / BOOKING_SLOT_MINUTES) *
+        BOOKING_SLOT_MINUTES;
+    const label = bookingSlotLabel(Math.floor(bucketStart / 60), bucketStart % 60);
+    counts.set(label, (counts.get(label) ?? 0) + 1);
+  }
+  return counts;
+}
+
+// GET /public/booking/availability?fecha=YYYY-MM-DD
+// Devuelve los horarios del día y si cada uno tiene cupo disponible.
+app.get("/public/booking/availability", async (request, response) => {
+  try {
+    if (isRateLimited(request.ip, { max: 60, windowMs: 10 * 60 * 1000 })) {
+      return response
+        .status(429)
+        .json({ error: "Demasiadas solicitudes, intenta de nuevo en unos minutos." });
+    }
+
+    const fecha = String(request.query.fecha ?? "");
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(fecha)) {
+      return response.status(400).json({ error: "Debes indicar una fecha con formato YYYY-MM-DD." });
+    }
+
+    const todayLabel = clinicDayRangeUtc().day;
+    if (fecha < todayLabel) {
+      return response.status(400).json({ error: "No se puede reservar en una fecha pasada." });
+    }
+    if (fecha > chileDateLabelDaysFromNow(BOOKING_MAX_DAYS_AHEAD)) {
+      return response.status(400).json({
+        error: `No se puede reservar con más de ${BOOKING_MAX_DAYS_AHEAD} días de anticipación.`,
+      });
+    }
+
+    const [roomCount, perSlotCounts] = await Promise.all([
+      getActiveRoomCount(),
+      countAppointmentsPerBookingSlot(fecha),
+    ]);
+
+    const isToday = fecha === todayLabel;
+    const now = Date.now();
+
+    const slots = allBookingSlots().map((label) => {
+      const [hh, mm] = label.split(":").map(Number);
+      const slotUtc = chileLocalToUtc(fecha, hh, mm);
+      const meetsLeadTime = slotUtc.getTime() - now >= BOOKING_MIN_LEAD_MINUTES * 60000;
+      const used = perSlotCounts.get(label) ?? 0;
+      const hasCapacity = roomCount > 0 && used < roomCount;
+      return {
+        hora: label,
+        disponible: hasCapacity && (!isToday || meetsLeadTime),
+      };
+    });
+
+    return response.json({ fecha, slots });
+  } catch (error) {
+    console.error("Error al calcular disponibilidad de reserva web:", error);
+    return response.status(500).json({ error: "No fue posible calcular los horarios disponibles." });
+  }
+});
+
+// POST /public/booking
+// { nombre, rut, telefono?, tipo, fecha, hora }
+app.post("/public/booking", async (request, response) => {
+  try {
+    if (isRateLimited(request.ip, { max: 10, windowMs: 10 * 60 * 1000 })) {
+      return response
+        .status(429)
+        .json({ error: "Demasiados intentos, intenta de nuevo en unos minutos." });
+    }
+
+    const body = request.body ?? {};
+
+    const { values, error: identityError } = parsePatientIdentityInput(
+      { name: body.nombre, rut: body.rut, phone: body.telefono },
+      { partial: false },
+    );
+    if (identityError) {
+      return response.status(400).json({ error: identityError });
+    }
+
+    const tipo = typeof body.tipo === "string" ? body.tipo.trim() : "";
+    if (!tipo) {
+      return response.status(400).json({ error: "Debes indicar el tipo de atención." });
+    }
+
+    const fecha = String(body.fecha ?? "");
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(fecha)) {
+      return response.status(400).json({ error: "La fecha no es válida." });
+    }
+    const hora = String(body.hora ?? "");
+    if (!/^\d{2}:\d{2}$/.test(hora) || !allBookingSlots().includes(hora)) {
+      return response.status(400).json({ error: "La hora no es válida." });
+    }
+
+    const todayLabel = clinicDayRangeUtc().day;
+    if (fecha < todayLabel) {
+      return response.status(400).json({ error: "No se puede reservar en una fecha pasada." });
+    }
+    if (fecha > chileDateLabelDaysFromNow(BOOKING_MAX_DAYS_AHEAD)) {
+      return response.status(400).json({
+        error: `No se puede reservar con más de ${BOOKING_MAX_DAYS_AHEAD} días de anticipación.`,
+      });
+    }
+
+    const [hh, mm] = hora.split(":").map(Number);
+    const scheduledAt = chileLocalToUtc(fecha, hh, mm);
+    if (scheduledAt.getTime() - Date.now() < BOOKING_MIN_LEAD_MINUTES * 60000) {
+      return response
+        .status(400)
+        .json({ error: "Esa hora ya no tiene la anticipación mínima requerida." });
+    }
+
+    // Vuelve a chequear cupo al momento de escribir (evita que dos personas
+    // tomen el último cupo del mismo bloque al mismo tiempo; no es 100%
+    // infalible sin un lock, pero reduce mucho el riesgo).
+    const [roomCount, perSlotCounts] = await Promise.all([
+      getActiveRoomCount(),
+      countAppointmentsPerBookingSlot(fecha),
+    ]);
+    const used = perSlotCounts.get(hora) ?? 0;
+    if (roomCount === 0 || used >= roomCount) {
+      return response.status(409).json({ error: "Ese horario ya no tiene cupo disponible. Elige otro." });
+    }
+
+    // Encuentra al paciente por RUT o lo crea (a diferencia del alta interna,
+    // acá SÍ se reutiliza la ficha existente en vez de rechazar por RUT
+    // duplicado -- un paciente que ya existe debe poder reservar igual).
+    const existingPatients = await findPatientsByRutDb(values.rut);
+    let patientId;
+    if (existingPatients.length > 0) {
+      patientId = existingPatients[0].id;
+      if (values.phone) {
+        await supabase.from("patients").update({ phone: values.phone }).eq("id", patientId);
+      }
+    } else {
+      const { data: newPatient, error: insertPatientError } = await supabase
+        .from("patients")
+        .insert({
+          name: values.name,
+          rut: values.rut,
+          age: null,
+          sexo: null,
+          phone: values.phone ?? null,
+          observations: null,
+        })
+        .select("id")
+        .single();
+      if (insertPatientError) throw insertPatientError;
+      patientId = newPatient.id;
+    }
+
+    const { data: appointment, error: insertAppointmentError } = await supabase
+      .from("appointments")
+      .insert({
+        patient_id: patientId,
+        room_id: null,
+        scheduled_at: scheduledAt.toISOString(),
+        duration_min: BOOKING_SLOT_MINUTES,
+        status: "programada",
+        professional: null,
+        reason: tipo,
+        notes: "Reservado por el paciente vía web.",
+        origin: "web",
+      })
+      .select("id, scheduled_at")
+      .single();
+    if (insertAppointmentError) throw insertAppointmentError;
+
+    return response.status(201).json({
+      reserva: { id: appointment.id, fecha, hora, tipo },
+    });
+  } catch (error) {
+    console.error("Error al crear la reserva web:", error);
+    return response.status(500).json({ error: "No fue posible confirmar la reserva. Intenta de nuevo." });
+  }
+});
+
 app.get("/patients/:id", requireRole(CLINICAL_STAFF), async (request, response) => {
   try {
     const patient = await getPatientFull(request.params.id);
@@ -1942,7 +2237,7 @@ app.delete("/patients/:id/documents/:filename", requireRole(VALIDATORS), async (
   }
 });
 
-app.post("/patients/:id/documents/:filename/ask", requireRole(VALIDATORS), async (request, response) => {
+app.post("/patients/:id/documents/:filename/ask", requireRole(AI_STAFF), async (request, response) => {
   try {
     const patientId = Number(request.params.id);
     const filename = decodeURIComponent(request.params.filename);

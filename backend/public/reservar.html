@@ -1,0 +1,604 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Reservar hora — Nexa</title>
+<link rel="icon" href="data:," />
+<style>
+  :root {
+    --primary: #2563eb;
+    --primary-dark: #1d4ed8;
+    --secondary: #06b6d4;
+    --background: #f8fafc;
+    --surface: #ffffff;
+    --text-primary: #0f172a;
+    --text-secondary: #64748b;
+    --border: #e2e8f0;
+    --success: #22c55e;
+    --warning: #f59e0b;
+    --error: #ef4444;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    background: var(--background);
+    color: var(--text-primary);
+    -webkit-font-smoothing: antialiased;
+  }
+  .page {
+    max-width: 480px;
+    margin: 0 auto;
+    min-height: 100vh;
+    background: var(--surface);
+    box-shadow: 0 0 24px rgba(15, 23, 42, 0.06);
+  }
+  header.top {
+    padding: 24px 20px 16px;
+    border-bottom: 1px solid var(--border);
+  }
+  header.top .brand {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  header.top .dot {
+    width: 10px; height: 10px; border-radius: 999px;
+    background: linear-gradient(135deg, var(--primary), var(--secondary));
+  }
+  header.top h1 {
+    font-size: 18px;
+    margin: 0;
+  }
+  header.top p {
+    margin: 6px 0 0;
+    color: var(--text-secondary);
+    font-size: 14px;
+  }
+  .steps {
+    display: flex;
+    gap: 6px;
+    padding: 14px 20px 0;
+  }
+  .steps .bar {
+    flex: 1;
+    height: 4px;
+    border-radius: 999px;
+    background: var(--border);
+  }
+  .steps .bar.done { background: var(--primary); }
+  main {
+    padding: 20px;
+  }
+  .field {
+    margin-bottom: 16px;
+  }
+  .field label {
+    display: block;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-secondary);
+    margin-bottom: 6px;
+  }
+  .field input, .field select {
+    width: 100%;
+    padding: 12px 14px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    font-size: 15px;
+    color: var(--text-primary);
+    background: var(--surface);
+  }
+  .field input:focus, .field select:focus {
+    outline: none;
+    border-color: var(--primary);
+    box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
+  }
+  .field .hint {
+    font-size: 12px;
+    color: var(--text-secondary);
+    margin-top: 5px;
+  }
+  .field .err {
+    font-size: 12px;
+    color: var(--error);
+    margin-top: 5px;
+    display: none;
+  }
+  .field.invalid input, .field.invalid select { border-color: var(--error); }
+  .field.invalid .err { display: block; }
+  .btn {
+    display: block;
+    width: 100%;
+    padding: 14px;
+    border: none;
+    border-radius: 10px;
+    font-size: 15px;
+    font-weight: 600;
+    cursor: pointer;
+    text-align: center;
+  }
+  .btn-primary { background: var(--primary); color: #fff; }
+  .btn-primary:disabled { background: #93b4f3; cursor: not-allowed; }
+  .btn-primary:not(:disabled):active { background: var(--primary-dark); }
+  .btn-link {
+    background: none;
+    color: var(--text-secondary);
+    font-weight: 500;
+    margin-top: 10px;
+  }
+  .slots {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 8px;
+    margin-top: 4px;
+  }
+  .slot {
+    padding: 11px 4px;
+    text-align: center;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    font-size: 14px;
+    background: var(--surface);
+    cursor: pointer;
+  }
+  .slot.unavailable {
+    color: #cbd5e1;
+    background: #f8fafc;
+    cursor: not-allowed;
+    text-decoration: line-through;
+  }
+  .slot.selected {
+    background: var(--primary);
+    color: #fff;
+    border-color: var(--primary);
+    font-weight: 600;
+  }
+  .empty, .loading {
+    text-align: center;
+    color: var(--text-secondary);
+    font-size: 14px;
+    padding: 24px 0;
+  }
+  .banner {
+    padding: 12px 14px;
+    border-radius: 10px;
+    font-size: 13px;
+    margin-bottom: 16px;
+  }
+  .banner.error { background: #fef2f2; color: #b91c1c; }
+  .banner.info { background: #eff6ff; color: #1d4ed8; }
+  .summary {
+    background: var(--background);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 16px;
+    margin-bottom: 18px;
+  }
+  .summary dt { font-size: 12px; color: var(--text-secondary); margin-top: 10px; }
+  .summary dt:first-child { margin-top: 0; }
+  .summary dd { margin: 2px 0 0; font-size: 15px; font-weight: 600; }
+  .success-icon {
+    width: 56px; height: 56px; border-radius: 999px;
+    background: rgba(34, 197, 94, 0.12);
+    display: flex; align-items: center; justify-content: center;
+    margin: 8px auto 18px;
+  }
+  .success-icon span { font-size: 28px; color: var(--success); }
+  h2.title { font-size: 17px; margin: 0 0 4px; }
+  p.subtitle { font-size: 14px; color: var(--text-secondary); margin: 0 0 18px; }
+  .center { text-align: center; }
+  .step { display: none; }
+  .step.active { display: block; }
+</style>
+</head>
+<body>
+<div class="page">
+  <header class="top">
+    <div class="brand"><span class="dot"></span><h1>Nexa</h1></div>
+    <p>Reserva tu hora en línea</p>
+  </header>
+
+  <div class="steps">
+    <div class="bar" data-step-bar="1"></div>
+    <div class="bar" data-step-bar="2"></div>
+    <div class="bar" data-step-bar="3"></div>
+  </div>
+
+  <main>
+
+    <!-- PASO 1: tipo de atención + fecha + horario -->
+    <section class="step" data-step="1">
+      <h2 class="title">¿Qué necesitas y cuándo?</h2>
+      <p class="subtitle">Elige el motivo de tu atención y un horario disponible.</p>
+
+      <div id="step1-banner"></div>
+
+      <div class="field" id="field-tipo">
+        <label for="tipo">Tipo de atención</label>
+        <select id="tipo">
+          <option value="Consulta general">Consulta general</option>
+          <option value="Laboratorio">Laboratorio</option>
+          <option value="Imagenología">Imagenología</option>
+          <option value="Control">Control</option>
+          <option value="otro">Otro (especificar)</option>
+        </select>
+        <div class="err">Indica el tipo de atención.</div>
+      </div>
+
+      <div class="field" id="field-tipo-otro" style="display:none;">
+        <label for="tipoOtro">Especifica el motivo</label>
+        <input type="text" id="tipoOtro" maxlength="80" placeholder="Ej: control post operatorio" />
+      </div>
+
+      <div class="field" id="field-fecha">
+        <label for="fecha">Fecha</label>
+        <input type="date" id="fecha" />
+        <div class="hint">Puedes reservar entre hoy y los próximos 30 días.</div>
+      </div>
+
+      <div class="field">
+        <label>Horarios disponibles</label>
+        <div id="slots-container"><div class="empty">Elige una fecha para ver los horarios.</div></div>
+      </div>
+
+      <button class="btn btn-primary" id="btn-step1-next" disabled>Continuar</button>
+    </section>
+
+    <!-- PASO 2: datos del paciente -->
+    <section class="step" data-step="2">
+      <h2 class="title">Tus datos</h2>
+      <p class="subtitle">Los usamos para identificarte en tu ficha del centro.</p>
+
+      <div id="step2-banner"></div>
+
+      <div class="field" id="field-nombre">
+        <label for="nombre">Nombre completo</label>
+        <input type="text" id="nombre" autocomplete="name" placeholder="Nombre y apellido" />
+        <div class="err">Ingresa tu nombre completo.</div>
+      </div>
+
+      <div class="field" id="field-rut">
+        <label for="rut">RUT</label>
+        <input type="text" id="rut" autocomplete="off" placeholder="12.345.678-5" />
+        <div class="err">Ingresa un RUT válido, con dígito verificador.</div>
+      </div>
+
+      <div class="field" id="field-telefono">
+        <label for="telefono">Teléfono (opcional)</label>
+        <input type="tel" id="telefono" autocomplete="tel" placeholder="+56 9 1234 5678" />
+      </div>
+
+      <button class="btn btn-primary" id="btn-step2-next">Revisar reserva</button>
+      <button class="btn btn-link" id="btn-step2-back">Volver</button>
+    </section>
+
+    <!-- PASO 3: confirmar -->
+    <section class="step" data-step="3">
+      <h2 class="title">Confirma tu reserva</h2>
+      <p class="subtitle">Revisa que todo esté correcto antes de reservar.</p>
+
+      <div id="step3-banner"></div>
+
+      <dl class="summary">
+        <dt>Tipo de atención</dt><dd id="sum-tipo"></dd>
+        <dt>Fecha</dt><dd id="sum-fecha"></dd>
+        <dt>Hora</dt><dd id="sum-hora"></dd>
+        <dt>Nombre</dt><dd id="sum-nombre"></dd>
+        <dt>RUT</dt><dd id="sum-rut"></dd>
+      </dl>
+
+      <p class="hint" style="margin-bottom:16px;">
+        La sala y el profesional se asignan en el centro antes de tu atención; no es necesario que los elijas ahora.
+      </p>
+
+      <button class="btn btn-primary" id="btn-confirm">Confirmar reserva</button>
+      <button class="btn btn-link" id="btn-step3-back">Volver</button>
+    </section>
+
+    <!-- PASO 4: éxito -->
+    <section class="step" data-step="4">
+      <div class="success-icon"><span>&#10003;</span></div>
+      <h2 class="title center">¡Reserva confirmada!</h2>
+      <p class="subtitle center">Te esperamos en el centro a la hora reservada.</p>
+
+      <dl class="summary">
+        <dt>Fecha</dt><dd id="done-fecha"></dd>
+        <dt>Hora</dt><dd id="done-hora"></dd>
+        <dt>Tipo de atención</dt><dd id="done-tipo"></dd>
+      </dl>
+
+      <p class="hint" style="margin-bottom:16px;">
+        Guarda esta información. Si necesitas cambiar o cancelar tu hora, comunícate directamente con el centro.
+      </p>
+
+      <button class="btn btn-primary" id="btn-restart">Hacer otra reserva</button>
+    </section>
+
+  </main>
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  var state = {
+    tipo: "",
+    fecha: "",
+    hora: "",
+    nombre: "",
+    rut: "",
+    telefono: "",
+  };
+
+  var MAX_DAYS_AHEAD = 30;
+
+  function pad(n) { return String(n).padStart(2, "0"); }
+
+  function todayLabel() {
+    var d = new Date();
+    return d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate());
+  }
+
+  function maxDateLabel() {
+    var d = new Date();
+    d.setDate(d.getDate() + MAX_DAYS_AHEAD);
+    return d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate());
+  }
+
+  function showStep(n) {
+    document.querySelectorAll(".step").forEach(function (el) {
+      el.classList.toggle("active", el.getAttribute("data-step") === String(n));
+    });
+    document.querySelectorAll("[data-step-bar]").forEach(function (el) {
+      el.classList.toggle("done", Number(el.getAttribute("data-step-bar")) <= n);
+    });
+    window.scrollTo(0, 0);
+  }
+
+  function banner(containerId, message, type) {
+    var el = document.getElementById(containerId);
+    if (!message) { el.innerHTML = ""; return; }
+    el.innerHTML = '<div class="banner ' + (type || "error") + '">' + escapeHtml(message) + "</div>";
+  }
+
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+    });
+  }
+
+  function setInvalid(fieldId, invalid) {
+    document.getElementById(fieldId).classList.toggle("invalid", !!invalid);
+  }
+
+  // Mismo algoritmo de validación de RUT chileno (módulo 11) que usa el
+  // backend, sólo para dar feedback inmediato -- el backend es la fuente de
+  // verdad y vuelve a validar igual.
+  function normalizeRut(value) {
+    return String(value || "").toUpperCase().replace(/[^0-9K]/g, "");
+  }
+  function isValidRut(value) {
+    var clean = normalizeRut(value);
+    if (clean.length < 2) return false;
+    var body = clean.slice(0, -1);
+    var dv = clean.slice(-1);
+    if (!/^\d+$/.test(body)) return false;
+    var sum = 0, multiplier = 2;
+    for (var i = body.length - 1; i >= 0; i--) {
+      sum += Number(body[i]) * multiplier;
+      multiplier = multiplier === 7 ? 2 : multiplier + 1;
+    }
+    var remainder = 11 - (sum % 11);
+    var expected = remainder === 11 ? "0" : remainder === 10 ? "K" : String(remainder);
+    return dv === expected;
+  }
+
+  // ---------------- Paso 1: tipo + fecha + horario ----------------
+
+  var fechaInput = document.getElementById("fecha");
+  var tipoSelect = document.getElementById("tipo");
+  var tipoOtroField = document.getElementById("field-tipo-otro");
+  var tipoOtroInput = document.getElementById("tipoOtro");
+  var slotsContainer = document.getElementById("slots-container");
+  var btnStep1Next = document.getElementById("btn-step1-next");
+
+  fechaInput.min = todayLabel();
+  fechaInput.max = maxDateLabel();
+
+  tipoSelect.addEventListener("change", function () {
+    tipoOtroField.style.display = tipoSelect.value === "otro" ? "block" : "none";
+  });
+
+  var availabilityRequestId = 0;
+
+  function loadAvailability(fecha) {
+    state.hora = "";
+    btnStep1Next.disabled = true;
+    banner("step1-banner", "");
+    var requestId = ++availabilityRequestId;
+    slotsContainer.innerHTML = '<div class="loading">Cargando horarios…</div>';
+
+    fetch("/public/booking/availability?fecha=" + encodeURIComponent(fecha))
+      .then(function (res) {
+        return res.json().then(function (body) { return { ok: res.ok, body: body }; });
+      })
+      .then(function (result) {
+        if (requestId !== availabilityRequestId) return; // respuesta obsoleta
+        if (!result.ok) {
+          slotsContainer.innerHTML = "";
+          banner("step1-banner", result.body.error || "No fue posible cargar los horarios.");
+          return;
+        }
+        renderSlots(result.body.slots || []);
+      })
+      .catch(function () {
+        if (requestId !== availabilityRequestId) return;
+        slotsContainer.innerHTML = "";
+        banner("step1-banner", "No fue posible conectar con el servidor. Intenta de nuevo.");
+      });
+  }
+
+  function renderSlots(slots) {
+    var available = slots.filter(function (s) { return s.disponible; });
+    if (available.length === 0) {
+      slotsContainer.innerHTML = '<div class="empty">No hay horarios disponibles ese día. Prueba otra fecha.</div>';
+      return;
+    }
+    var grid = document.createElement("div");
+    grid.className = "slots";
+    slots.forEach(function (s) {
+      var el = document.createElement("div");
+      el.className = "slot" + (s.disponible ? "" : " unavailable");
+      el.textContent = s.hora;
+      if (s.disponible) {
+        el.addEventListener("click", function () {
+          state.hora = s.hora;
+          grid.querySelectorAll(".slot").forEach(function (n) { n.classList.remove("selected"); });
+          el.classList.add("selected");
+          btnStep1Next.disabled = false;
+        });
+      }
+      grid.appendChild(el);
+    });
+    slotsContainer.innerHTML = "";
+    slotsContainer.appendChild(grid);
+  }
+
+  fechaInput.addEventListener("change", function () {
+    if (!fechaInput.value) return;
+    loadAvailability(fechaInput.value);
+  });
+
+  btnStep1Next.addEventListener("click", function () {
+    var tipo = tipoSelect.value === "otro" ? tipoOtroInput.value.trim() : tipoSelect.value;
+    if (tipoSelect.value === "otro" && !tipo) {
+      setInvalid("field-tipo-otro", true);
+      return;
+    }
+    setInvalid("field-tipo-otro", false);
+    if (!fechaInput.value || !state.hora) {
+      banner("step1-banner", "Elige una fecha y un horario disponible.");
+      return;
+    }
+    state.tipo = tipo;
+    state.fecha = fechaInput.value;
+    showStep(2);
+  });
+
+  // ---------------- Paso 2: datos del paciente ----------------
+
+  var nombreInput = document.getElementById("nombre");
+  var rutInput = document.getElementById("rut");
+  var telefonoInput = document.getElementById("telefono");
+
+  document.getElementById("btn-step2-back").addEventListener("click", function () { showStep(1); });
+
+  document.getElementById("btn-step2-next").addEventListener("click", function () {
+    var nombre = nombreInput.value.trim();
+    var rut = rutInput.value.trim();
+    var validNombre = nombre.length >= 3;
+    var validRut = isValidRut(rut);
+
+    setInvalid("field-nombre", !validNombre);
+    setInvalid("field-rut", !validRut);
+    if (!validNombre || !validRut) {
+      banner("step2-banner", "Revisa los datos marcados en rojo.");
+      return;
+    }
+    banner("step2-banner", "");
+
+    state.nombre = nombre;
+    state.rut = rut;
+    state.telefono = telefonoInput.value.trim();
+
+    document.getElementById("sum-tipo").textContent = state.tipo;
+    document.getElementById("sum-fecha").textContent = formatFechaLarga(state.fecha);
+    document.getElementById("sum-hora").textContent = state.hora;
+    document.getElementById("sum-nombre").textContent = state.nombre;
+    document.getElementById("sum-rut").textContent = state.rut;
+
+    banner("step3-banner", "");
+    showStep(3);
+  });
+
+  function formatFechaLarga(ymd) {
+    var parts = ymd.split("-").map(Number);
+    var d = new Date(parts[0], parts[1] - 1, parts[2]);
+    return d.toLocaleDateString("es-CL", { weekday: "long", day: "numeric", month: "long" });
+  }
+
+  // ---------------- Paso 3: confirmar ----------------
+
+  document.getElementById("btn-step3-back").addEventListener("click", function () { showStep(2); });
+
+  var btnConfirm = document.getElementById("btn-confirm");
+  btnConfirm.addEventListener("click", function () {
+    btnConfirm.disabled = true;
+    btnConfirm.textContent = "Reservando…";
+    banner("step3-banner", "");
+
+    fetch("/public/booking", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        nombre: state.nombre,
+        rut: state.rut,
+        telefono: state.telefono || undefined,
+        tipo: state.tipo,
+        fecha: state.fecha,
+        hora: state.hora,
+      }),
+    })
+      .then(function (res) {
+        return res.json().then(function (body) { return { ok: res.ok, status: res.status, body: body }; });
+      })
+      .then(function (result) {
+        btnConfirm.disabled = false;
+        btnConfirm.textContent = "Confirmar reserva";
+        if (!result.ok) {
+          banner("step3-banner", result.body.error || "No fue posible confirmar la reserva.");
+          // 409: alguien tomó el cupo justo antes -- refresca horarios del paso 1.
+          if (result.status === 409) {
+            loadAvailability(state.fecha);
+          }
+          return;
+        }
+        document.getElementById("done-fecha").textContent = formatFechaLarga(state.fecha);
+        document.getElementById("done-hora").textContent = state.hora;
+        document.getElementById("done-tipo").textContent = state.tipo;
+        showStep(4);
+      })
+      .catch(function () {
+        btnConfirm.disabled = false;
+        btnConfirm.textContent = "Confirmar reserva";
+        banner("step3-banner", "No fue posible conectar con el servidor. Intenta de nuevo.");
+      });
+  });
+
+  // ---------------- Paso 4: reiniciar ----------------
+
+  document.getElementById("btn-restart").addEventListener("click", function () {
+    state = { tipo: "", fecha: "", hora: "", nombre: "", rut: "", telefono: "" };
+    tipoSelect.value = "Consulta general";
+    tipoOtroField.style.display = "none";
+    tipoOtroInput.value = "";
+    fechaInput.value = "";
+    nombreInput.value = "";
+    rutInput.value = "";
+    telefonoInput.value = "";
+    slotsContainer.innerHTML = '<div class="empty">Elige una fecha para ver los horarios.</div>';
+    btnStep1Next.disabled = true;
+    ["field-tipo-otro", "field-nombre", "field-rut"].forEach(function (id) { setInvalid(id, false); });
+    banner("step1-banner", "");
+    banner("step2-banner", "");
+    banner("step3-banner", "");
+    showStep(1);
+  });
+
+  showStep(1);
+})();
+</script>
+</body>
+</html>

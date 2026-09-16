@@ -270,6 +270,13 @@
         <input type="tel" id="telefono" autocomplete="tel" placeholder="+56 9 1234 5678" />
       </div>
 
+      <div class="field" id="field-email">
+        <label for="email">Correo electrónico (opcional)</label>
+        <input type="email" id="email" autocomplete="email" placeholder="tu@correo.cl" />
+        <div class="hint">Si lo dejas, te mandamos la confirmación de esta hora por correo.</div>
+        <div class="err">Ese correo no parece válido.</div>
+      </div>
+
       <button class="btn btn-primary" id="btn-step2-next">Revisar reserva</button>
       <button class="btn btn-link" id="btn-step2-back">Volver</button>
     </section>
@@ -287,6 +294,7 @@
         <dt>Hora</dt><dd id="sum-hora"></dd>
         <dt>Nombre</dt><dd id="sum-nombre"></dd>
         <dt>RUT</dt><dd id="sum-rut"></dd>
+        <dt id="sum-email-label" style="display:none;">Correo</dt><dd id="sum-email" style="display:none;"></dd>
       </dl>
 
       <p class="hint" style="margin-bottom:16px;">
@@ -313,6 +321,10 @@
         Guarda esta información. Si necesitas cambiar o cancelar tu hora, comunícate directamente con el centro.
       </p>
 
+      <p class="hint" id="email-confirmation-note" style="display:none; margin-bottom:16px;">
+        También te enviamos esta confirmación a tu correo.
+      </p>
+
       <button class="btn btn-primary" id="btn-restart">Hacer otra reserva</button>
     </section>
 
@@ -330,6 +342,7 @@
     nombre: "",
     rut: "",
     telefono: "",
+    email: "",
   };
 
   var MAX_DAYS_AHEAD = 30;
@@ -492,18 +505,22 @@
   var nombreInput = document.getElementById("nombre");
   var rutInput = document.getElementById("rut");
   var telefonoInput = document.getElementById("telefono");
+  var emailInput = document.getElementById("email");
 
   document.getElementById("btn-step2-back").addEventListener("click", function () { showStep(1); });
 
   document.getElementById("btn-step2-next").addEventListener("click", function () {
     var nombre = nombreInput.value.trim();
     var rut = rutInput.value.trim();
+    var email = emailInput.value.trim();
     var validNombre = nombre.length >= 3;
     var validRut = isValidRut(rut);
+    var validEmail = email === "" || /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
 
     setInvalid("field-nombre", !validNombre);
     setInvalid("field-rut", !validRut);
-    if (!validNombre || !validRut) {
+    setInvalid("field-email", !validEmail);
+    if (!validNombre || !validRut || !validEmail) {
       banner("step2-banner", "Revisa los datos marcados en rojo.");
       return;
     }
@@ -512,12 +529,24 @@
     state.nombre = nombre;
     state.rut = rut;
     state.telefono = telefonoInput.value.trim();
+    state.email = email;
 
     document.getElementById("sum-tipo").textContent = state.tipo;
     document.getElementById("sum-fecha").textContent = formatFechaLarga(state.fecha);
     document.getElementById("sum-hora").textContent = state.hora;
     document.getElementById("sum-nombre").textContent = state.nombre;
     document.getElementById("sum-rut").textContent = state.rut;
+
+    var sumEmailLabel = document.getElementById("sum-email-label");
+    var sumEmail = document.getElementById("sum-email");
+    if (state.email) {
+      sumEmailLabel.style.display = "";
+      sumEmail.style.display = "";
+      sumEmail.textContent = state.email;
+    } else {
+      sumEmailLabel.style.display = "none";
+      sumEmail.style.display = "none";
+    }
 
     banner("step3-banner", "");
     showStep(3);
@@ -546,6 +575,7 @@
         nombre: state.nombre,
         rut: state.rut,
         telefono: state.telefono || undefined,
+        email: state.email || undefined,
         tipo: state.tipo,
         fecha: state.fecha,
         hora: state.hora,
@@ -568,6 +598,8 @@
         document.getElementById("done-fecha").textContent = formatFechaLarga(state.fecha);
         document.getElementById("done-hora").textContent = state.hora;
         document.getElementById("done-tipo").textContent = state.tipo;
+        document.getElementById("email-confirmation-note").style.display =
+          state.email ? "" : "none";
         showStep(4);
       })
       .catch(function () {
@@ -580,7 +612,7 @@
   // ---------------- Paso 4: reiniciar ----------------
 
   document.getElementById("btn-restart").addEventListener("click", function () {
-    state = { tipo: "", fecha: "", hora: "", nombre: "", rut: "", telefono: "" };
+    state = { tipo: "", fecha: "", hora: "", nombre: "", rut: "", telefono: "", email: "" };
     tipoSelect.value = "Consulta general";
     tipoOtroField.style.display = "none";
     tipoOtroInput.value = "";
@@ -588,9 +620,10 @@
     nombreInput.value = "";
     rutInput.value = "";
     telefonoInput.value = "";
+    emailInput.value = "";
     slotsContainer.innerHTML = '<div class="empty">Elige una fecha para ver los horarios.</div>';
     btnStep1Next.disabled = true;
-    ["field-tipo-otro", "field-nombre", "field-rut"].forEach(function (id) { setInvalid(id, false); });
+    ["field-tipo-otro", "field-nombre", "field-rut", "field-email"].forEach(function (id) { setInvalid(id, false); });
     banner("step1-banner", "");
     banner("step2-banner", "");
     banner("step3-banner", "");

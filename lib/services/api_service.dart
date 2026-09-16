@@ -38,13 +38,17 @@ class ApiService {
   // Permisos derivados del rol. Deben reflejar exactamente lo que permite el
   // backend (middleware requireRole en server.mjs).
   //   - canValidate  -> VALIDATORS  = administrador, medico
-  //   - canUseAi      -> VALIDATORS  = administrador, medico (rutas /chat y /ask)
+  //   - canUseAi      -> AI_STAFF     = administrador, medico, tecnico, recepcion (rutas /chat y /ask)
   //   - canAccessClinical -> CLINICAL_STAFF = administrador, medico, tecnico
   //   - canManageBilling -> BILLING_STAFF = administrador, recepcion
   //   - canAccessMail -> MAIL_STAFF = administrador, recepcion (rutas /mail y /gmail/reply)
   //   - isReception   -> recepcion (vista reducida, sin datos clínicos)
   static bool get canValidate => _role == 'administrador' || _role == 'medico';
-  static bool get canUseAi => _role == 'administrador' || _role == 'medico';
+  static bool get canUseAi =>
+      _role == 'administrador' ||
+      _role == 'medico' ||
+      _role == 'tecnico' ||
+      _role == 'recepcion';
   static bool get canAccessClinical =>
       _role == 'administrador' || _role == 'medico' || _role == 'tecnico';
   static bool get canManageBilling =>

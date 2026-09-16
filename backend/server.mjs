@@ -1649,6 +1649,21 @@ app.get("/public/booking/availability", async (request, response) => {
   }
 });
 
+// Correo del paciente en la reserva web: SIEMPRE opcional (ver
+// sql/patient_email.sql -- patients.email no existía antes de la Etapa 4 del
+// plan de autoagendamiento). Solo se valida el formato cuando se escribió
+// algo; en blanco no es un error.
+const BOOKING_EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+function parseOptionalBookingEmail(value) {
+  if (typeof value !== "string") return { email: null };
+  const trimmed = value.trim();
+  if (!trimmed) return { email: null };
+  if (!BOOKING_EMAIL_RE.test(trimmed)) {
+    return { error: "El correo no es válido." };
+  }
+  return { email: trimmed.toLowerCase() };
+}
+
 // POST /public/booking
 // { nombre, rut, telefono?, tipo, fecha, hora }
 app.post("/public/booking", async (request, response) => {
@@ -1667,6 +1682,11 @@ app.post("/public/booking", async (request, response) => {
     );
     if (identityError) {
       return response.status(400).json({ error: identityError });
+    }
+
+    const { email: patientEmail, error: emailError } = parseOptionalBookingEmail(body.email);
+    if (emailError) {
+      return response.status(400).json({ error: emailError });
     }
 
     const tipo = typeof body.tipo === "string" ? body.tipo.trim() : "";
@@ -1720,8 +1740,11 @@ app.post("/public/booking", async (request, response) => {
     let patientId;
     if (existingPatients.length > 0) {
       patientId = existingPatients[0].id;
-      if (values.phone) {
-        await supabase.from("patients").update({ phone: values.phone }).eq("id", patientId);
+      const patientUpdates = {};
+      if (values.phone) patientUpdates.phone = values.phone;
+      if (patientEmail) patientUpdates.email = patientEmail;
+      if (Object.keys(patientUpdates).length > 0) {
+        await supabase.from("patients").update(patientUpdates).eq("id", patientId);
       }
     } else {
       const { data: newPatient, error: insertPatientError } = await supabase
@@ -1732,6 +1755,7 @@ app.post("/public/booking", async (request, response) => {
           age: null,
           sexo: null,
           phone: values.phone ?? null,
+          email: patientEmail,
           observations: null,
         })
         .select("id")

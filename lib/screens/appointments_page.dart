@@ -524,14 +524,22 @@ class _AppointmentTile extends StatelessWidget {
 
     final canAdvance = _kAdvanceNext.containsKey(status);
     final isClosed = status == 'cancelada' || status == 'no_asistio';
+    // Reservada por el paciente desde /reservar y todavía sin sala asignada
+    // (ver sql/public_booking.sql): se destaca para que recepción la vea de
+    // inmediato y le asigne sala antes del día de la atención.
+    final isWebPending =
+        appointment['origin'] == 'web' && appointment['roomId'] == null;
 
     return Container(
       margin: const EdgeInsets.only(bottom: 10),
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
-        color: NexaColors.surface,
+        color: isWebPending ? const Color(0xFFFFFBEB) : NexaColors.surface,
         borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: NexaColors.border),
+        border: Border.all(
+          color: isWebPending ? NexaColors.warning : NexaColors.border,
+          width: isWebPending ? 1.4 : 1,
+        ),
       ),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -572,6 +580,43 @@ class _AppointmentTile extends StatelessWidget {
                     color: NexaColors.textPrimary,
                   ),
                 ),
+                if (isWebPending) ...[
+                  const SizedBox(height: 4),
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 8,
+                          vertical: 3,
+                        ),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFFEF3C7),
+                          borderRadius: BorderRadius.circular(20),
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: const [
+                            Icon(
+                              Icons.public,
+                              size: 13,
+                              color: Color(0xFF92400E),
+                            ),
+                            SizedBox(width: 4),
+                            Text(
+                              'Reservada por el paciente · falta asignar sala',
+                              style: TextStyle(
+                                fontSize: 11,
+                                fontWeight: FontWeight.w700,
+                                color: Color(0xFF92400E),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
                 if (metaParts.isNotEmpty) ...[
                   const SizedBox(height: 3),
                   Text(

@@ -1781,6 +1781,23 @@ app.post("/public/booking", async (request, response) => {
       .single();
     if (insertAppointmentError) throw insertAppointmentError;
 
+    // Confirmación por correo, solo si el paciente dejó uno y Gmail está
+    // configurado. Nunca bloquea ni revierte la reserva: si el envío falla,
+    // la cita ya quedó guardada de todas formas, solo se pierde el aviso.
+    if (patientEmail && gmailConfigured) {
+      try {
+        await sendBookingConfirmationEmail({
+          to: patientEmail,
+          name: values.name,
+          fecha,
+          hora,
+          tipo,
+        });
+      } catch (emailSendError) {
+        console.error("No fue posible enviar el correo de confirmación de reserva:", emailSendError);
+      }
+    }
+
     return response.status(201).json({
       reserva: { id: appointment.id, fecha, hora, tipo },
     });
@@ -4150,6 +4167,56 @@ function getGmailClient() {
     refresh_token: process.env.GMAIL_REFRESH_TOKEN,
   });
   return google.gmail({ version: "v1", auth: oauth2Client });
+}
+
+// "2026-09-20" -> "domingo 20 de septiembre de 2026", en español, sin
+// depender de que el servidor tenga el locale es-CL instalado.
+const DIAS_ES = ["domingo", "lunes", "martes", "miércoles", "jueves", "viernes", "sábado"];
+const MESES_ES = [
+  "enero", "febrero", "marzo", "abril", "mayo", "junio",
+  "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre",
+];
+function formatFechaLargaEs(ymd) {
+  const [y, m, d] = ymd.split("-").map(Number);
+  const date = new Date(Date.UTC(y, m - 1, d, 12));
+  return `${DIAS_ES[date.getUTCDay()]} ${d} de ${MESES_ES[m - 1]} de ${y}`;
+}
+
+// Confirmación de reserva por correo (Etapa 4 del plan de autoagendamiento
+// web). Reutiliza las mismas credenciales de Gmail que ya usan la campanita
+// de notificaciones y el módulo de Correo -- no es una cuenta nueva, es el
+// mismo Gmail del centro enviando en su nombre. Se llama solo si el paciente
+// dejó correo y gmailConfigured es true; el llamador ya envuelve esto en un
+// try/catch propio, así que acá no hace falta atraparlo de nuevo.
+async function sendBookingConfirmationEmail({ to, name, fecha, hora, tipo }) {
+  const gmail = getGmailClient();
+
+  const fechaLegible = formatFechaLargaEs(fecha);
+  const asunto = `Confirmación de tu hora — ${fechaLegible} a las ${hora}`;
+  const cuerpo = [
+    `Hola ${name},`,
+    "",
+    `Tu hora quedó reservada para el ${fechaLegible} a las ${hora} (${tipo}).`,
+    "",
+    "La sala y el profesional los asigna el centro antes de tu atención; no necesitas elegirlos tú.",
+    "",
+    "Si necesitas cambiar o cancelar esta hora, comunícate directamente con el centro.",
+    "",
+    "Este correo es una confirmación automática, no es necesario responderlo.",
+  ].join("\n");
+
+  const mail = new MailComposer({ to, subject: asunto, text: cuerpo });
+  const mensajeMime = await new Promise((resolve, reject) => {
+    mail.compile().build((error, message) => {
+      if (error) reject(error);
+      else resolve(message);
+    });
+  });
+
+  await gmail.users.messages.send({
+    userId: "me",
+    requestBody: { raw: mensajeMime.toString("base64url") },
+  });
 }
 
 // Registro en memoria: referencia opaca -> URL de imagen de un correo real.

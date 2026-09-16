@@ -378,7 +378,7 @@ class DashboardPage extends StatelessWidget {
             const GmailNotificationsButton(),
           if (ApiService.canAccessAgenda)
             IconButton(
-              tooltip: 'Gestión de citas',
+              tooltip: 'Agendamiento',
               icon: const Icon(
                 Icons.event_note_outlined,
                 color: NexaColors.textSecondary,

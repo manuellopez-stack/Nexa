@@ -269,7 +269,7 @@ class _AppointmentsPageState extends State<AppointmentsPage> {
       appBar: AppBar(
         backgroundColor: NexaColors.surface,
         title: const Text(
-          'Gestión de citas',
+          'Agendamiento',
           style: TextStyle(
             fontWeight: FontWeight.w700,
             color: NexaColors.textPrimary,

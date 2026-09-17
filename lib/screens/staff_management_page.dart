@@ -170,7 +170,7 @@ class _StaffManagementPageState extends State<StaffManagementPage> {
                       const SizedBox(width: 10),
                       const Expanded(
                         child: Text(
-                          'Personal de Nexa',
+                          'Personal de Imagenda',
                           style: TextStyle(
                             fontSize: 22,
                             fontWeight: FontWeight.w800,
@@ -187,7 +187,7 @@ class _StaffManagementPageState extends State<StaffManagementPage> {
                   ),
                   const SizedBox(height: 6),
                   const Text(
-                    'Administra quién tiene acceso a Nexa y con qué rol.',
+                    'Administra quién tiene acceso a Imagenda y con qué rol.',
                     style: TextStyle(color: NexaColors.textSecondary),
                   ),
                   const SizedBox(height: 22),

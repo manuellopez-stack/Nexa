@@ -66,7 +66,7 @@ class NexaAiSection extends StatelessWidget {
               const SizedBox(width: 13),
               const Expanded(
                 child: Text(
-                  'Nexa AI',
+                  'Imagenda AI',
                   style: TextStyle(
                     fontSize: 24,
                     fontWeight: FontWeight.w800,
@@ -162,7 +162,7 @@ class NexaAiSection extends StatelessWidget {
             child: FilledButton.icon(
               onPressed: () => _openChat(context),
               icon: const Icon(Icons.auto_awesome),
-              label: const Text('Preguntar a Nexa'),
+              label: const Text('Preguntar a Imagenda'),
               style: FilledButton.styleFrom(
                 backgroundColor: NexaColors.primary,
                 foregroundColor: Colors.white,

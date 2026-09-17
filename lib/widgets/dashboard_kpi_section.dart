@@ -146,7 +146,7 @@ class _DashboardKpiSectionState extends State<DashboardKpiSection> {
               // así que el backend está operativo. El endpoint /health añade
               // la latencia real del chequeo.
               return KpiCard(
-                title: 'Backend Nexa',
+                title: 'Backend Imagenda',
                 value: 'Operativo',
                 variation: checking ? 'Verificando…' : 'En línea',
                 detail: !checking && healthOk && latency != null

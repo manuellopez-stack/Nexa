@@ -21,7 +21,7 @@ class NexaApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Nexa',
+      title: 'Imagenda',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
         useMaterial3: true,
@@ -65,7 +65,7 @@ class WelcomePage extends StatelessWidget {
                 ),
                 const SizedBox(height: 32),
                 const Text(
-                  'Nexa',
+                  'Imagenda',
                   style: TextStyle(
                     fontSize: 48,
                     fontWeight: FontWeight.w800,
@@ -217,7 +217,7 @@ class _LoginPageState extends State<LoginPage> {
     return Scaffold(
       appBar: AppBar(
         title: const Text(
-          'Acceso a Nexa',
+          'Acceso a Imagenda',
           style: TextStyle(
             fontWeight: FontWeight.w600,
             color: NexaColors.textPrimary,
@@ -568,7 +568,7 @@ class NexaLogo extends StatelessWidget {
         ),
         const SizedBox(width: 12),
         const Text(
-          'Nexa',
+          'Imagenda',
           style: TextStyle(
             fontSize: 25,
             fontWeight: FontWeight.w800,

@@ -78,7 +78,7 @@ class ApiService {
     _fullName = null;
   }
 
-  /// True si `url` apunta al propio backend de Nexa (mismo esquema, host y
+  /// True si `url` apunta al propio backend de Imagenda (mismo esquema, host y
   /// puerto). Se usa para decidir qué imágenes de un correo son seguras de
   /// cargar por red: solo las que ya pasaron por el proxy del backend.
   static bool esUrlDeBackend(String? url) {
@@ -107,7 +107,7 @@ class ApiService {
       decodedBody = jsonDecode(response.body);
     } on FormatException {
       throw const ApiException(
-        'El servidor entregó una respuesta que Nexa no pudo interpretar.',
+        'El servidor entregó una respuesta que Imagenda no pudo interpretar.',
       );
     }
 
@@ -146,7 +146,7 @@ class ApiService {
           .timeout(const Duration(seconds: 30));
     } catch (_) {
       throw const ApiException(
-        'No fue posible conectar con el backend de Nexa.',
+        'No fue posible conectar con el backend de Imagenda.',
       );
     }
 
@@ -173,7 +173,7 @@ class ApiService {
           .timeout(const Duration(seconds: 30));
     } catch (_) {
       throw const ApiException(
-        'No fue posible conectar con el backend de Nexa.',
+        'No fue posible conectar con el backend de Imagenda.',
       );
     }
 
@@ -223,7 +223,7 @@ class ApiService {
           .timeout(const Duration(seconds: 30));
     } catch (_) {
       throw const ApiException(
-        'No fue posible conectar con el backend de Nexa.',
+        'No fue posible conectar con el backend de Imagenda.',
       );
     }
 
@@ -275,7 +275,7 @@ class ApiService {
           .timeout(const Duration(seconds: 60));
     } catch (_) {
       throw const ApiException(
-        'No fue posible conectar con el backend de Nexa.',
+        'No fue posible conectar con el backend de Imagenda.',
       );
     }
 
@@ -313,7 +313,7 @@ class ApiService {
         body: jsonEncode({'question': question}),
       ).timeout(const Duration(seconds: 60));
     } catch (_) {
-      throw const ApiException('No fue posible consultar este documento con Nexa.');
+      throw const ApiException('No fue posible consultar este documento con Imagenda.');
     }
     final decodedBody = await _decodeMap(response);
     final answer = decodedBody['respuesta'];
@@ -345,7 +345,7 @@ class ApiService {
           .timeout(const Duration(minutes: 2));
     } catch (_) {
       throw const ApiException(
-        'No fue posible enviar el PDF al backend de Nexa.',
+        'No fue posible enviar el PDF al backend de Imagenda.',
       );
     }
 
@@ -477,7 +477,7 @@ class ApiService {
           .timeout(const Duration(seconds: 30));
     } catch (_) {
       throw const ApiException(
-        'No fue posible conectar con el backend de Nexa.',
+        'No fue posible conectar con el backend de Imagenda.',
       );
     }
 
@@ -540,7 +540,7 @@ class ApiService {
           .timeout(const Duration(seconds: 30));
     } catch (_) {
       throw const ApiException(
-        'No fue posible conectar con el backend de Nexa.',
+        'No fue posible conectar con el backend de Imagenda.',
       );
     }
 
@@ -574,7 +574,7 @@ class ApiService {
           .timeout(const Duration(seconds: 30));
     } catch (_) {
       throw const ApiException(
-        'No fue posible conectar con el backend de Nexa.',
+        'No fue posible conectar con el backend de Imagenda.',
       );
     }
 
@@ -689,7 +689,7 @@ class ApiService {
           .timeout(const Duration(seconds: 30));
     } catch (_) {
       throw const ApiException(
-        'No fue posible conectar con el backend de Nexa.',
+        'No fue posible conectar con el backend de Imagenda.',
       );
     }
 
@@ -752,7 +752,7 @@ class ApiService {
           .timeout(const Duration(seconds: 30));
     } catch (_) {
       throw const ApiException(
-        'No fue posible conectar con el backend de Nexa.',
+        'No fue posible conectar con el backend de Imagenda.',
       );
     }
 
@@ -786,7 +786,7 @@ class ApiService {
           .timeout(const Duration(seconds: 30));
     } catch (_) {
       throw const ApiException(
-        'No fue posible conectar con el backend de Nexa.',
+        'No fue posible conectar con el backend de Imagenda.',
       );
     }
 
@@ -901,7 +901,7 @@ class ApiService {
           .timeout(const Duration(seconds: 30));
     } catch (_) {
       throw const ApiException(
-        'No fue posible conectar con el backend de Nexa.',
+        'No fue posible conectar con el backend de Imagenda.',
       );
     }
 
@@ -964,7 +964,7 @@ class ApiService {
           .timeout(const Duration(seconds: 30));
     } catch (_) {
       throw const ApiException(
-        'No fue posible conectar con el backend de Nexa.',
+        'No fue posible conectar con el backend de Imagenda.',
       );
     }
 
@@ -998,7 +998,7 @@ class ApiService {
           .timeout(const Duration(seconds: 30));
     } catch (_) {
       throw const ApiException(
-        'No fue posible conectar con el backend de Nexa.',
+        'No fue posible conectar con el backend de Imagenda.',
       );
     }
 
@@ -1078,7 +1078,7 @@ class ApiService {
           .timeout(const Duration(seconds: 30));
     } catch (_) {
       throw const ApiException(
-        'No fue posible conectar con el backend de Nexa.',
+        'No fue posible conectar con el backend de Imagenda.',
       );
     }
 
@@ -1110,7 +1110,7 @@ class ApiService {
           .timeout(const Duration(seconds: 30));
     } catch (_) {
       throw const ApiException(
-        'No fue posible conectar con el backend de Nexa.',
+        'No fue posible conectar con el backend de Imagenda.',
       );
     }
 
@@ -1227,7 +1227,7 @@ class ApiService {
           .timeout(const Duration(seconds: 30));
     } catch (_) {
       throw const ApiException(
-        'No fue posible conectar con el backend de Nexa.',
+        'No fue posible conectar con el backend de Imagenda.',
       );
     }
 
@@ -1323,7 +1323,7 @@ class ApiService {
           .timeout(const Duration(seconds: 30));
     } catch (_) {
       throw const ApiException(
-        'No fue posible conectar con el backend de Nexa.',
+        'No fue posible conectar con el backend de Imagenda.',
       );
     }
 
@@ -1354,7 +1354,7 @@ class ApiService {
           .timeout(const Duration(seconds: 30));
     } catch (_) {
       throw const ApiException(
-        'No fue posible conectar con el backend de Nexa.',
+        'No fue posible conectar con el backend de Imagenda.',
       );
     }
 
@@ -1383,7 +1383,7 @@ class ApiService {
           .timeout(const Duration(seconds: 30));
     } catch (_) {
       throw const ApiException(
-        'No fue posible conectar con el backend de Nexa.',
+        'No fue posible conectar con el backend de Imagenda.',
       );
     }
 
@@ -1402,7 +1402,7 @@ class ApiService {
           .timeout(const Duration(seconds: 30));
     } catch (_) {
       throw const ApiException(
-        'No fue posible conectar con el backend de Nexa.',
+        'No fue posible conectar con el backend de Imagenda.',
       );
     }
 
@@ -1433,7 +1433,7 @@ class ApiService {
           .timeout(const Duration(seconds: 60));
     } catch (_) {
       throw const ApiException(
-        'No fue posible conectar con el backend de Nexa.',
+        'No fue posible conectar con el backend de Imagenda.',
       );
     }
 
@@ -1454,7 +1454,7 @@ class ApiService {
           .timeout(const Duration(seconds: 30));
     } catch (_) {
       throw const ApiException(
-        'No fue posible conectar con el backend de Nexa.',
+        'No fue posible conectar con el backend de Imagenda.',
       );
     }
 
@@ -1490,7 +1490,7 @@ class ApiService {
           .timeout(const Duration(seconds: 30));
     } catch (_) {
       throw const ApiException(
-        'No fue posible conectar con el backend de Nexa.',
+        'No fue posible conectar con el backend de Imagenda.',
       );
     }
 
@@ -1563,7 +1563,7 @@ class ApiService {
           .timeout(const Duration(seconds: 30));
     } catch (_) {
       throw const ApiException(
-        'No fue posible conectar con el backend de Nexa.',
+        'No fue posible conectar con el backend de Imagenda.',
       );
     }
 
@@ -1649,7 +1649,7 @@ class ApiService {
           .timeout(const Duration(seconds: 30));
     } catch (_) {
       throw const ApiException(
-        'No fue posible conectar con el backend de Nexa.',
+        'No fue posible conectar con el backend de Imagenda.',
       );
     }
 

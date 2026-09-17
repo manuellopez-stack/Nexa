@@ -13,7 +13,7 @@ Future<void> showDicomViewer(
     builder: (_) => const AlertDialog(
       title: Text('Visor no disponible'),
       content: Text(
-        'El visor DICOM solo está disponible en la versión web de Nexa.',
+        'El visor DICOM solo está disponible en la versión web de Imagenda.',
       ),
     ),
   );

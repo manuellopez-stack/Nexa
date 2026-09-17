@@ -51,7 +51,7 @@ class _ThinkingBubbleState extends State<ThinkingBubble> {
           border: Border.all(color: NexaColors.border),
         ),
         child: Text(
-          'Nexa está pensando${'.' * dots}',
+          'Imagenda está pensando${'.' * dots}',
           style: const TextStyle(
             color: NexaColors.textSecondary,
           ),

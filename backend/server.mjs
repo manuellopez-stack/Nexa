@@ -134,7 +134,7 @@ const AGENDA_STAFF = ["administrador", "medico", "tecnico", "recepcion"];
 
 // V13: exige una sesión válida (token entregado por /auth/login).
 // Ahora además exige que la cuenta tenga un rol asignado en staff_profiles;
-// si no lo tiene, la cuenta no puede usar Nexa (aunque el login sea válido).
+// si no lo tiene, la cuenta no puede usar Imagenda (aunque el login sea válido).
 async function requireAuth(request, response, next) {
   const authHeader = request.headers.authorization || "";
   const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : null;
@@ -162,7 +162,7 @@ async function requireAuth(request, response, next) {
 
   if (!profileRow) {
     return response.status(403).json({
-      error: "Tu cuenta no tiene un rol asignado en Nexa. Contacta a un administrador.",
+      error: "Tu cuenta no tiene un rol asignado en Imagenda. Contacta a un administrador.",
     });
   }
 
@@ -724,7 +724,7 @@ async function generatePatientSummary(patient) {
   const result = await openai.responses.create({
     model,
     instructions: `
-Eres Nexa, un asistente de apoyo para equipos de salud.
+Eres Imagenda, un asistente de apoyo para equipos de salud.
 
 Tu tarea es resumir únicamente la información entregada.
 Reglas:
@@ -748,13 +748,13 @@ Reglas:
 }
 
 app.get("/", (_request, response) => {
-  response.send("Nexa Backend funcionando");
+  response.send("Imagenda Backend funcionando");
 });
 
 app.get("/health", (_request, response) => {
   response.json({
     estado: "OK",
-    servicio: "Nexa Backend",
+    servicio: "Imagenda Backend",
     fecha: new Date().toISOString(),
     modelo: model,
   });
@@ -1931,13 +1931,13 @@ app.patch("/patients/:id/from-document", requireRole(CLINICAL_STAFF), async (req
       if (matches.length === 0) {
         return response.status(409).json({
           error:
-            "El documento corresponde a otro RUT y no existe una ficha coincidente. Nexa no modificó la ficha original.",
+            "El documento corresponde a otro RUT y no existe una ficha coincidente. Imagenda no modificó la ficha original.",
         });
       }
       if (matches.length > 1) {
         return response.status(409).json({
           error:
-            "Nexa encontró más de una ficha con el mismo RUT. Debes corregir los duplicados antes de incorporar el documento.",
+            "Imagenda encontró más de una ficha con el mismo RUT. Debes corregir los duplicados antes de incorporar el documento.",
         });
       }
 
@@ -2331,7 +2331,7 @@ app.post("/patients/:id/documents/:filename/ask", requireRole(AI_STAFF), async (
     const result = await openai.responses.create({
       model,
       instructions: `
-Eres Nexa, un asistente de apoyo para la consulta de documentos clínicos ya incorporados.
+Eres Imagenda, un asistente de apoyo para la consulta de documentos clínicos ya incorporados.
 
 Reglas estrictas:
 - Responde siempre en español.
@@ -2357,10 +2357,10 @@ Reglas estrictas:
 
     return response.json({ patientId, filename: record.filename, respuesta: answer });
   } catch (error) {
-    console.error("Error al consultar documento con Nexa:", error);
+    console.error("Error al consultar documento con Imagenda:", error);
     const status = typeof error?.status === "number" ? error.status : 500;
     return response.status(status).json({
-      error: "No fue posible consultar este documento con Nexa.",
+      error: "No fue posible consultar este documento con Imagenda.",
       detalle: typeof error?.message === "string" ? error.message : "Error desconocido.",
     });
   }
@@ -2390,7 +2390,7 @@ app.post("/patients/:id/documents/analyze", requireRole(CLINICAL_STAFF), async (
     const result = await openai.responses.create({
       model,
       instructions: `
-Eres Nexa, un asistente para apoyar la revisión documental.
+Eres Imagenda, un asistente para apoyar la revisión documental.
 
 Analiza únicamente el PDF y la ficha entregada.
 No inventes datos ni completes información ausente.
@@ -2451,7 +2451,7 @@ Si el documento no es clínico, usa isClinical=false y extrae igualmente la info
       documentData = JSON.parse(clean);
     } catch (parseError) {
       console.error("Respuesta no JSON de OpenAI:", raw);
-      return response.status(502).json({ error: "Nexa recibió un análisis que no pudo estructurar." });
+      return response.status(502).json({ error: "Imagenda recibió un análisis que no pudo estructurar." });
     }
 
     const missing = Array.isArray(documentData.missingData) ? documentData.missingData : [];
@@ -3407,7 +3407,7 @@ async function convertDicomToPng(dicomBuffer) {
 
   if (pixelDataElement.encapsulatedPixelData) {
     throw new Error(
-      "Este archivo DICOM usa un formato comprimido que Nexa todavía no puede convertir a imagen.",
+      "Este archivo DICOM usa un formato comprimido que Imagenda todavía no puede convertir a imagen.",
     );
   }
 
@@ -4100,7 +4100,7 @@ app.post("/chat", async (request, response) => {
     const result = await openai.responses.create({
       model,
       instructions: `
-Eres Nexa, un asistente de inteligencia artificial para empresas y equipos de salud.
+Eres Imagenda, un asistente de inteligencia artificial para empresas y equipos de salud.
 
 Reglas:
 - Responde siempre en español.
@@ -4794,7 +4794,7 @@ app.post("/gmail/reply", requireAuth, requireRole(MAIL_STAFF), async (request, r
 app.listen(port, () => {
   console.log("");
   console.log("========================================");
-  console.log("Nexa Backend iniciado correctamente");
+  console.log("Imagenda Backend iniciado correctamente");
   console.log(`Servidor:      http://localhost:${port}`);
   console.log(`Estado:        http://localhost:${port}/health`);
   console.log(`Modelo:        ${model}`);

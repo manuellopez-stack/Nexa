@@ -1,6 +1,6 @@
 {
-    "name": "nexa",
-    "short_name": "nexa",
+    "name": "imagenda",
+    "short_name": "imagenda",
     "start_url": ".",
     "display": "standalone",
     "background_color": "#0175C2",

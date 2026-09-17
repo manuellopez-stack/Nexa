@@ -151,7 +151,7 @@ class _TodayPatientsSectionState extends State<TodayPatientsSection> {
           ),
           const SizedBox(height: 6),
           const Text(
-            'Próximas atenciones obtenidas desde Nexa Backend',
+            'Próximas atenciones obtenidas desde Imagenda Backend',
             style: TextStyle(color: NexaColors.textSecondary),
           ),
           const SizedBox(height: 22),
@@ -459,7 +459,7 @@ $documentsText
       if (!mounted) return;
       final raw = result['document'];
       if (raw is! Map) {
-        throw const ApiException('Nexa no encontró información guardada para este documento.');
+        throw const ApiException('Imagenda no encontró información guardada para este documento.');
       }
       final document = Map<String, dynamic>.from(raw);
 
@@ -668,7 +668,7 @@ $documentsText
     if (filename == null || filename.trim().isEmpty) {
       setState(() {
         _documentError =
-            'Nexa no pudo identificar el nombre del PDF analizado. Vuelve a analizar el documento.';
+            'Imagenda no pudo identificar el nombre del PDF analizado. Vuelve a analizar el documento.';
       });
       return;
     }
@@ -683,7 +683,7 @@ $documentsText
     int? targetPatientId;
     if (identityDiffers) {
       final existing = _existingPatientMatch;
-      if (existing == null || existing['id'] is! int) { setState(() => _documentError = 'El documento corresponde a otro RUT, pero Nexa no encontró una ficha existente. No se modificó la ficha actual.'); return; }
+      if (existing == null || existing['id'] is! int) { setState(() => _documentError = 'El documento corresponde a otro RUT, pero Imagenda no encontró una ficha existente. No se modificó la ficha actual.'); return; }
       final confirmed = await showDialog<bool>(context: context, builder: (dialogContext) => AlertDialog(
         title: const Text('Este paciente ya existe'),
         content: Text('El documento corresponde a ${existing['name'] ?? 'otro paciente'} (RUT ${existing['rut'] ?? 'sin información'}).\n\n¿Desea incorporar el documento a su ficha existente?\n\nLa ficha actual de ${widget.patient['name'] ?? 'este paciente'} no será modificada.'),
@@ -744,7 +744,7 @@ $documentsText
       if (!mounted) return;
 
       setState(() {
-        _error = 'No fue posible obtener una respuesta de Nexa AI.';
+        _error = 'No fue posible obtener una respuesta de Imagenda AI.';
       });
     } finally {
       if (mounted) {
@@ -882,7 +882,7 @@ $documentsText
               _AiPanel(
                 risk: risk.isEmpty ? 'SIN EVALUAR' : risk,
                 summary: summary.isEmpty
-                    ? 'No existe todavía un resumen generado por Nexa AI.'
+                    ? 'No existe todavía un resumen generado por Imagenda AI.'
                     : summary,
               ),
               const SizedBox(height: 18),
@@ -1276,7 +1276,7 @@ class _DocumentDataCard extends StatelessWidget {
                 borderRadius: BorderRadius.circular(12),
               ),
               child: const Text(
-                'Este documento no es clínico. Nexa no modificará la ficha del paciente.',
+                'Este documento no es clínico. Imagenda no modificará la ficha del paciente.',
                 style: TextStyle(
                   color: Color(0xFF9A3412),
                   fontWeight: FontWeight.w700,
@@ -1353,7 +1353,7 @@ class _PatientChatPanel extends StatelessWidget {
               Icon(Icons.chat_bubble_outline, color: NexaColors.primary),
               SizedBox(width: 9),
               Text(
-                'Preguntar a Nexa sobre este paciente',
+                'Preguntar a Imagenda sobre este paciente',
                 style: TextStyle(
                   color: NexaColors.textPrimary,
                   fontSize: 16,
@@ -1474,7 +1474,7 @@ class _AiPanel extends StatelessWidget {
               Icon(Icons.auto_awesome, color: Color(0xFF0F766E)),
               SizedBox(width: 9),
               Text(
-                'Nexa AI',
+                'Imagenda AI',
                 style: TextStyle(
                   color: Color(0xFF115E59),
                   fontSize: 17,
@@ -1749,7 +1749,7 @@ class _ErrorMessage extends StatelessWidget {
           ),
           const SizedBox(height: 10),
           Text(
-            message ?? 'No fue posible conectar con Nexa Backend.',
+            message ?? 'No fue posible conectar con Imagenda Backend.',
             textAlign: TextAlign.center,
             style: const TextStyle(
               fontWeight: FontWeight.w700,
@@ -1858,7 +1858,7 @@ class _SavedDocumentDialogState extends State<_SavedDocumentDialog> {
     } on ApiException catch (error) {
       if (mounted) setState(() => _error = error.message);
     } catch (_) {
-      if (mounted) setState(() => _error = 'No fue posible obtener una respuesta de Nexa.');
+      if (mounted) setState(() => _error = 'No fue posible obtener una respuesta de Imagenda.');
     } finally {
       if (mounted) setState(() => _loading = false);
     }
@@ -1959,7 +1959,7 @@ class _SavedDocumentDialogState extends State<_SavedDocumentDialog> {
             const Row(children: [
               Icon(Icons.auto_awesome, size: 20, color: Color(0xFF4F64A3)),
               SizedBox(width: 8),
-              Text('Preguntar a Nexa sobre este documento', style: TextStyle(fontWeight: FontWeight.w800)),
+              Text('Preguntar a Imagenda sobre este documento', style: TextStyle(fontWeight: FontWeight.w800)),
             ]),
             const SizedBox(height: 10),
             TextField(

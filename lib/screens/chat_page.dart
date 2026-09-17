@@ -111,7 +111,7 @@ class _ChatPageState extends State<ChatPage> {
         messages.add(
           ChatMessage(
             text:
-                'No pude conectarme con el backend de Nexa.\n\nDetalle: $error',
+                'No pude conectarme con el backend de Imagenda.\n\nDetalle: $error',
             isUser: false,
           ),
         );
@@ -149,7 +149,7 @@ class _ChatPageState extends State<ChatPage> {
             ),
             SizedBox(width: 10),
             Text(
-              'Conversación con Nexa',
+              'Conversación con Imagenda',
               style: TextStyle(
                 fontWeight: FontWeight.w700,
                 color: NexaColors.textPrimary,

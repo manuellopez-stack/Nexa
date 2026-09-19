@@ -138,6 +138,7 @@ class _LoginPageState extends State<LoginPage> {
       !_isLoading;
 
   bool _isLoading = false;
+  bool _obscurePassword = true;
   String? _error;
 
   @override
@@ -188,10 +189,12 @@ class _LoginPageState extends State<LoginPage> {
   InputDecoration _inputDecoration({
     required String label,
     required IconData icon,
+    Widget? suffixIcon,
   }) {
     return InputDecoration(
       labelText: label,
       prefixIcon: Icon(icon),
+      suffixIcon: suffixIcon,
       filled: true,
       fillColor: NexaColors.background,
       border: OutlineInputBorder(
@@ -292,12 +295,22 @@ class _LoginPageState extends State<LoginPage> {
                   const SizedBox(height: 18),
                   TextField(
                     controller: passwordController,
-                    obscureText: true,
+                    obscureText: _obscurePassword,
                     textInputAction: TextInputAction.done,
                     onSubmitted: (_) => _login(),
                     decoration: _inputDecoration(
                       label: 'Contraseña',
                       icon: Icons.lock_outline,
+                      suffixIcon: IconButton(
+                        icon: Icon(
+                          _obscurePassword
+                              ? Icons.visibility_outlined
+                              : Icons.visibility_off_outlined,
+                        ),
+                        onPressed: () {
+                          setState(() => _obscurePassword = !_obscurePassword);
+                        },
+                      ),
                     ),
                   ),
                   const SizedBox(height: 24),

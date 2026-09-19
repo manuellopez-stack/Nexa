@@ -787,6 +787,7 @@ app.post("/auth/login", async (request, response) => {
       email: data.user.email,
       role: profileRow?.role ?? null,
       fullName: profileRow?.full_name ?? null,
+      clinicId: profileRow?.clinic_id ?? null,
     },
   });
 });

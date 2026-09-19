@@ -4,8 +4,33 @@ import '../core/nexa_colors.dart';
 import '../screens/chat_page.dart';
 import '../services/api_service.dart';
 
-class NexaAiSection extends StatelessWidget {
+class NexaAiSection extends StatefulWidget {
   const NexaAiSection({super.key});
+
+  @override
+  State<NexaAiSection> createState() => _NexaAiSectionState();
+}
+
+class _NexaAiSectionState extends State<NexaAiSection> {
+  late Future<Map<String, dynamic>> _summaryFuture;
+
+  @override
+  void initState() {
+    super.initState();
+    _summaryFuture = ApiService.getDashboardSummary();
+  }
+
+  void _reload() {
+    setState(() {
+      _summaryFuture = ApiService.getDashboardSummary();
+    });
+  }
+
+  int _asInt(dynamic value) {
+    if (value is int) return value;
+    if (value is num) return value.toInt();
+    return int.tryParse(value?.toString() ?? '') ?? 0;
+  }
 
   void _openChat(BuildContext context) {
     Navigator.push(
@@ -104,57 +129,120 @@ class NexaAiSection extends StatelessWidget {
             ),
           ),
           const SizedBox(height: 8),
-          const Text(
-            'He detectado tres situaciones relevantes para la operación de hoy:',
-            style: TextStyle(
-              height: 1.5,
-              color: NexaColors.textSecondary,
-            ),
-          ),
-          const SizedBox(height: 20),
-          const _InsightRow(
-            color: Color(0xFFEF4444),
-            icon: Icons.build_circle_outlined,
-            text: 'El mamógrafo permanece fuera de servicio.',
-          ),
-          const SizedBox(height: 14),
-          const _InsightRow(
-            color: Color(0xFFF59E0B),
-            icon: Icons.schedule,
-            text: 'Seis pacientes superan los 20 minutos de espera.',
-          ),
-          const SizedBox(height: 14),
-          const _InsightRow(
-            color: Color(0xFF06B6D4),
-            icon: Icons.lightbulb_outline,
-            text: 'La Sala 2 podría atender 8 pacientes adicionales.',
-          ),
-          const SizedBox(height: 24),
-          Container(
-            width: double.infinity,
-            padding: const EdgeInsets.all(16),
-            decoration: BoxDecoration(
-              color: const Color(0xFFF0FDFA),
-              borderRadius: BorderRadius.circular(14),
-            ),
-            child: const Row(
-              children: [
-                Icon(
-                  Icons.trending_up,
-                  color: Color(0xFF0F766E),
-                ),
-                SizedBox(width: 12),
-                Expanded(
-                  child: Text(
-                    'Impacto estimado: recuperar hasta \$180.000 durante la jornada.',
-                    style: TextStyle(
-                      color: Color(0xFF115E59),
-                      fontWeight: FontWeight.w700,
+          FutureBuilder<Map<String, dynamic>>(
+            future: _summaryFuture,
+            builder: (context, snapshot) {
+              if (snapshot.connectionState == ConnectionState.waiting) {
+                return const Padding(
+                  padding: EdgeInsets.symmetric(vertical: 20),
+                  child: Center(
+                    child: SizedBox(
+                      height: 22,
+                      width: 22,
+                      child: CircularProgressIndicator(strokeWidth: 2.4),
                     ),
                   ),
-                ),
-              ],
-            ),
+                );
+              }
+
+              if (snapshot.hasError || !snapshot.hasData) {
+                final message = snapshot.error is ApiException
+                    ? (snapshot.error as ApiException).message
+                    : 'No fue posible cargar el resumen del día.';
+
+                return Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFFEF2F2),
+                    borderRadius: BorderRadius.circular(14),
+                  ),
+                  child: Column(
+                    children: [
+                      Text(
+                        message,
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(
+                          fontWeight: FontWeight.w700,
+                          color: Color(0xFF991B1B),
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      TextButton(
+                        onPressed: _reload,
+                        child: const Text('Reintentar'),
+                      ),
+                    ],
+                  ),
+                );
+              }
+
+              final summary = snapshot.data!;
+              final patientsToday = _asInt(summary['patientsToday']);
+              final waiting = _asInt(summary['waiting']);
+              final pendingValidation = _asInt(summary['pendingValidation']);
+              final roomsInUse = _asInt(summary['roomsInUse']);
+              final totalKnownRooms = _asInt(summary['totalKnownRooms']);
+
+              final insights = <_InsightRow>[
+                if (waiting > 0)
+                  _InsightRow(
+                    color: const Color(0xFFF59E0B),
+                    icon: Icons.schedule,
+                    text: waiting == 1
+                        ? '1 paciente en espera en este momento.'
+                        : '$waiting pacientes en espera en este momento.',
+                  ),
+                if (pendingValidation > 0)
+                  _InsightRow(
+                    color: const Color(0xFFEF4444),
+                    icon: Icons.fact_check_outlined,
+                    text: pendingValidation == 1
+                        ? '1 documento u orden pendiente de validar.'
+                        : '$pendingValidation documentos/órdenes pendientes de validar.',
+                  ),
+                if (roomsInUse > 0)
+                  _InsightRow(
+                    color: const Color(0xFF06B6D4),
+                    icon: Icons.meeting_room_outlined,
+                    text: '$roomsInUse de $totalKnownRooms salas en uso.',
+                  ),
+                if (patientsToday > 0)
+                  _InsightRow(
+                    color: NexaColors.primary,
+                    icon: Icons.people_outline,
+                    text: patientsToday == 1
+                        ? 'Hoy hay 1 paciente en la agenda.'
+                        : 'Hoy hay $patientsToday pacientes en la agenda.',
+                  ),
+              ].take(3).toList();
+
+              if (insights.isEmpty) {
+                return const _InsightRow(
+                  color: Color(0xFF10B981),
+                  icon: Icons.check_circle_outline,
+                  text: 'Sin novedades para hoy.',
+                );
+              }
+
+              return Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    'Esto es lo que encontré para la operación de hoy:',
+                    style: TextStyle(
+                      height: 1.5,
+                      color: NexaColors.textSecondary,
+                    ),
+                  ),
+                  const SizedBox(height: 20),
+                  for (var i = 0; i < insights.length; i++) ...[
+                    if (i > 0) const SizedBox(height: 14),
+                    insights[i],
+                  ],
+                ],
+              );
+            },
           ),
           const SizedBox(height: 22),
           SizedBox(

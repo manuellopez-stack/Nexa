@@ -50,18 +50,32 @@ class WelcomePage extends StatelessWidget {
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                Container(
-                  width: 96,
-                  height: 96,
-                  decoration: BoxDecoration(
-                    color: NexaColors.primary.withValues(alpha: 0.10),
-                    borderRadius: BorderRadius.circular(28),
-                  ),
-                  child: const Icon(
-                    Icons.auto_awesome,
-                    size: 52,
-                    color: NexaColors.primary,
-                  ),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  crossAxisAlignment: CrossAxisAlignment.center,
+                  children: [
+                    ClipRRect(
+                      borderRadius: BorderRadius.circular(12),
+                      child: Image.asset(
+                        'assets/images/milmed_logo.png',
+                        height: 64,
+                      ),
+                    ),
+                    const SizedBox(width: 20),
+                    Container(
+                      width: 96,
+                      height: 96,
+                      decoration: BoxDecoration(
+                        color: NexaColors.primary.withValues(alpha: 0.10),
+                        borderRadius: BorderRadius.circular(28),
+                      ),
+                      child: const Icon(
+                        Icons.auto_awesome,
+                        size: 52,
+                        color: NexaColors.primary,
+                      ),
+                    ),
+                  ],
                 ),
                 const SizedBox(height: 32),
                 const Text(
@@ -570,6 +584,14 @@ class NexaLogo extends StatelessWidget {
   Widget build(BuildContext context) {
     return Row(
       children: [
+        ClipRRect(
+          borderRadius: BorderRadius.circular(8),
+          child: Image.asset(
+            'assets/images/milmed_logo.png',
+            height: 32,
+          ),
+        ),
+        const SizedBox(width: 12),
         Container(
           width: 42,
           height: 42,

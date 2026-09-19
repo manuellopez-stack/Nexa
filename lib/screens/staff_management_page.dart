@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../core/nexa_colors.dart';
 import '../services/api_service.dart';
+import '../widgets/milmed_brand_mark.dart';
 
 const List<String> _kStaffRoles = [
   'administrador',
@@ -117,12 +118,19 @@ class _StaffManagementPageState extends State<StaffManagementPage> {
       backgroundColor: NexaColors.background,
       appBar: AppBar(
         backgroundColor: NexaColors.surface,
-        title: const Text(
-          'Gestión de equipo',
-          style: TextStyle(
-            fontWeight: FontWeight.w700,
-            color: NexaColors.textPrimary,
-          ),
+        title: const Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            MilmedBrandMark(),
+            SizedBox(width: 12),
+            Text(
+              'Gestión de equipo',
+              style: TextStyle(
+                fontWeight: FontWeight.w700,
+                color: NexaColors.textPrimary,
+              ),
+            ),
+          ],
         ),
         actions: [
           Padding(

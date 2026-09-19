@@ -3,6 +3,7 @@ import 'widgets/nexa_ai_section.dart';
 import 'widgets/operational_status_section.dart';
 import 'widgets/dashboard_kpi_section.dart';
 import 'widgets/gmail_notifications_button.dart';
+import 'widgets/milmed_brand_mark.dart';
 import 'package:flutter/material.dart';
 
 import 'core/nexa_colors.dart';
@@ -395,12 +396,19 @@ class DashboardPage extends StatelessWidget {
     return Scaffold(
       backgroundColor: NexaColors.background,
       appBar: AppBar(
-        title: const Text(
-          'Centro de Control',
-          style: TextStyle(
-            fontWeight: FontWeight.w700,
-            color: NexaColors.textPrimary,
-          ),
+        title: const Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            MilmedBrandMark(),
+            SizedBox(width: 12),
+            Text(
+              'Centro de Control',
+              style: TextStyle(
+                fontWeight: FontWeight.w700,
+                color: NexaColors.textPrimary,
+              ),
+            ),
+          ],
         ),
         backgroundColor: NexaColors.surface,
         actions: [

@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import '../core/nexa_colors.dart';
 import '../services/api_service.dart';
 import '../widgets/email_html_renderer.dart';
+import '../widgets/milmed_brand_mark.dart';
 
 /// Extensiones que Gmail suele bloquear como adjunto (mismo criterio que
 /// aplica el propio Gmail al enviar). Evita un rechazo silencioso del envío.
@@ -260,9 +261,16 @@ class _MailPageState extends State<MailPage> {
     return Scaffold(
       backgroundColor: NexaColors.background,
       appBar: AppBar(
-        title: const Text(
-          'Correo',
-          style: TextStyle(fontWeight: FontWeight.w700, color: NexaColors.textPrimary),
+        title: const Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            MilmedBrandMark(),
+            SizedBox(width: 12),
+            Text(
+              'Correo',
+              style: TextStyle(fontWeight: FontWeight.w700, color: NexaColors.textPrimary),
+            ),
+          ],
         ),
         backgroundColor: NexaColors.surface,
       ),

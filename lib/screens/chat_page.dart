@@ -141,14 +141,22 @@ class _ChatPageState extends State<ChatPage> {
       backgroundColor: NexaColors.background,
       appBar: AppBar(
         backgroundColor: NexaColors.surface,
-        title: const Row(
+        title: Row(
           children: [
-            Icon(
+            ClipRRect(
+              borderRadius: BorderRadius.circular(8),
+              child: Image.asset(
+                'assets/images/milmed_logo.png',
+                height: 28,
+              ),
+            ),
+            const SizedBox(width: 10),
+            const Icon(
               Icons.auto_awesome,
               color: NexaColors.primary,
             ),
-            SizedBox(width: 10),
-            Text(
+            const SizedBox(width: 10),
+            const Text(
               'Conversación con Imagenda',
               style: TextStyle(
                 fontWeight: FontWeight.w700,

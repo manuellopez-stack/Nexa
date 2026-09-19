@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../core/nexa_colors.dart';
 import '../services/api_service.dart';
+import '../widgets/milmed_brand_mark.dart';
 import '../widgets/patient_form.dart';
 
 // Códigos de estado de una cita (tabla appointments). Deben coincidir con
@@ -268,12 +269,19 @@ class _AppointmentsPageState extends State<AppointmentsPage> {
       backgroundColor: NexaColors.background,
       appBar: AppBar(
         backgroundColor: NexaColors.surface,
-        title: const Text(
-          'Agendamiento',
-          style: TextStyle(
-            fontWeight: FontWeight.w700,
-            color: NexaColors.textPrimary,
-          ),
+        title: const Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            MilmedBrandMark(),
+            SizedBox(width: 12),
+            Text(
+              'Agendamiento',
+              style: TextStyle(
+                fontWeight: FontWeight.w700,
+                color: NexaColors.textPrimary,
+              ),
+            ),
+          ],
         ),
         actions: [
           Padding(

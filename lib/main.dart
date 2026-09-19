@@ -283,6 +283,7 @@ class _LoginPageState extends State<LoginPage> {
                   const SizedBox(height: 30),
                   TextField(
                     controller: emailController,
+                    textInputAction: TextInputAction.next,
                     decoration: _inputDecoration(
                       label: 'Correo electrónico',
                       icon: Icons.mail_outline,
@@ -292,6 +293,8 @@ class _LoginPageState extends State<LoginPage> {
                   TextField(
                     controller: passwordController,
                     obscureText: true,
+                    textInputAction: TextInputAction.done,
+                    onSubmitted: (_) => _login(),
                     decoration: _inputDecoration(
                       label: 'Contraseña',
                       icon: Icons.lock_outline,

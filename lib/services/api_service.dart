@@ -1110,6 +1110,67 @@ class ApiService {
         .toList();
   }
 
+  /// Estudios recibidos en Orthanc que todavía no se pudieron casar
+  /// automáticamente con una orden por accession_number (pantalla "Estudios
+  /// sin vincular"). Cada fila trae accessionNumberReceived,
+  /// patientNameReceived, patientIdReceived, studyDate, orthancStudyId y
+  /// createdAt.
+  static Future<List<Map<String, dynamic>>> getUnlinkedOrthancStudies() async {
+    final http.Response response;
+
+    try {
+      response = await http
+          .get(
+            Uri.parse('$_baseUrl/orthanc-studies?status=unlinked'),
+            headers: _headers(),
+          )
+          .timeout(const Duration(seconds: 30));
+    } catch (_) {
+      throw const ApiException(
+        'No fue posible conectar con el backend de Imagenda.',
+      );
+    }
+
+    final decodedBody = await _decodeMap(response);
+    final studies = decodedBody['studies'];
+
+    if (studies is! List) {
+      throw const ApiException(
+        'El backend no entregó los estudios de Orthanc.',
+      );
+    }
+
+    return studies
+        .whereType<Map>()
+        .map((study) => Map<String, dynamic>.from(study))
+        .toList();
+  }
+
+  /// Vincula manualmente un estudio de Orthanc (por su orthancStudyId) a una
+  /// orden de imagenología elegida a mano, sin depender de que el
+  /// accession_number haya coincidido. Copia las imágenes a la orden y borra
+  /// el estudio en Orthanc.
+  static Future<void> linkOrthancStudy({
+    required String orthancStudyId,
+    required String orderId,
+  }) async {
+    final http.Response response;
+
+    try {
+      response = await http
+          .post(
+            Uri.parse('$_baseUrl/orthanc-studies/$orthancStudyId/link'),
+            headers: _headers(extra: const {'Content-Type': 'application/json'}),
+            body: jsonEncode({'orderId': orderId}),
+          )
+          .timeout(const Duration(minutes: 2));
+    } catch (_) {
+      throw const ApiException('No fue posible vincular el estudio de Orthanc.');
+    }
+
+    await _decodeMap(response);
+  }
+
   // ============================================
   // GESTIÓN DE EQUIPO (solo Administrador)
   // ============================================

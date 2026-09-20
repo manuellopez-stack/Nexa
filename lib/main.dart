@@ -9,6 +9,7 @@ import 'package:flutter/material.dart';
 import 'core/nexa_colors.dart';
 import 'screens/appointments_page.dart';
 import 'screens/mail_page.dart';
+import 'screens/orthanc_studies_page.dart';
 import 'screens/staff_management_page.dart';
 import 'services/api_service.dart';
 
@@ -439,6 +440,20 @@ class DashboardPage extends StatelessWidget {
                 Navigator.push(
                   context,
                   MaterialPageRoute(builder: (_) => const MailPage()),
+                );
+              },
+            ),
+          if (ApiService.canAccessClinical)
+            IconButton(
+              tooltip: 'Estudios sin vincular',
+              icon: const Icon(
+                Icons.link_off,
+                color: NexaColors.textSecondary,
+              ),
+              onPressed: () {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (_) => const OrthancStudiesPage()),
                 );
               },
             ),

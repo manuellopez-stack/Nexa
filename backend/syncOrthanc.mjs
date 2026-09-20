@@ -56,7 +56,8 @@
 
 import dotenv from "dotenv";
 import { createClient } from "@supabase/supabase-js";
-import { convertDicomToPng } from "./dicomPreview.mjs";
+import { orthancGetJson } from "./orthancClient.mjs";
+import { linkOrthancStudyToOrder } from "./orthancStudies.mjs";
 
 dotenv.config({ quiet: true });
 
@@ -80,46 +81,6 @@ const supabase = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_SERVICE_ROLE_KEY,
 );
-
-const ORTHANC_URL = process.env.ORTHANC_URL.replace(/\/+$/, "");
-const ORTHANC_AUTH_HEADER =
-  "Basic " +
-  Buffer.from(
-    `${process.env.ORTHANC_USER}:${process.env.ORTHANC_PASSWORD}`,
-  ).toString("base64");
-
-async function orthancRequest(path, { method = "GET" } = {}) {
-  const response = await fetch(`${ORTHANC_URL}${path}`, {
-    method,
-    headers: { Authorization: ORTHANC_AUTH_HEADER },
-  });
-
-  if (response.status === 404) return null;
-
-  if (!response.ok) {
-    const detail = await response.text().catch(() => "");
-    throw new Error(
-      `Orthanc respondió ${response.status} en ${method} ${path}: ${detail}`,
-    );
-  }
-
-  return response;
-}
-
-async function orthancGetJson(path) {
-  const response = await orthancRequest(path);
-  return response ? response.json() : null;
-}
-
-async function orthancGetBinary(path) {
-  const response = await orthancRequest(path);
-  if (!response) return null;
-  return Buffer.from(await response.arrayBuffer());
-}
-
-async function orthancDelete(path) {
-  await orthancRequest(path, { method: "DELETE" });
-}
 
 // ----------------------------------------------------------------------------
 // Cursor persistente (orthanc_sync_state, fila única id=1)
@@ -184,78 +145,6 @@ async function upsertOrthancStudy(fields) {
   if (error) throw error;
 }
 
-async function getAlreadyCopiedInstanceIds(orderId) {
-  const { data, error } = await supabase
-    .from("imaging_files")
-    .select("orthanc_instance_id")
-    .eq("order_id", orderId)
-    .not("orthanc_instance_id", "is", null);
-  if (error) throw error;
-  return new Set((data ?? []).map((row) => row.orthanc_instance_id));
-}
-
-// Copia a Storage + imaging_files cada instancia del estudio que todavía no
-// se haya copiado en un intento anterior, igual que la subida manual de un
-// archivo DICOM (POST /patients/:id/imaging-orders/:orderId/image en
-// server.mjs): un archivo DICOM + un preview PNG (si se puede convertir) por
-// fila. Si una instancia falla, lanza el error y deja las anteriores ya
-// insertadas tal cual (el próximo reintento las detecta por
-// orthanc_instance_id y no las vuelve a subir).
-async function copyStudyToOrder(orthancStudyId, orderId) {
-  const instances = (await orthancGetJson(`/studies/${orthancStudyId}/instances`)) ?? [];
-  const alreadyCopied = await getAlreadyCopiedInstanceIds(orderId);
-
-  let copiedNow = 0;
-
-  for (const instance of instances) {
-    if (alreadyCopied.has(instance.ID)) {
-      console.log(`  Instancia ${instance.ID} ya estaba copiada (reintento), se omite.`);
-      continue;
-    }
-
-    const dicomBuffer = await orthancGetBinary(`/instances/${instance.ID}/file`);
-    if (!dicomBuffer) {
-      console.warn(`  Instancia ${instance.ID} ya no está en Orthanc, se omite.`);
-      continue;
-    }
-
-    const timestamp = Date.now();
-    const dicomPath = `orders/${orderId}/${timestamp}-${instance.ID}.dcm`;
-
-    const { error: dicomUploadError } = await supabase.storage
-      .from("imaging")
-      .upload(dicomPath, dicomBuffer, { contentType: "application/dicom" });
-    if (dicomUploadError) throw dicomUploadError;
-
-    let pngPath = null;
-    try {
-      const pngBuffer = await convertDicomToPng(dicomBuffer);
-      pngPath = `orders/${orderId}/${timestamp}-preview.png`;
-      const { error: pngUploadError } = await supabase.storage
-        .from("imaging")
-        .upload(pngPath, pngBuffer, { contentType: "image/png" });
-      if (pngUploadError) throw pngUploadError;
-    } catch (error) {
-      console.warn(
-        `  No fue posible generar preview para la instancia ${instance.ID}: ${error.message}`,
-      );
-      pngPath = null;
-    }
-
-    const { error: fileInsertError } = await supabase.from("imaging_files").insert({
-      order_id: orderId,
-      dicom_path: dicomPath,
-      png_path: pngPath,
-      orthanc_instance_id: instance.ID,
-    });
-    if (fileInsertError) throw fileInsertError;
-
-    copiedNow += 1;
-  }
-
-  return { totalInstances: instances.length, copiedNow };
-}
-
 async function processStudy(orthancStudyId) {
   const study = await orthancGetJson(`/studies/${orthancStudyId}`);
   if (!study) {
@@ -302,20 +191,16 @@ async function processStudy(orthancStudyId) {
   // Si esto lanza (una instancia falló), NO se marca 'linked' ni se borra de
   // Orthanc -- las instancias que sí se alcanzaron a copiar quedan en
   // imaging_files con su orthanc_instance_id, así el reintento no las duplica.
-  const { totalInstances, copiedNow } = await copyStudyToOrder(orthancStudyId, matchedOrderId);
-
-  await upsertOrthancStudy({
-    orthanc_study_id: orthancStudyId,
-    accession_number_received: accessionNumber,
-    patient_name_received: patientNameReceived,
-    patient_id_received: patientIdReceived,
-    study_date: studyDate,
-    status: "linked",
-    linked_order_id: matchedOrderId,
-    linked_at: new Date().toISOString(),
+  const { totalInstances, copiedNow } = await linkOrthancStudyToOrder(supabase, {
+    orthancStudyId,
+    orderId: matchedOrderId,
+    studyMeta: {
+      accession_number_received: accessionNumber,
+      patient_name_received: patientNameReceived,
+      patient_id_received: patientIdReceived,
+      study_date: studyDate,
+    },
   });
-
-  await orthancDelete(`/studies/${orthancStudyId}`);
 
   console.log(
     `  ${copiedNow}/${totalInstances} instancia(s) copiada(s) recién (el resto ya estaba de un intento previo). Estudio borrado de Orthanc.`,

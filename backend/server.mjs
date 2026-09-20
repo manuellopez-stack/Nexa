@@ -15,6 +15,7 @@ import {
   TIMEOUT_MS_DEFECTO,
 } from "./gmailImageProxy.mjs";
 import { convertDicomToPng } from "./dicomPreview.mjs";
+import { linkOrthancStudyToOrder } from "./orthancStudies.mjs";
 dotenv.config({ quiet: true });
 
 const app = express();
@@ -990,6 +991,7 @@ app.use("/appointments", requireAuth);
 app.use("/chat", requireAuth, requireRole(AI_STAFF));
 app.use("/lab", requireAuth);
 app.use("/imaging", requireAuth);
+app.use("/orthanc-studies", requireAuth);
 app.use("/dental", requireAuth);
 app.use("/billing", requireAuth);
 app.use("/staff", requireAuth, requireRole(ADMIN_ONLY));
@@ -3781,6 +3783,105 @@ app.get(
       return response
         .status(500)
         .json({ error: "No fue posible obtener las imágenes de la orden." });
+    }
+  },
+);
+
+// ============================================
+// IMAGENOLOGÍA — ETAPA 2.5: estudios de Orthanc sin vincular
+// ============================================
+
+function shapeOrthancStudyRow(row) {
+  return {
+    orthancStudyId: row.orthanc_study_id,
+    accessionNumberReceived: row.accession_number_received,
+    patientNameReceived: row.patient_name_received,
+    patientIdReceived: row.patient_id_received,
+    studyDate: row.study_date,
+    createdAt: row.created_at,
+  };
+}
+
+app.get("/orthanc-studies", requireRole(CLINICAL_STAFF), async (request, response) => {
+  try {
+    const status = typeof request.query.status === "string" ? request.query.status : null;
+
+    let query = supabase
+      .from("orthanc_studies")
+      .select(
+        "orthanc_study_id, accession_number_received, patient_name_received, patient_id_received, study_date, created_at",
+      )
+      .order("created_at", { ascending: false });
+
+    if (status) {
+      query = query.eq("status", status);
+    }
+
+    const { data, error } = await query;
+    if (error) throw error;
+
+    return response.json({ studies: (data ?? []).map(shapeOrthancStudyRow) });
+  } catch (error) {
+    console.error("Error al obtener estudios de Orthanc:", error);
+    return response
+      .status(500)
+      .json({ error: "No fue posible obtener los estudios de Orthanc." });
+  }
+});
+
+app.post(
+  "/orthanc-studies/:id/link",
+  requireRole(CLINICAL_STAFF),
+  async (request, response) => {
+    try {
+      const orthancStudyId = request.params.id;
+      const orderId = request.body?.orderId;
+
+      if (typeof orderId !== "string" || orderId.trim().length === 0) {
+        return response
+          .status(400)
+          .json({ error: "Debes indicar la orden a la que vincular el estudio." });
+      }
+
+      const { data: studyRow, error: studyError } = await supabase
+        .from("orthanc_studies")
+        .select("status")
+        .eq("orthanc_study_id", orthancStudyId)
+        .maybeSingle();
+      if (studyError) throw studyError;
+      if (!studyRow)
+        return response
+          .status(404)
+          .json({ error: "Estudio de Orthanc no encontrado." });
+      if (studyRow.status === "linked")
+        return response
+          .status(409)
+          .json({ error: "Este estudio ya está vinculado a una orden." });
+
+      const { data: orderRow, error: orderError } = await supabase
+        .from("imaging_orders")
+        .select("id")
+        .eq("id", orderId)
+        .maybeSingle();
+      if (orderError) throw orderError;
+      if (!orderRow)
+        return response
+          .status(404)
+          .json({ error: "Orden de imagenología no encontrada." });
+
+      const { totalInstances, copiedNow } = await linkOrthancStudyToOrder(supabase, {
+        orthancStudyId,
+        orderId: orderRow.id,
+      });
+
+      return response.json({ linked: true, orderId: orderRow.id, totalInstances, copiedNow });
+    } catch (error) {
+      console.error("Error al vincular estudio de Orthanc:", error);
+      return response.status(500).json({
+        error: "No fue posible vincular el estudio de Orthanc a la orden.",
+        detalle:
+          typeof error?.message === "string" ? error.message : "Error desconocido.",
+      });
     }
   },
 );

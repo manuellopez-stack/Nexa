@@ -5,7 +5,8 @@
   "main": "server.mjs",
   "type": "module",
   "scripts": {
-    "start": "node server.mjs"
+    "start": "node server.mjs",
+    "sync-orthanc": "node syncOrthanc.mjs"
   },
   "keywords": [],
   "author": "",

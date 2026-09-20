@@ -635,11 +635,39 @@ async function getPatientFull(id) {
   };
 }
 
-async function findPatientsByRutDb(rut, excludeId = null) {
+// Etapa 3 (paso 3a) del plan multi-clínica: true si el paciente puede verse/
+// editarse desde la sesión actual. Si el paciente o quien hace la petición
+// todavía no tienen clinic_id asignado (dato no migrado / rollout gradual),
+// no bloquea -- solo compara cuando ambos lados tienen clínica asignada.
+async function patientBelongsToRequesterClinic(patientId, request) {
+  const requesterClinicId = request.staffProfile?.clinic_id ?? null;
+  if (!requesterClinicId) return true;
+
+  const { data, error } = await supabase
+    .from("patients")
+    .select("clinic_id")
+    .eq("id", Number(patientId))
+    .maybeSingle();
+  if (error) throw error;
+  if (!data) return true; // no encontrado: que lo reporte el fetch principal
+
+  const patientClinicId = data.clinic_id ?? null;
+  return !patientClinicId || patientClinicId === requesterClinicId;
+}
+
+// Etapa 3 (paso 3a): clinicId es opcional -- cuando se pasa, la búsqueda de
+// RUT duplicado se limita a esa clínica. Los llamadores sin sesión (booking
+// público) o todavía no revisados (documentos) siguen sin pasarlo, sin
+// cambio de comportamiento ahí.
+async function findPatientsByRutDb(rut, excludeId = null, clinicId = null) {
   const normalized = normalizeRut(rut);
   if (!normalized) return [];
 
-  const { data, error } = await supabase.from("patients").select("id, name, rut");
+  let query = supabase.from("patients").select("id, name, rut");
+  if (clinicId) {
+    query = query.eq("clinic_id", clinicId);
+  }
+  const { data, error } = await query;
   if (error) throw error;
 
   return (data ?? []).filter(
@@ -813,19 +841,27 @@ app.use("/mail", requireAuth, requireRole(MAIL_STAFF));
 // cita. Devuelve null si la tabla appointments todavía no existe (SQL no
 // corrido) o si no hay citas para hoy: en ese caso el endpoint cae al
 // comportamiento anterior (leer patients.time) y la vista no se rompe.
-async function loadTodayAgendaFromAppointments(canSeeClinicalData) {
+async function loadTodayAgendaFromAppointments(canSeeClinicalData, clinicId = null) {
   // Ventana "de hoy" = día local completo de la clínica (Chile), convertido a
   // límites UTC. El backfill del SQL fecha las citas con el mismo criterio
   // (timezone('America/Santiago', now())).
   const { startUtc, endUtc } = clinicDayRangeUtc();
 
-  const { data, error } = await supabase
+  let query = supabase
     .from("appointments")
     .select("*, patient:patients(*), room:rooms(name)")
     .gte("scheduled_at", startUtc.toISOString())
     .lt("scheduled_at", endUtc.toISOString())
     .neq("status", "cancelada")
     .order("scheduled_at", { ascending: true });
+
+  // Etapa 3 (paso 3a): solo /patients/today pasa clinicId -- /dashboard/summary
+  // sigue llamando esta función sin él, sin cambios de comportamiento ahí.
+  if (clinicId) {
+    query = query.eq("clinic_id", clinicId);
+  }
+
+  const { data, error } = await query;
 
   if (error) {
     console.warn("No fue posible leer la agenda de citas:", error.message);
@@ -875,6 +911,11 @@ app.get("/patients", requireRole(AGENDA_STAFF), async (request, response) => {
       .order("name", { ascending: true })
       .limit(500);
 
+    // Etapa 3 (paso 3a): solo filtra si quien pide tiene clínica asignada.
+    if (request.staffProfile?.clinic_id) {
+      query = query.eq("clinic_id", request.staffProfile.clinic_id);
+    }
+
     if (search) {
       query = query.or(`name.ilike.%${search}%,rut.ilike.%${search}%`);
     }
@@ -915,7 +956,11 @@ app.post("/patients", requireRole(AGENDA_STAFF), async (request, response) => {
     // Deduplicación por RUT: no se crea una ficha si ya existe otra con el
     // mismo RUT. Se devuelven las coincidencias para que la UI ofrezca usar
     // la ficha existente.
-    const duplicates = await findPatientsByRutDb(values.rut);
+    const duplicates = await findPatientsByRutDb(
+      values.rut,
+      null,
+      request.staffProfile?.clinic_id ?? null,
+    );
     if (duplicates.length > 0) {
       return response.status(409).json({
         error: "Ya existe una ficha con este RUT.",
@@ -928,7 +973,17 @@ app.post("/patients", requireRole(AGENDA_STAFF), async (request, response) => {
     // histórico), luego `values` sobreescribe lo que llegó en el body.
     const { data, error } = await supabase
       .from("patients")
-      .insert({ age: null, sexo: null, phone: null, observations: null, ...values })
+      // Etapa 3 (paso 3a): clinic_id va al final para que nunca lo sobrescriba
+      // el body -- siempre es el de quien crea la ficha, no algo enviado por
+      // el cliente.
+      .insert({
+        age: null,
+        sexo: null,
+        phone: null,
+        observations: null,
+        ...values,
+        clinic_id: request.staffProfile?.clinic_id ?? null,
+      })
       .select("id, name, rut, phone")
       .single();
     if (error) throw error;
@@ -954,13 +1009,21 @@ app.get("/patients/:id/identity", requireRole(AGENDA_STAFF), async (request, res
 
     const { data, error } = await supabase
       .from("patients")
-      .select("id, name, rut, age, sexo, phone, observations")
+      .select("id, name, rut, age, sexo, phone, observations, clinic_id")
       .eq("id", patientId)
       .maybeSingle();
     if (error) throw error;
     if (!data) return response.status(404).json({ error: "Paciente no encontrado" });
 
-    return response.json({ patient: data });
+    // Etapa 3 (paso 3a): si el paciente es de otra clínica, se responde igual
+    // que "no encontrado" (no se confirma su existencia a quien no debería verla).
+    const requesterClinicId = request.staffProfile?.clinic_id ?? null;
+    if (requesterClinicId && data.clinic_id && data.clinic_id !== requesterClinicId) {
+      return response.status(404).json({ error: "Paciente no encontrado" });
+    }
+
+    const { clinic_id, ...patient } = data;
+    return response.json({ patient });
   } catch (error) {
     console.error("Error al obtener la identidad del paciente:", error);
     return response
@@ -982,11 +1045,17 @@ app.patch("/patients/:id", requireRole(AGENDA_STAFF), async (request, response) 
 
     const { data: existing, error: lookupError } = await supabase
       .from("patients")
-      .select("id")
+      .select("id, clinic_id")
       .eq("id", patientId)
       .maybeSingle();
     if (lookupError) throw lookupError;
     if (!existing) return response.status(404).json({ error: "Paciente no encontrado" });
+
+    // Etapa 3 (paso 3a): mismo criterio que GET /patients/:id/identity.
+    const requesterClinicId = request.staffProfile?.clinic_id ?? null;
+    if (requesterClinicId && existing.clinic_id && existing.clinic_id !== requesterClinicId) {
+      return response.status(404).json({ error: "Paciente no encontrado" });
+    }
 
     const { values, error: validationError } = parsePatientIdentityInput(request.body, {
       partial: true,
@@ -1001,7 +1070,11 @@ app.patch("/patients/:id", requireRole(AGENDA_STAFF), async (request, response) 
     // Si cambia el RUT, misma deduplicación que el alta, excluyendo la propia
     // ficha.
     if (values.rut !== undefined) {
-      const duplicates = await findPatientsByRutDb(values.rut, patientId);
+      const duplicates = await findPatientsByRutDb(
+        values.rut,
+        patientId,
+        request.staffProfile?.clinic_id ?? null,
+      );
       if (duplicates.length > 0) {
         return response.status(409).json({
           error: "Ya existe otra ficha con este RUT.",
@@ -1034,8 +1107,9 @@ app.get("/patients/today", async (request, response) => {
     // reconocido) recibe la versión reducida, sin datos clínicos.
     const canSeeClinicalData = CLINICAL_STAFF.includes(request.staffRole);
     const { day } = clinicDayRangeUtc();
+    const requesterClinicId = request.staffProfile?.clinic_id ?? null;
 
-    const agenda = await loadTodayAgendaFromAppointments(canSeeClinicalData);
+    const agenda = await loadTodayAgendaFromAppointments(canSeeClinicalData, requesterClinicId);
     if (agenda) {
       return response.json({
         fecha: day,
@@ -1046,10 +1120,16 @@ app.get("/patients/today", async (request, response) => {
     }
 
     // Fallback: agenda derivada de patients.time (comportamiento previo a Citas).
-    const { data, error } = await supabase
+    let fallbackQuery = supabase
       .from("patients")
       .select("*")
       .order("time", { ascending: true });
+
+    if (requesterClinicId) {
+      fallbackQuery = fallbackQuery.eq("clinic_id", requesterClinicId);
+    }
+
+    const { data, error } = await fallbackQuery;
 
     if (error) throw error;
 
@@ -1810,6 +1890,11 @@ app.post("/public/booking", async (request, response) => {
 
 app.get("/patients/:id", requireRole(CLINICAL_STAFF), async (request, response) => {
   try {
+    // Etapa 3 (paso 3a): mismo criterio que las rutas anteriores.
+    if (!(await patientBelongsToRequesterClinic(request.params.id, request))) {
+      return response.status(404).json({ error: "Paciente no encontrado" });
+    }
+
     const patient = await getPatientFull(request.params.id);
     if (!patient) return response.status(404).json({ error: "Paciente no encontrado" });
 
@@ -1846,6 +1931,11 @@ app.get("/patients/:id", requireRole(CLINICAL_STAFF), async (request, response) 
 
 app.post("/patients/:id/summary", requireRole(CLINICAL_STAFF), async (request, response) => {
   try {
+    // Etapa 3 (paso 3a): mismo criterio que las rutas anteriores.
+    if (!(await patientBelongsToRequesterClinic(request.params.id, request))) {
+      return response.status(404).json({ error: "Paciente no encontrado" });
+    }
+
     const patient = await getPatientFull(request.params.id);
     if (!patient) return response.status(404).json({ error: "Paciente no encontrado" });
 
@@ -1874,6 +1964,13 @@ app.post("/patients/:id/summary", requireRole(CLINICAL_STAFF), async (request, r
 
 app.patch("/patients/:id/from-document", requireRole(CLINICAL_STAFF), async (request, response) => {
   try {
+    // Etapa 3 (paso 3a): mismo criterio que las rutas anteriores. La búsqueda
+    // de un paciente destino por RUT (más abajo, cuando el documento trae un
+    // RUT distinto) también queda limitada a la misma clínica.
+    if (!(await patientBelongsToRequesterClinic(request.params.id, request))) {
+      return response.status(404).json({ error: "Paciente de origen no encontrado" });
+    }
+
     const sourcePatient = await getPatientFull(request.params.id);
     if (!sourcePatient) return response.status(404).json({ error: "Paciente de origen no encontrado" });
 
@@ -1927,7 +2024,11 @@ app.patch("/patients/:id/from-document", requireRole(CLINICAL_STAFF), async (req
     let routedToExistingPatient = false;
 
     if (identityDiffers) {
-      const matches = await findPatientsByRutDb(patientRut, sourcePatient.id);
+      const matches = await findPatientsByRutDb(
+        patientRut,
+        sourcePatient.id,
+        request.staffProfile?.clinic_id ?? null,
+      );
 
       if (matches.length === 0) {
         return response.status(409).json({

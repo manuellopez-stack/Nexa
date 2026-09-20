@@ -303,6 +303,11 @@ class _PatientDialogState extends State<_PatientDialog> {
   Map<String, dynamic>? _existingPatientMatch;
   String? _documentFilename;
   String? _deletingFilename;
+  // true si el backend ya guardó el documento analizado en "Documentos
+  // disponibles" (ver POST /documents/analyze). El botón "Incorporar" pasa
+  // entonces a ser solo para actualizar los datos del paciente, no para
+  // que el documento aparezca.
+  bool _documentSaved = false;
 
   @override
   void dispose() {
@@ -617,6 +622,7 @@ $documentsText
       _incorporationMessage = null;
       _existingPatientMatch = null;
       _documentFilename = null;
+      _documentSaved = false;
     });
 
     try {
@@ -639,6 +645,13 @@ $documentsText
             result['filename']?.toString().trim().isNotEmpty == true
                 ? result['filename'].toString().trim()
                 : file.name;
+        _documentSaved = result['documentSaved'] == true;
+        final updatedPatient = result['patient'];
+        if (_documentSaved && updatedPatient is Map<String, dynamic>) {
+          widget.patient
+            ..clear()
+            ..addAll(updatedPatient);
+        }
       });
     } on ApiException catch (error) {
       if (!mounted) return;
@@ -702,7 +715,18 @@ $documentsText
       );
       if (!mounted) return;
       final updatedPatient = result['patient']; final routed = result['routedToExistingPatient'] == true; final message = result['message']?.toString();
-      setState(() { if (!routed && updatedPatient is Map<String, dynamic>) { widget.patient..clear()..addAll(updatedPatient); } _incorporationMessage = message?.trim().isNotEmpty == true ? message!.trim() : (routed ? 'Documento incorporado a la ficha existente. La ficha actual no fue modificada.' : 'Información incorporada y guardada correctamente en la ficha.'); });
+      final wasAlreadySaved = _documentSaved;
+      setState(() {
+        if (!routed && updatedPatient is Map<String, dynamic>) { widget.patient..clear()..addAll(updatedPatient); }
+        if (!routed) _documentSaved = true;
+        _incorporationMessage = message?.trim().isNotEmpty == true
+            ? message!.trim()
+            : (routed
+                ? 'Documento incorporado a la ficha existente. La ficha actual no fue modificada.'
+                : (wasAlreadySaved
+                    ? 'Datos del paciente actualizados con la información del documento.'
+                    : 'Información incorporada y guardada correctamente en la ficha.'));
+      });
     } on ApiException catch (error) { if (mounted) setState(() => _documentError = error.message); }
     catch (_) { if (mounted) setState(() => _documentError = 'Ocurrió un error al incorporar la información a la ficha.'); }
     finally { if (mounted) setState(() => _isIncorporatingDocument = false); }
@@ -955,6 +979,7 @@ $documentsText
                 const SizedBox(height: 14),
                 _DocumentDataCard(
                   data: _documentData!,
+                  documentSaved: _documentSaved,
                   isIncorporating: _isIncorporatingDocument,
                   incorporationMessage: _incorporationMessage,
                   onIncorporate: _incorporateDocumentIntoPatient,
@@ -1063,12 +1088,14 @@ $documentsText
 class _DocumentDataCard extends StatelessWidget {
   const _DocumentDataCard({
     required this.data,
+    required this.documentSaved,
     required this.isIncorporating,
     required this.incorporationMessage,
     required this.onIncorporate,
   });
 
   final Map<String, dynamic> data;
+  final bool documentSaved;
   final bool isIncorporating;
   final String? incorporationMessage;
   final VoidCallback onIncorporate;
@@ -1155,6 +1182,17 @@ class _DocumentDataCard extends StatelessWidget {
                       value('documentType'),
                       style: const TextStyle(color: NexaColors.textSecondary),
                     ),
+                    if (isClinical && documentSaved) ...[
+                      const SizedBox(height: 3),
+                      const Text(
+                        'Ya se guardó en "Documentos disponibles".',
+                        style: TextStyle(
+                          color: Color(0xFF15803D),
+                          fontWeight: FontWeight.w700,
+                          fontSize: 12,
+                        ),
+                      ),
+                    ],
                   ],
                 ),
               ),
@@ -1245,7 +1283,7 @@ class _DocumentDataCard extends StatelessWidget {
             ),
           ),
           const SizedBox(height: 16),
-          if (isClinical)
+          if (isClinical) ...[
             SizedBox(
               width: double.infinity,
               child: FilledButton.icon(
@@ -1263,11 +1301,23 @@ class _DocumentDataCard extends StatelessWidget {
                 label: Text(
                   isIncorporating
                       ? 'Incorporando información...'
-                      : 'Incorporar datos a la ficha',
+                      : (documentSaved
+                          ? 'Actualizar datos del paciente con este documento'
+                          : 'Incorporar datos a la ficha'),
                 ),
               ),
-            )
-          else
+            ),
+            const SizedBox(height: 8),
+            Text(
+              documentSaved
+                  ? 'El documento ya está guardado. Este botón además reemplaza nombre, RUT, edad, examen, médico y prioridad del paciente con lo que dice el documento.'
+                  : 'El RUT del documento no coincide con el de esta ficha, así que el documento todavía no se guardó. Usa este botón para decidir a qué ficha corresponde.',
+              style: const TextStyle(
+                color: NexaColors.textSecondary,
+                fontSize: 12,
+              ),
+            ),
+          ] else
             Container(
               width: double.infinity,
               padding: const EdgeInsets.all(12),

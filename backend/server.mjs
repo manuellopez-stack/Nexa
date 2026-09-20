@@ -53,6 +53,11 @@ function isOriginAllowed(origin) {
   return configuredOrigins.includes(origin);
 }
 
+// DEBUG TEMPORAL: diagnóstico del login que no llega o falla en silencio.
+app.use((request, _response, next) => {
+  console.log(`[DEBUG] ${new Date().toISOString()} ${request.method} ${request.originalUrl} origin=${request.headers.origin ?? "(sin origin)"}`);
+  next();
+});
 app.use(
   cors({
     origin(origin, callback) {
@@ -676,6 +681,158 @@ async function findPatientsByRutDb(rut, excludeId = null, clinicId = null) {
   );
 }
 
+// Guarda (o actualiza) la fila de `documents` y su `history_events` asociado
+// para un documento ya analizado por IA. Compartido entre el guardado
+// automático al analizar (POST /documents/analyze) y la incorporación manual
+// (PATCH /from-document), para que ambos caminos dejen el documento en el
+// mismo estado y no se dupliquen filas.
+async function saveDocumentRecord({ targetPatientId, documentData, filename, imagingOrderId = null }) {
+  const cleanValue = (value) => {
+    if (typeof value !== "string") return null;
+    const c = value.trim();
+    return !c || c.toLowerCase() === "sin información" ? null : c;
+  };
+  const parseAge = (value) => {
+    if (Number.isInteger(value) && value >= 0 && value <= 130) return value;
+    if (typeof value === "string") {
+      const m = value.match(/\d{1,3}/);
+      if (m) {
+        const n = Number(m[0]);
+        if (n >= 0 && n <= 130) return n;
+      }
+    }
+    return null;
+  };
+
+  const documentType = cleanValue(documentData.documentType);
+  const exam = cleanValue(documentData.exam);
+  const patientName = cleanValue(documentData.patientName);
+  const patientRut = cleanValue(documentData.patientRut);
+  const patientAge = parseAge(documentData.patientAge);
+  const reason = cleanValue(documentData.reason);
+  const priority = cleanValue(documentData.priority);
+  const date = cleanValue(documentData.date);
+  const equipment = cleanValue(documentData.equipment);
+  const summary = cleanValue(documentData.summary);
+  const doctor = cleanValue(documentData.doctor);
+
+  const normalizedFilename = normalizeDocumentName(filename);
+
+  // Si el mismo archivo quedó por error asociado a otra ficha, lo retiramos
+  // de ahí (evita que un mismo PDF quede "pegado" a dos pacientes).
+  const { data: otherDocs, error: otherDocsError } = await supabase
+    .from("documents")
+    .select("id, filename")
+    .neq("patient_id", targetPatientId);
+  if (otherDocsError) throw otherDocsError;
+
+  const crossedDocs = (otherDocs ?? []).filter(
+    (doc) => normalizeDocumentName(doc.filename) === normalizedFilename,
+  );
+  for (const doc of crossedDocs) {
+    await supabase.from("history_events").delete().eq("document_id", doc.id);
+    await supabase.from("documents").delete().eq("id", doc.id);
+  }
+
+  const { data: existingDocs, error: existingDocsError } = await supabase
+    .from("documents")
+    .select("id, filename")
+    .eq("patient_id", targetPatientId);
+  if (existingDocsError) throw existingDocsError;
+
+  const existingDoc = (existingDocs ?? []).find(
+    (doc) => normalizeDocumentName(doc.filename) === normalizedFilename,
+  );
+
+  const documentRow = {
+    patient_id: targetPatientId,
+    filename,
+    document_type: documentType,
+    exam,
+    patient_name: patientName,
+    patient_rut: patientRut,
+    patient_age: patientAge,
+    reason,
+    priority,
+    is_clinical: true,
+    date,
+    summary,
+    equipment,
+    doctor,
+    // Cada vez que se (re)guarda un documento, su validación humana vuelve a
+    // quedar pendiente: es información nueva que todavía no ha sido
+    // revisada por un profesional.
+    validation_status: "pendiente",
+    validated_at: null,
+    incorporated_at: new Date().toISOString(),
+  };
+
+  let savedDocId;
+  if (existingDoc) {
+    const { data, error } = await supabase
+      .from("documents")
+      .update(documentRow)
+      .eq("id", existingDoc.id)
+      .select()
+      .single();
+    if (error) throw error;
+    savedDocId = data.id;
+  } else {
+    const { data, error } = await supabase
+      .from("documents")
+      .insert(documentRow)
+      .select()
+      .single();
+    if (error) throw error;
+    savedDocId = data.id;
+  }
+
+  if (exam) {
+    const historyEntry = {
+      patient_id: targetPatientId,
+      document_id: savedDocId,
+      date: date ?? new Date().toLocaleDateString("es-CL"),
+      exam,
+      summary,
+    };
+
+    const { data: existingHistory, error: existingHistoryError } = await supabase
+      .from("history_events")
+      .select("id")
+      .eq("document_id", savedDocId)
+      .maybeSingle();
+    if (existingHistoryError) throw existingHistoryError;
+
+    if (existingHistory) {
+      const { error } = await supabase
+        .from("history_events")
+        .update(historyEntry)
+        .eq("id", existingHistory.id);
+      if (error) throw error;
+    } else {
+      const { error } = await supabase.from("history_events").insert(historyEntry);
+      if (error) throw error;
+    }
+  }
+
+  if (imagingOrderId) {
+    const { error: linkError } = await supabase
+      .from("documents")
+      .update({ imaging_order_id: imagingOrderId })
+      .eq("id", savedDocId);
+    if (linkError) throw linkError;
+
+    const { error: orderUpdateError } = await supabase
+      .from("imaging_orders")
+      .update({ status: "informado", informed_at: new Date().toISOString() })
+      .eq("id", imagingOrderId)
+      .eq("patient_id", targetPatientId);
+    if (orderUpdateError) throw orderUpdateError;
+  }
+
+  return savedDocId;
+}
+
 async function getDuplicateRutGroupsDb() {
   const { data, error } = await supabase.from("patients").select("id, name, time, rut");
   if (error) {
@@ -789,35 +946,40 @@ app.get("/health", (_request, response) => {
 });
 
 app.post("/auth/login", async (request, response) => {
-  const email = typeof request.body?.email === "string" ? request.body.email.trim() : "";
-  const password = typeof request.body?.password === "string" ? request.body.password : "";
+  try {
+    const email = typeof request.body?.email === "string" ? request.body.email.trim() : "";
+    const password = typeof request.body?.password === "string" ? request.body.password : "";
 
-  if (!email || !password) {
-    return response.status(400).json({ error: "Debes ingresar tu email y tu contraseña." });
+    if (!email || !password) {
+      return response.status(400).json({ error: "Debes ingresar tu email y tu contraseña." });
+    }
+
+    const { data, error } = await supabaseAuth.auth.signInWithPassword({ email, password });
+
+    if (error || !data?.session) {
+      return response.status(401).json({ error: "Email o contraseña incorrectos." });
+    }
+
+    const { data: profileRow } = await supabase
+      .from("staff_profiles")
+      .select("*")
+      .eq("id", data.user.id)
+      .maybeSingle();
+
+    return response.json({
+      accessToken: data.session.access_token,
+      user: {
+        id: data.user.id,
+        email: data.user.email,
+        role: profileRow?.role ?? null,
+        fullName: profileRow?.full_name ?? null,
+        clinicId: profileRow?.clinic_id ?? null,
+      },
+    });
+  } catch (error) {
+    console.error("Error al iniciar sesión:", error);
+    return response.status(500).json({ error: "No fue posible iniciar sesión. Intenta de nuevo." });
   }
-
-  const { data, error } = await supabaseAuth.auth.signInWithPassword({ email, password });
-
-  if (error || !data?.session) {
-    return response.status(401).json({ error: "Email o contraseña incorrectos." });
-  }
-
-  const { data: profileRow } = await supabase
-    .from("staff_profiles")
-    .select("*")
-    .eq("id", data.user.id)
-    .maybeSingle();
-
-  return response.json({
-    accessToken: data.session.access_token,
-    user: {
-      id: data.user.id,
-      email: data.user.email,
-      role: profileRow?.role ?? null,
-      fullName: profileRow?.full_name ?? null,
-      clinicId: profileRow?.clinic_id ?? null,
-    },
-  });
 });
 
 // A partir de aquí, todas las rutas requieren haber iniciado sesión y
@@ -1986,6 +2148,13 @@ app.patch("/patients/:id/from-document", requireRole(CLINICAL_STAFF), async (req
     if (documentData.isClinical !== true) {
       return response.status(400).json({ error: "Solo se pueden incorporar datos desde documentos clínicos." });
     }
+    if (!filename) {
+      // Antes de este chequeo, un filename vacío hacía que el bloque de más
+      // abajo se saltara el insert/update de `documents` en silencio y el
+      // endpoint igual respondía éxito -- el paciente quedaba actualizado
+      // pero el documento nunca se guardaba.
+      return response.status(400).json({ error: "Falta el nombre del archivo del documento a incorporar." });
+    }
 
     const cleanValue = (value) => {
       if (typeof value !== "string") return null;
@@ -2071,121 +2240,18 @@ app.patch("/patients/:id/from-document", requireRole(CLINICAL_STAFF), async (req
       if (patientUpdateError) throw patientUpdateError;
     }
 
-    if (filename) {
-      const normalizedFilename = normalizeDocumentName(filename);
-
-      // Si el mismo archivo quedó por error asociado a otra ficha, lo
-      // retiramos de ahí (equivalente a la limpieza cruzada de antes).
-      const { data: otherDocs, error: otherDocsError } = await supabase
-        .from("documents")
-        .select("id, filename")
-        .neq("patient_id", targetPatient.id);
-      if (otherDocsError) throw otherDocsError;
-
-      const crossedDocs = (otherDocs ?? []).filter(
-        (doc) => normalizeDocumentName(doc.filename) === normalizedFilename,
-      );
-      for (const doc of crossedDocs) {
-        await supabase.from("history_events").delete().eq("document_id", doc.id);
-        await supabase.from("documents").delete().eq("id", doc.id);
-      }
-
-      const { data: existingDocs, error: existingDocsError } = await supabase
-        .from("documents")
-        .select("id, filename")
-        .eq("patient_id", targetPatient.id);
-      if (existingDocsError) throw existingDocsError;
-
-      const existingDoc = (existingDocs ?? []).find(
-        (doc) => normalizeDocumentName(doc.filename) === normalizedFilename,
-      );
-
-      const documentRow = {
-        patient_id: targetPatient.id,
-        filename,
-        document_type: documentType,
-        exam,
-        patient_name: patientName,
-        patient_rut: patientRut,
-        patient_age: patientAge,
-        reason,
-        priority,
-        is_clinical: true,
-        date,
-        summary,
-        equipment,
-        doctor,
-        // Cada vez que se (re)incorpora un documento, su validación humana
-        // vuelve a quedar pendiente: es información nueva que todavía no
-        // ha sido revisada por un profesional.
-        validation_status: "pendiente",
-        validated_at: null,
-        incorporated_at: new Date().toISOString(),
-      };
-
-      let savedDocId;
-      if (existingDoc) {
-        const { data, error } = await supabase
-          .from("documents")
-          .update(documentRow)
-          .eq("id", existingDoc.id)
-          .select()
-          .single();
-        if (error) throw error;
-        savedDocId = data.id;
-      } else {
-        const { data, error } = await supabase
-          .from("documents")
-          .insert(documentRow)
-          .select()
-          .single();
-        if (error) throw error;
-        savedDocId = data.id;
-      }
-
-      if (exam) {
-        const historyEntry = {
-          patient_id: targetPatient.id,
-          document_id: savedDocId,
-          date: date ?? new Date().toLocaleDateString("es-CL"),
-          exam,
-          summary,
-        };
-
-        const { data: existingHistory, error: existingHistoryError } = await supabase
-          .from("history_events")
-          .select("id")
-          .eq("document_id", savedDocId)
-          .maybeSingle();
-        if (existingHistoryError) throw existingHistoryError;
-
-        if (existingHistory) {
-          const { error } = await supabase
-            .from("history_events")
-            .update(historyEntry)
-            .eq("id", existingHistory.id);
-          if (error) throw error;
-        } else {
-          const { error } = await supabase.from("history_events").insert(historyEntry);
-          if (error) throw error;
-               }
-      }
-
-      if (imagingOrderId) {
-        const { error: linkError } = await supabase
-          .from("documents")
-          .update({ imaging_order_id: imagingOrderId })
-          .eq("id", savedDocId);
-        if (linkError) throw linkError;
-
-        const { error: orderUpdateError } = await supabase
-          .from("imaging_orders")
-          .update({ status: "informado", informed_at: new Date().toISOString() })
-          .eq("id", imagingOrderId)
-          .eq("patient_id", targetPatient.id);
-        if (orderUpdateError) throw orderUpdateError;
-      }
-    }
+    // El guardado del documento en sí (insert/update en `documents` +
+    // `history_events` + link a la orden de imagenología) vive en
+    // saveDocumentRecord, compartido con el guardado automático que ocurre
+    // apenas se analiza el PDF (ver /documents/analyze). Llamarlo de nuevo
+    // acá es idempotente: si el documento ya se guardó al analizar, esto
+    // solo lo actualiza con los mismos datos.
+    await saveDocumentRecord({
+      targetPatientId: targetPatient.id,
+      documentData,
+      filename,
+      imagingOrderId,
+    });
 
     const refreshedPatient = await getPatientFull(targetPatient.id);
 
@@ -2226,6 +2292,11 @@ app.get("/patients/:id/documents/:filename", requireRole(CLINICAL_STAFF), async 
     const patientId = Number(request.params.id);
     const filename = decodeURIComponent(request.params.filename);
     const normalized = normalizeDocumentName(filename);
+
+    // Etapa 3 (paso 3b): mismo criterio que las rutas de ficha del paciente.
+    if (!(await patientBelongsToRequesterClinic(patientId, request))) {
+      return response.status(404).json({ error: "Paciente no encontrado" });
+    }
 
     const { data: patientRow, error: patientError } = await supabase
       .from("patients")
@@ -2273,6 +2344,11 @@ app.patch("/patients/:id/documents/:filename/validate", requireRole(VALIDATORS),
       return response.status(400).json({
         error: "Estado de validación inválido. Debe ser pendiente, aprobado o rechazado.",
       });
+    }
+
+    // Etapa 3 (paso 3b): mismo criterio que las rutas de ficha del paciente.
+    if (!(await patientBelongsToRequesterClinic(patientId, request))) {
+      return response.status(404).json({ error: "Paciente no encontrado" });
     }
 
     const { data: patientRow, error: patientError } = await supabase
@@ -2340,6 +2416,11 @@ app.delete("/patients/:id/documents/:filename", requireRole(VALIDATORS), async (
     const filename = decodeURIComponent(request.params.filename);
     const normalized = normalizeDocumentName(filename);
 
+    // Etapa 3 (paso 3b): mismo criterio que las rutas de ficha del paciente.
+    if (!(await patientBelongsToRequesterClinic(patientId, request))) {
+      return response.status(404).json({ error: "Paciente no encontrado" });
+    }
+
     const { data: patientRow, error: patientError } = await supabase
       .from("patients")
       .select("id")
@@ -2386,6 +2467,11 @@ app.post("/patients/:id/documents/:filename/ask", requireRole(AI_STAFF), async (
     const filename = decodeURIComponent(request.params.filename);
     const question = typeof request.body?.question === "string" ? request.body.question.trim() : "";
     if (!question) return response.status(400).json({ error: "Debes escribir una pregunta sobre el documento." });
+
+    // Etapa 3 (paso 3b): mismo criterio que las rutas de ficha del paciente.
+    if (!(await patientBelongsToRequesterClinic(patientId, request))) {
+      return response.status(404).json({ error: "Paciente no encontrado" });
+    }
 
     const { data: patientRow, error: patientError } = await supabase
       .from("patients")
@@ -2470,6 +2556,11 @@ Reglas estrictas:
 
 app.post("/patients/:id/documents/analyze", requireRole(CLINICAL_STAFF), async (request, response) => {
   try {
+    // Etapa 3 (paso 3b): mismo criterio que las rutas de ficha del paciente.
+    if (!(await patientBelongsToRequesterClinic(request.params.id, request))) {
+      return response.status(404).json({ error: "Paciente no encontrado" });
+    }
+
     const patient = await getPatientFull(request.params.id);
     if (!patient) return response.status(404).json({ error: "Paciente no encontrado" });
 
@@ -2566,6 +2657,35 @@ Si el documento no es clínico, usa isClinical=false y extrae igualmente la info
 
     const existingPatientMatch = matchingPatients.length === 1 ? matchingPatients[0] : null;
 
+    // Guardado automático: si el documento es clínico y su RUT no entra en
+    // conflicto con el de esta ficha (coincide, o el documento simplemente
+    // no trae RUT), lo guardamos altiro en `documents` para que aparezca en
+    // "Documentos disponibles" sin depender de que alguien presione
+    // "Incorporar datos a la ficha". Si el RUT del documento apunta a otro
+    // paciente, no se guarda acá -- sigue siendo una decisión humana (ver
+    // PATCH /from-document), porque ahí también se decide a qué ficha va.
+    const incomingRutForAutoSave = normalizeRut(documentData.patientRut);
+    const sourceRutForAutoSave = normalizeRut(patient.rut);
+    const identityDiffersForAutoSave =
+      Boolean(incomingRutForAutoSave) &&
+      Boolean(sourceRutForAutoSave) &&
+      incomingRutForAutoSave !== sourceRutForAutoSave;
+
+    let documentSaved = false;
+    let refreshedPatient = null;
+    if (documentData.isClinical === true && !identityDiffersForAutoSave) {
+      try {
+        await saveDocumentRecord({ targetPatientId: patient.id, documentData, filename });
+        documentSaved = true;
+        refreshedPatient = await getPatientFull(patient.id);
+      } catch (saveError) {
+        // No bloqueamos la respuesta del análisis por esto: el usuario
+        // todavía puede guardar el documento manualmente con "Incorporar
+        // datos a la ficha", que vuelve a intentar el mismo guardado.
+        console.error("No fue posible guardar automáticamente el documento analizado:", saveError);
+      }
+    }
+
     const analysisLines = [
       `Tipo de documento: ${documentData.documentType ?? "Sin información"}`,
       `Documento clínico: ${documentData.isClinical === true ? "Sí" : "No"}`,
@@ -2601,6 +2721,8 @@ Si el documento no es clínico, usa isClinical=false y extrae igualmente la info
         ? { id: existingPatientMatch.id, name: existingPatientMatch.name, rut: existingPatientMatch.rut }
         : null,
       duplicateRutCount: matchingPatients.length > 1 ? matchingPatients.length : 0,
+      documentSaved,
+      patient: refreshedPatient,
     });
   } catch (error) {
     console.error("Error al analizar PDF:", error);

@@ -18,10 +18,17 @@ class ApiService {
   // (Render). Para probar contra un backend local se puede sobreescribir al
   // ejecutar la app:
   //   flutter run --dart-define=NEXA_BACKEND_URL=https://<url-del-backend>
-  static const String _baseUrl = String.fromEnvironment(
+  //
+  // Se le quita cualquier "/" final: si el valor pasado por --dart-define
+  // trae barra al final (fácil de escribir sin querer), concatenar rutas más
+  // abajo como '$_baseUrl/auth/login' generaba '//auth/login' -- Express no
+  // lo reconoce como '/auth/login' y responde 404 en HTML, lo que el cliente
+  // no puede interpretar como JSON ("El servidor entregó una respuesta que
+  // Imagenda no pudo interpretar").
+  static final String _baseUrl = const String.fromEnvironment(
     'NEXA_BACKEND_URL',
     defaultValue: 'https://nexa-backend-v2.onrender.com',
-  );
+  ).replaceFirst(RegExp(r'/+$'), '');
 
   // Token de sesión guardado en memoria luego de iniciar sesión. Se agrega
   // automáticamente a todas las llamadas al backend que lo necesiten.
@@ -366,11 +373,17 @@ class ApiService {
     }
 
     final existingPatient = decodedBody['existingPatient'];
+    final savedPatient = decodedBody['patient'];
 
     return {
       'analysis': analysis.trim(),
       'documentData': Map<String, dynamic>.from(documentData),
       'existingPatient': existingPatient is Map ? Map<String, dynamic>.from(existingPatient) : null,
+      // true si el backend ya guardó el documento en la ficha (documento
+      // clínico sin conflicto de RUT). En ese caso `patient` trae la ficha
+      // ya actualizada, lista para refrescar "Documentos disponibles".
+      'documentSaved': decodedBody['documentSaved'] == true,
+      'patient': savedPatient is Map ? Map<String, dynamic>.from(savedPatient) : null,
     };
   }
 

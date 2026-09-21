@@ -24,6 +24,9 @@
 //          status "unlinked" (accession_number_received / patient_name_received
 //          / patient_id_received / study_date, para que una futura pantalla
 //          de reconciliación pueda casarlo a mano). No lo borra de Orthanc.
+//      En ambos casos se resuelve orthanc_studies.clinic_id a partir de las
+//      labels del estudio (plugin MultitenantDicom de Orthanc, Etapa 4): si
+//      ninguna label calza con una fila real de clinics, queda null.
 //   3. El cursor (orthanc_sync_state.last_seq) solo avanza si NINGÚN estudio
 //      del lote falló. Si algo falló, el cursor no se mueve: la próxima
 //      corrida vuelve a traer el mismo lote de /changes y reintenta.
@@ -145,7 +148,26 @@ async function upsertOrthancStudy(fields) {
   if (error) throw error;
 }
 
-async function processStudy(orthancStudyId) {
+// Etapa 4 (paso 2): el plugin MultitenantDicom de Orthanc le pone al estudio,
+// como label, el clinic_id real de la clínica dueña del AE Title por el que
+// llegó (asignación todavía manual/hardcodeada en la config de Orthanc, ver
+// plan-dicom-pacs.md). Acá solo se resuelve esa label contra clinics.id: si
+// ninguna label calza con una clínica real (AE Title de prueba, label vieja,
+// etc.), clinic_id queda null -- nunca hace fallar la sincronización.
+async function getValidClinicIds() {
+  const { data, error } = await supabase.from("clinics").select("id");
+  if (error) throw error;
+  return new Set((data ?? []).map((row) => row.id));
+}
+
+function resolveClinicIdFromLabels(labels, validClinicIds) {
+  for (const label of labels ?? []) {
+    if (validClinicIds.has(label)) return label;
+  }
+  return null;
+}
+
+async function processStudy(orthancStudyId, validClinicIds) {
   const study = await orthancGetJson(`/studies/${orthancStudyId}`);
   if (!study) {
     console.log(`  Ya no está en Orthanc (probablemente ya se procesó antes), se omite.`);
@@ -159,6 +181,7 @@ async function processStudy(orthancStudyId) {
   const patientNameReceived = patientTags.PatientName ?? null;
   const patientIdReceived = patientTags.PatientID ?? null;
   const studyDate = studyTags.StudyDate ?? null;
+  const clinicId = resolveClinicIdFromLabels(study.Labels, validClinicIds);
 
   let matchedOrderId = null;
   if (accessionNumber) {
@@ -181,6 +204,7 @@ async function processStudy(orthancStudyId) {
       patient_name_received: patientNameReceived,
       patient_id_received: patientIdReceived,
       study_date: studyDate,
+      clinic_id: clinicId,
       status: "unlinked",
     });
     return;
@@ -199,6 +223,7 @@ async function processStudy(orthancStudyId) {
       patient_name_received: patientNameReceived,
       patient_id_received: patientIdReceived,
       study_date: studyDate,
+      clinic_id: clinicId,
     },
   });
 
@@ -216,13 +241,15 @@ async function main() {
   const { studyIds, newCursor } = await collectStableStudyIds(cursor);
   console.log(`${studyIds.length} estudio(s) estable(s) por revisar.\n`);
 
+  const validClinicIds = await getValidClinicIds();
+
   let processedCount = 0;
   let failedCount = 0;
 
   for (const studyId of studyIds) {
     console.log(`Estudio ${studyId}:`);
     try {
-      await processStudy(studyId);
+      await processStudy(studyId, validClinicIds);
       processedCount += 1;
     } catch (error) {
       failedCount += 1;

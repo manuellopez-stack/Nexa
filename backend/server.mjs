@@ -3817,6 +3817,12 @@ app.get("/orthanc-studies", requireRole(CLINICAL_STAFF), async (request, respons
       query = query.eq("status", status);
     }
 
+    // Etapa 4 (paso 2): mismo criterio que /patients y /patients/today --
+    // solo filtra si quien pide tiene clínica asignada.
+    if (request.staffProfile?.clinic_id) {
+      query = query.eq("clinic_id", request.staffProfile.clinic_id);
+    }
+
     const { data, error } = await query;
     if (error) throw error;
 

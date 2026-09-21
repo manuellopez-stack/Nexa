@@ -2884,17 +2884,24 @@ app.post("/patients/:id/lab-orders", requireRole(CLINICAL_STAFF), async (request
       return response.status(400).json({ error: "Debes seleccionar al menos un examen." });
     }
 
+    // Etapa 5: mismo criterio que POST /appointments -- el paciente tiene
+    // que pertenecer a la clínica de quien pide el alta, no solo existir.
+    const requesterClinicId = request.staffProfile?.clinic_id ?? null;
+
     const { data: patientRow, error: patientError } = await supabase
       .from("patients")
-      .select("id")
+      .select("id, clinic_id")
       .eq("id", patientId)
       .maybeSingle();
     if (patientError) throw patientError;
     if (!patientRow) return response.status(404).json({ error: "Paciente no encontrado" });
+    if (requesterClinicId && patientRow.clinic_id && patientRow.clinic_id !== requesterClinicId) {
+      return response.status(404).json({ error: "Paciente no encontrado" });
+    }
 
     const { data: orderRow, error: orderError } = await supabase
       .from("lab_orders")
-      .insert({ patient_id: patientId, status: "ordenado" })
+      .insert({ patient_id: patientId, status: "ordenado", clinic_id: requesterClinicId })
       .select()
       .single();
     if (orderError) throw orderError;
@@ -2928,11 +2935,19 @@ app.get("/patients/:id/lab-orders", requireRole(CLINICAL_STAFF), async (request,
   try {
     const patientId = Number(request.params.id);
 
-    const { data: orderRows, error: ordersError } = await supabase
+    let ordersQuery = supabase
       .from("lab_orders")
       .select("*")
       .eq("patient_id", patientId)
       .order("requested_at", { ascending: false });
+
+    // Mismo criterio que /patients: solo filtra si quien pide tiene clínica
+    // asignada.
+    if (request.staffProfile?.clinic_id) {
+      ordersQuery = ordersQuery.eq("clinic_id", request.staffProfile.clinic_id);
+    }
+
+    const { data: orderRows, error: ordersError } = await ordersQuery;
     if (ordersError) throw ordersError;
 
     const orderIds = (orderRows ?? []).map((o) => o.id);
@@ -2961,12 +2976,15 @@ app.get("/patients/:id/lab-orders/:orderId", requireRole(CLINICAL_STAFF), async 
     const patientId = Number(request.params.id);
     const orderId = request.params.orderId;
 
-    const { data: orderRow, error: orderError } = await supabase
+    let orderQuery = supabase
       .from("lab_orders")
       .select("*")
       .eq("id", orderId)
-      .eq("patient_id", patientId)
-      .maybeSingle();
+      .eq("patient_id", patientId);
+    if (request.staffProfile?.clinic_id) {
+      orderQuery = orderQuery.eq("clinic_id", request.staffProfile.clinic_id);
+    }
+    const { data: orderRow, error: orderError } = await orderQuery.maybeSingle();
     if (orderError) throw orderError;
     if (!orderRow) return response.status(404).json({ error: "Orden de laboratorio no encontrada." });
 
@@ -3016,13 +3034,15 @@ app.patch("/patients/:id/lab-orders/:orderId/sample-taken", requireRole(CLINICAL
     const patientId = Number(request.params.id);
     const orderId = request.params.orderId;
 
-    const { data: updatedOrder, error } = await supabase
+    let sampleTakenQuery = supabase
       .from("lab_orders")
       .update({ status: "muestra_tomada", sample_taken_at: new Date().toISOString() })
       .eq("id", orderId)
-      .eq("patient_id", patientId)
-      .select()
-      .single();
+      .eq("patient_id", patientId);
+    if (request.staffProfile?.clinic_id) {
+      sampleTakenQuery = sampleTakenQuery.eq("clinic_id", request.staffProfile.clinic_id);
+    }
+    const { data: updatedOrder, error } = await sampleTakenQuery.select().maybeSingle();
     if (error) throw error;
     if (!updatedOrder) return response.status(404).json({ error: "Orden de laboratorio no encontrada." });
 
@@ -3059,6 +3079,15 @@ app.patch("/patients/:id/lab-orders/:orderId/results", requireRole(CLINICAL_STAF
       .maybeSingle();
     if (orderError) throw orderError;
     if (!orderRow) return response.status(404).json({ error: "Orden de laboratorio no encontrada." });
+    // Etapa 5: la orden ya se cargó completa arriba, solo falta comparar su
+    // clínica contra la de quien pide guardar los resultados.
+    if (
+      request.staffProfile?.clinic_id &&
+      orderRow.clinic_id &&
+      orderRow.clinic_id !== request.staffProfile.clinic_id
+    ) {
+      return response.status(404).json({ error: "Orden de laboratorio no encontrada." });
+    }
 
     for (const item of results) {
       const parameterId = item.parameterId;
@@ -3140,7 +3169,7 @@ app.patch("/patients/:id/lab-orders/:orderId/validate", requireRole(VALIDATORS),
     const patientId = Number(request.params.id);
     const orderId = request.params.orderId;
 
-    const { data: updatedOrder, error } = await supabase
+    let validateQuery = supabase
       .from("lab_orders")
       .update({
         status: "validado",
@@ -3148,9 +3177,11 @@ app.patch("/patients/:id/lab-orders/:orderId/validate", requireRole(VALIDATORS),
         validated_by: request.user?.email ?? null,
       })
       .eq("id", orderId)
-      .eq("patient_id", patientId)
-      .select()
-      .single();
+      .eq("patient_id", patientId);
+    if (request.staffProfile?.clinic_id) {
+      validateQuery = validateQuery.eq("clinic_id", request.staffProfile.clinic_id);
+    }
+    const { data: updatedOrder, error } = await validateQuery.select().maybeSingle();
     if (error) throw error;
     if (!updatedOrder) return response.status(404).json({ error: "Orden de laboratorio no encontrada." });
 

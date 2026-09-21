@@ -4396,12 +4396,20 @@ app.patch(
 // GESTIÓN DE EQUIPO (solo Administrador)
 // ============================================
 
-app.get("/staff", async (_request, response) => {
+app.get("/staff", async (request, response) => {
   try {
-    const { data, error } = await supabase
+    let query = supabase
       .from("staff_profiles")
       .select("*")
       .order("created_at", { ascending: true });
+
+    // Etapa 5: mismo criterio que el resto de rutas -- solo lista el
+    // personal de la clínica de quien pide.
+    if (request.staffProfile?.clinic_id) {
+      query = query.eq("clinic_id", request.staffProfile.clinic_id);
+    }
+
+    const { data, error } = await query;
     if (error) throw error;
 
     return response.json({ staff: (data ?? []).map(shapeStaffRow) });
@@ -4429,9 +4437,18 @@ app.post("/staff/invite", async (request, response) => {
       return response.status(500).json({ error: "No fue posible crear el usuario invitado." });
     }
 
+    // Etapa 5: la persona invitada queda en la misma clínica de quien
+    // invita, no sin clínica (mismo gap que tenían appointments/lab_orders/
+    // dental_orders/imaging_orders al principio).
     const { data: profileRow, error: profileError } = await supabase
       .from("staff_profiles")
-      .insert({ id: newUserId, email, full_name: fullName || null, role })
+      .insert({
+        id: newUserId,
+        email,
+        full_name: fullName || null,
+        role,
+        clinic_id: request.staffProfile?.clinic_id ?? null,
+      })
       .select()
       .single();
     if (profileError) throw profileError;
@@ -4455,12 +4472,26 @@ app.patch("/staff/:id/role", async (request, response) => {
       return response.status(400).json({ error: "Rol inválido." });
     }
 
+    // Etapa 5: cargar el staff objetivo y comparar su clínica antes de
+    // aplicar el cambio, mismo criterio que el resto de rutas.
+    const requesterClinicId = request.staffProfile?.clinic_id ?? null;
+    const { data: targetRow, error: targetError } = await supabase
+      .from("staff_profiles")
+      .select("id, clinic_id")
+      .eq("id", staffId)
+      .maybeSingle();
+    if (targetError) throw targetError;
+    if (!targetRow) return response.status(404).json({ error: "Persona no encontrada." });
+    if (requesterClinicId && targetRow.clinic_id && targetRow.clinic_id !== requesterClinicId) {
+      return response.status(404).json({ error: "Persona no encontrada." });
+    }
+
     const { data: updatedRow, error } = await supabase
       .from("staff_profiles")
       .update({ role })
       .eq("id", staffId)
       .select()
-      .single();
+      .maybeSingle();
     if (error) throw error;
     if (!updatedRow) return response.status(404).json({ error: "Persona no encontrada." });
 
@@ -4477,6 +4508,21 @@ app.delete("/staff/:id", async (request, response) => {
 
     if (staffId === request.user?.id) {
       return response.status(400).json({ error: "No puedes quitarte a ti mismo del equipo." });
+    }
+
+    // Etapa 5: esta es la más irreversible de las cuatro rutas de staff, así
+    // que el chequeo de clínica va antes de cualquier escritura -- se carga
+    // el staff objetivo y se compara su clínica antes de borrar nada.
+    const requesterClinicId = request.staffProfile?.clinic_id ?? null;
+    const { data: targetRow, error: targetError } = await supabase
+      .from("staff_profiles")
+      .select("id, clinic_id")
+      .eq("id", staffId)
+      .maybeSingle();
+    if (targetError) throw targetError;
+    if (!targetRow) return response.status(404).json({ error: "Persona no encontrada." });
+    if (requesterClinicId && targetRow.clinic_id && targetRow.clinic_id !== requesterClinicId) {
+      return response.status(404).json({ error: "Persona no encontrada." });
     }
 
     const { error } = await supabase.from("staff_profiles").delete().eq("id", staffId);

@@ -1284,6 +1284,77 @@ class ApiService {
   }
 
   // ============================================
+  // GESTIÓN DE CLÍNICAS (solo Administrador)
+  // ============================================
+
+  static Future<List<Map<String, dynamic>>> getClinics() async {
+    final http.Response response;
+
+    try {
+      response = await http
+          .get(Uri.parse('$_baseUrl/clinics'), headers: _headers())
+          .timeout(const Duration(seconds: 30));
+    } catch (_) {
+      throw const ApiException(
+        'No fue posible conectar con el backend de Imagenda.',
+      );
+    }
+
+    final decodedBody = await _decodeMap(response);
+    final clinics = decodedBody['clinics'];
+
+    if (clinics is! List) {
+      throw const ApiException('El backend no entregó la lista de clínicas.');
+    }
+
+    return clinics
+        .whereType<Map>()
+        .map((clinic) => Map<String, dynamic>.from(clinic))
+        .toList();
+  }
+
+  /// Crea una clínica nueva. El backend calcula y asigna automáticamente
+  /// `dicomAeTitle`/`dicomPort` (plugin MultitenantDicom de Orthanc, Etapa 4
+  /// del plan DICOM/PACS) y devuelve en `orthancSetup` el bloque de
+  /// configuración listo para aplicar a mano en el droplet.
+  static Future<Map<String, dynamic>> createClinic({
+    required String name,
+    String? address,
+  }) async {
+    final http.Response response;
+
+    try {
+      response = await http
+          .post(
+            Uri.parse('$_baseUrl/clinics'),
+            headers: _headers(extra: const {'Content-Type': 'application/json'}),
+            body: jsonEncode({
+              'name': name,
+              'address': ?address,
+            }),
+          )
+          .timeout(const Duration(seconds: 30));
+    } catch (_) {
+      throw const ApiException('No fue posible crear la clínica.');
+    }
+
+    final decodedBody = await _decodeMap(response);
+    final clinic = decodedBody['clinic'];
+    final orthancSetup = decodedBody['orthancSetup'];
+
+    if (clinic is! Map || orthancSetup is! Map) {
+      throw const ApiException(
+        'El backend no entregó la clínica creada ni su configuración de Orthanc.',
+      );
+    }
+
+    return {
+      'clinic': Map<String, dynamic>.from(clinic),
+      'orthancSetup': Map<String, dynamic>.from(orthancSetup),
+    };
+  }
+
+  // ============================================
   // MÓDULO DE CONTABILIDAD Y FACTURACIÓN
   // ============================================
 

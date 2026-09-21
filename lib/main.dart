@@ -8,6 +8,7 @@ import 'package:flutter/material.dart';
 
 import 'core/nexa_colors.dart';
 import 'screens/appointments_page.dart';
+import 'screens/clinics_page.dart';
 import 'screens/mail_page.dart';
 import 'screens/orthanc_studies_page.dart';
 import 'screens/staff_management_page.dart';
@@ -470,6 +471,20 @@ class DashboardPage extends StatelessWidget {
                   MaterialPageRoute(
                     builder: (_) => const StaffManagementPage(),
                   ),
+                );
+              },
+            ),
+          if (ApiService.role == 'administrador')
+            IconButton(
+              tooltip: 'Clínicas',
+              icon: const Icon(
+                Icons.local_hospital_outlined,
+                color: NexaColors.textSecondary,
+              ),
+              onPressed: () {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (_) => const ClinicsPage()),
                 );
               },
             ),

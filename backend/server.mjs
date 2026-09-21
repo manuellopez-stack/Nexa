@@ -4335,6 +4335,21 @@ app.delete("/staff/:id", async (request, response) => {
 // no hay ninguna automatización que toque Orthanc directamente.
 const DICOM_MULTITENANT_BASE_PORT = 4244; // puerto legado de MILMED
 
+app.get("/clinics", async (_request, response) => {
+  try {
+    const { data, error } = await supabase
+      .from("clinics")
+      .select("*")
+      .order("created_at", { ascending: true });
+    if (error) throw error;
+
+    return response.json({ clinics: (data ?? []).map(shapeClinicRow) });
+  } catch (error) {
+    console.error("Error al obtener las clínicas:", error);
+    return response.status(500).json({ error: "No fue posible obtener las clínicas." });
+  }
+});
+
 app.post("/clinics", async (request, response) => {
   try {
     const name = typeof request.body?.name === "string" ? request.body.name.trim() : "";

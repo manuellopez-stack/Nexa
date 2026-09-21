@@ -603,6 +603,18 @@ function shapeStaffRow(row) {
   };
 }
 
+function shapeClinicRow(row) {
+  return {
+    id: row.id,
+    name: row.name,
+    address: row.address,
+    status: row.status,
+    dicomAeTitle: row.dicom_ae_title,
+    dicomPort: row.dicom_port,
+    createdAt: row.created_at,
+  };
+}
+
 async function getPatientFull(id) {
   const patientId = Number(id);
   if (!Number.isInteger(patientId)) return null;
@@ -995,6 +1007,7 @@ app.use("/orthanc-studies", requireAuth);
 app.use("/dental", requireAuth);
 app.use("/billing", requireAuth);
 app.use("/staff", requireAuth, requireRole(ADMIN_ONLY));
+app.use("/clinics", requireAuth, requireRole(ADMIN_ONLY));
 app.use("/notifications", requireAuth);
 app.use("/mail", requireAuth, requireRole(MAIL_STAFF));
 
@@ -4302,6 +4315,94 @@ app.delete("/staff/:id", async (request, response) => {
   } catch (error) {
     console.error("Error al quitar del equipo:", error);
     return response.status(500).json({ error: "No fue posible quitar a esta persona del equipo." });
+  }
+});
+
+// ============================================
+// GESTIÓN DE CLÍNICAS (solo Administrador)
+// ============================================
+// Alta de clínicas nuevas, con asignación automática del AE Title y puerto
+// DICOM que le va a corresponder en el plugin MultitenantDicom de Orthanc
+// (plan-dicom-pacs.md, Etapa 4). MILMED es un caso legado (IMAGENDA_MILMED /
+// 4244, cargado a mano) y queda tal cual -- desde acá en adelante, el AE
+// Title sale del offset numérico respecto a ese puerto, nunca del nombre de
+// la clínica: un nombre largo rompería el límite duro de 16 caracteres que
+// tiene el AE Title en el estándar DICOM.
+//
+// Por ahora la asignación al droplet sigue siendo manual: esta ruta calcula
+// y guarda los valores en clinics, y devuelve el bloque de configuración
+// listo para pegar en /etc/orthanc/multitenant.json del droplet -- todavía
+// no hay ninguna automatización que toque Orthanc directamente.
+const DICOM_MULTITENANT_BASE_PORT = 4244; // puerto legado de MILMED
+
+app.post("/clinics", async (request, response) => {
+  try {
+    const name = typeof request.body?.name === "string" ? request.body.name.trim() : "";
+    const address =
+      typeof request.body?.address === "string" && request.body.address.trim().length > 0
+        ? request.body.address.trim()
+        : null;
+
+    if (!name) {
+      return response.status(400).json({ error: "Debes indicar el nombre de la clínica." });
+    }
+
+    const { data: maxPortRow, error: maxPortError } = await supabase
+      .from("clinics")
+      .select("dicom_port")
+      .not("dicom_port", "is", null)
+      .order("dicom_port", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (maxPortError) throw maxPortError;
+
+    const dicomPort = maxPortRow?.dicom_port
+      ? maxPortRow.dicom_port + 1
+      : DICOM_MULTITENANT_BASE_PORT;
+    const offset = dicomPort - DICOM_MULTITENANT_BASE_PORT;
+    const dicomAeTitle = `IMAGENDA_${String(offset).padStart(3, "0")}`;
+
+    const { data: clinicRow, error: insertError } = await supabase
+      .from("clinics")
+      .insert({ name, address, dicom_ae_title: dicomAeTitle, dicom_port: dicomPort })
+      .select()
+      .single();
+    if (insertError) {
+      if (insertError.code === "23505") {
+        return response.status(409).json({
+          error: "Ya existe una clínica con ese puerto o AE Title (probablemente una carrera entre dos altas al mismo tiempo). Reintenta.",
+        });
+      }
+      throw insertError;
+    }
+
+    const orthancServerConfig = JSON.stringify(
+      {
+        AET: dicomAeTitle,
+        Port: dicomPort,
+        Labels: [clinicRow.id],
+        LabelsConstraint: "All",
+      },
+      null,
+      2,
+    );
+
+    return response.json({
+      clinic: shapeClinicRow(clinicRow),
+      orthancSetup: {
+        aeTitle: dicomAeTitle,
+        port: dicomPort,
+        label: clinicRow.id,
+        serverConfig: orthancServerConfig,
+        instructions:
+          `Agregar el bloque de arriba al array "Servers" de /opt/orthanc-config/multitenant.json en el droplet, ` +
+          `abrir el puerto ${dicomPort}/tcp en ufw (mismo criterio que los anteriores, sin restricción de IP), ` +
+          `y recrear el contenedor orthanc-test para que tome el cambio.`,
+      },
+    });
+  } catch (error) {
+    console.error("Error al crear la clínica:", error);
+    return response.status(500).json({ error: "No fue posible crear la clínica." });
   }
 });
 

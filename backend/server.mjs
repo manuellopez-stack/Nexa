@@ -4333,7 +4333,16 @@ app.delete("/staff/:id", async (request, response) => {
 // y guarda los valores en clinics, y devuelve el bloque de configuración
 // listo para pegar en /etc/orthanc/multitenant.json del droplet -- todavía
 // no hay ninguna automatización que toque Orthanc directamente.
+//
+// Etapa 5: el plugin MultitenantDicom no soporta TLS nativo (confirmado por
+// el propio creador de Orthanc), así que cada tenant va detrás de un stunnel
+// propio en el droplet: Orthanc escucha en texto plano en un puerto interno
+// (puerto público + 10000) solo accesible en 127.0.0.1, y stunnel es quien
+// escucha el puerto público real, descifra el TLS y reenvía en texto plano a
+// ese puerto interno -- nunca sale nada sin cifrar de la máquina. Mismo
+// esquema que ya se aplicó a MILMED (4244 público -> 14244 interno).
 const DICOM_MULTITENANT_BASE_PORT = 4244; // puerto legado de MILMED
+const DICOM_INTERNAL_PORT_OFFSET = 10000;
 
 app.get("/clinics", async (_request, response) => {
   try {
@@ -4391,10 +4400,13 @@ app.post("/clinics", async (request, response) => {
       throw insertError;
     }
 
+    const internalPort = dicomPort + DICOM_INTERNAL_PORT_OFFSET;
+    const stunnelName = dicomAeTitle.toLowerCase().replace(/_/g, "-");
+
     const orthancServerConfig = JSON.stringify(
       {
         AET: dicomAeTitle,
-        Port: dicomPort,
+        Port: internalPort,
         Labels: [clinicRow.id],
         LabelsConstraint: "All",
       },
@@ -4402,17 +4414,34 @@ app.post("/clinics", async (request, response) => {
       2,
     );
 
+    const stunnelConfig =
+      `foreground = yes\n\n` +
+      `[${stunnelName}]\n` +
+      `accept = ${dicomPort}\n` +
+      `connect = 127.0.0.1:${internalPort}\n` +
+      `cert = /opt/orthanc-dicom-tls/cert.pem\n` +
+      `key = /opt/orthanc-dicom-tls/key.pem\n` +
+      `setuid = stunnel4\n` +
+      `setgid = stunnel4\n`;
+
     return response.json({
       clinic: shapeClinicRow(clinicRow),
       orthancSetup: {
         aeTitle: dicomAeTitle,
         port: dicomPort,
+        internalPort,
         label: clinicRow.id,
         serverConfig: orthancServerConfig,
+        stunnelConfig,
         instructions:
-          `Agregar el bloque de arriba al array "Servers" de /opt/orthanc-config/multitenant.json en el droplet, ` +
-          `abrir el puerto ${dicomPort}/tcp en ufw (mismo criterio que los anteriores, sin restricción de IP), ` +
-          `y recrear el contenedor orthanc-test para que tome el cambio.`,
+          `1) Agregar el bloque de Orthanc de arriba (puerto interno ${internalPort}) al array "Servers" de ` +
+          `/opt/orthanc-config/multitenant.json en el droplet. ` +
+          `2) Guardar el bloque de stunnel en /etc/stunnel/${stunnelName}.conf y habilitarlo/arrancarlo con ` +
+          `"systemctl enable --now stunnel@${stunnelName}.service". ` +
+          `3) Si el contenedor de Orthanc todavía no mapea el puerto ${internalPort}, agregarlo SOLO en loopback ` +
+          `("-p 127.0.0.1:${internalPort}:${internalPort}", nunca "-p ${internalPort}:${internalPort}") y recrear el contenedor orthanc-test. ` +
+          `4) Abrir en ufw únicamente el puerto público ("ufw allow ${dicomPort}/tcp"), nunca el ${internalPort} interno -- ` +
+          `Orthanc ya no escucha directo en el puerto público, ahora lo hace stunnel.`,
       },
     });
   } catch (error) {

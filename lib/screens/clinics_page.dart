@@ -400,8 +400,10 @@ class _OrthancSetupDialog extends StatelessWidget {
   Widget build(BuildContext context) {
     final aeTitle = orthancSetup['aeTitle']?.toString() ?? '';
     final port = orthancSetup['port']?.toString() ?? '';
+    final internalPort = orthancSetup['internalPort']?.toString() ?? '';
     final label = orthancSetup['label']?.toString() ?? '';
     final serverConfig = orthancSetup['serverConfig']?.toString() ?? '';
+    final stunnelConfig = orthancSetup['stunnelConfig']?.toString() ?? '';
     final instructions = orthancSetup['instructions']?.toString() ?? '';
 
     return AlertDialog(
@@ -436,7 +438,8 @@ class _OrthancSetupDialog extends StatelessWidget {
               ),
               const SizedBox(height: 14),
               _SetupField(label: 'AE Title', value: aeTitle),
-              _SetupField(label: 'Puerto DICOM', value: port),
+              _SetupField(label: 'Puerto público', value: port),
+              _SetupField(label: 'Puerto interno (Orthanc)', value: internalPort),
               _SetupField(label: 'Label (clinic_id)', value: label),
               const SizedBox(height: 10),
               const Text(
@@ -453,6 +456,28 @@ class _OrthancSetupDialog extends StatelessWidget {
                 ),
                 child: SelectableText(
                   serverConfig,
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontFamily: 'monospace',
+                    fontSize: 12.5,
+                  ),
+                ),
+              ),
+              const SizedBox(height: 14),
+              const Text(
+                'Bloque para /etc/stunnel/imagenda-<nombre>.conf',
+                style: TextStyle(fontWeight: FontWeight.w700, fontSize: 13),
+              ),
+              const SizedBox(height: 6),
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: NexaColors.textPrimary,
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: SelectableText(
+                  stunnelConfig,
                   style: const TextStyle(
                     color: Colors.white,
                     fontFamily: 'monospace',
@@ -484,12 +509,24 @@ class _OrthancSetupDialog extends StatelessWidget {
             await Clipboard.setData(ClipboardData(text: serverConfig));
             if (context.mounted) {
               ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(content: Text('Configuración copiada al portapapeles.')),
+                const SnackBar(content: Text('Bloque de Orthanc copiado al portapapeles.')),
               );
             }
           },
           icon: const Icon(Icons.copy_all_outlined, size: 18),
-          label: const Text('Copiar bloque'),
+          label: const Text('Copiar bloque Orthanc'),
+        ),
+        FilledButton.icon(
+          onPressed: () async {
+            await Clipboard.setData(ClipboardData(text: stunnelConfig));
+            if (context.mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: Text('Bloque de stunnel copiado al portapapeles.')),
+              );
+            }
+          },
+          icon: const Icon(Icons.copy_all_outlined, size: 18),
+          label: const Text('Copiar bloque stunnel'),
         ),
       ],
     );

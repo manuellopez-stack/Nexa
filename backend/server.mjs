@@ -4205,16 +4205,21 @@ async function refreshBillingOrderStatus(billingOrderRow) {
   return { order, totalPaid };
 }
 
-// Lista los cobros de un paciente con sus pagos. Accesible a cualquier rol
-// con sesión: el personal clínico ya ve la ficha y recepción necesita ver
-// los cobros para poder registrar pagos.
-app.get("/patients/:id/billing", async (request, response) => {
+// Lista los cobros de un paciente con sus pagos. Accesible a todo el
+// personal con sesión (AGENDA_STAFF): el personal clínico ya ve la ficha y
+// recepción necesita ver los cobros para poder registrar pagos.
+app.get("/patients/:id/billing", requireRole(AGENDA_STAFF), async (request, response) => {
   try {
     const patientId = Number(request.params.id);
     if (!Number.isInteger(patientId)) {
       return response
         .status(400)
         .json({ error: "Identificador de paciente inválido." });
+    }
+
+    // Etapa 5: mismo criterio que el resto de /patients/:id/...
+    if (!(await patientBelongsToRequesterClinic(patientId, request))) {
+      return response.status(404).json({ error: "Paciente no encontrado" });
     }
 
     const { data: orderRows, error: ordersError } = await supabase
@@ -4296,6 +4301,15 @@ app.post(
       if (!orderRow) {
         return response.status(404).json({ error: "Cobro no encontrado." });
       }
+      // Etapa 5: el cobro ya se cargó completo arriba, solo falta comparar
+      // su clínica contra la de quien registra el pago.
+      if (
+        request.staffProfile?.clinic_id &&
+        orderRow.clinic_id &&
+        orderRow.clinic_id !== request.staffProfile.clinic_id
+      ) {
+        return response.status(404).json({ error: "Cobro no encontrado." });
+      }
 
       const { data: paymentRow, error: paymentError } = await supabase
         .from("payments")
@@ -4355,12 +4369,14 @@ app.patch(
           .json({ error: "bonoFolio debe ser texto o null." });
       }
 
-      const { data: orderRow, error } = await supabase
+      let bonoFolioQuery = supabase
         .from("billing_orders")
         .update({ bono_folio: bonoFolio, updated_at: new Date().toISOString() })
-        .eq("id", billingOrderId)
-        .select()
-        .maybeSingle();
+        .eq("id", billingOrderId);
+      if (request.staffProfile?.clinic_id) {
+        bonoFolioQuery = bonoFolioQuery.eq("clinic_id", request.staffProfile.clinic_id);
+      }
+      const { data: orderRow, error } = await bonoFolioQuery.select().maybeSingle();
       if (error) throw error;
       if (!orderRow) {
         return response.status(404).json({ error: "Cobro no encontrado." });

@@ -3558,20 +3558,27 @@ app.post("/patients/:id/imaging-orders", requireRole(CLINICAL_STAFF), async (req
         .json({ error: "Debes seleccionar al menos un tipo de estudio." });
     }
 
+    // Etapa 5: mismo criterio que laboratorio/dental -- el paciente tiene
+    // que pertenecer a la clínica de quien pide el alta.
+    const requesterClinicId = request.staffProfile?.clinic_id ?? null;
+
     const { data: patientRow, error: patientError } = await supabase
       .from("patients")
-      .select("id")
+      .select("id, clinic_id")
       .eq("id", patientId)
       .maybeSingle();
     if (patientError) throw patientError;
     if (!patientRow)
       return response.status(404).json({ error: "Paciente no encontrado" });
+    if (requesterClinicId && patientRow.clinic_id && patientRow.clinic_id !== requesterClinicId) {
+      return response.status(404).json({ error: "Paciente no encontrado" });
+    }
 
     // accession_number lo genera solo la base de datos (default de la
     // columna sobre imaging_accession_seq, ver dicom_pacs_stage1.sql).
     const { data: orderRow, error: orderError } = await supabase
       .from("imaging_orders")
-      .insert({ patient_id: patientId, status: "ordenado" })
+      .insert({ patient_id: patientId, status: "ordenado", clinic_id: requesterClinicId })
       .select()
       .single();
     if (orderError) throw orderError;
@@ -3612,11 +3619,19 @@ app.get("/patients/:id/imaging-orders", requireRole(CLINICAL_STAFF), async (requ
   try {
     const patientId = Number(request.params.id);
 
-    const { data: orderRows, error: ordersError } = await supabase
+    let ordersQuery = supabase
       .from("imaging_orders")
       .select("*")
       .eq("patient_id", patientId)
       .order("requested_at", { ascending: false });
+
+    // Mismo criterio que /patients: solo filtra si quien pide tiene clínica
+    // asignada.
+    if (request.staffProfile?.clinic_id) {
+      ordersQuery = ordersQuery.eq("clinic_id", request.staffProfile.clinic_id);
+    }
+
+    const { data: orderRows, error: ordersError } = await ordersQuery;
     if (ordersError) throw ordersError;
 
     const orderIds = (orderRows ?? []).map((o) => o.id);
@@ -3655,12 +3670,15 @@ app.get("/patients/:id/imaging-orders/:orderId", requireRole(CLINICAL_STAFF), as
     const patientId = Number(request.params.id);
     const orderId = request.params.orderId;
 
-    const { data: orderRow, error: orderError } = await supabase
+    let orderQuery = supabase
       .from("imaging_orders")
       .select("*")
       .eq("id", orderId)
-      .eq("patient_id", patientId)
-      .maybeSingle();
+      .eq("patient_id", patientId);
+    if (request.staffProfile?.clinic_id) {
+      orderQuery = orderQuery.eq("clinic_id", request.staffProfile.clinic_id);
+    }
+    const { data: orderRow, error: orderError } = await orderQuery.maybeSingle();
     if (orderError) throw orderError;
     if (!orderRow)
       return response
@@ -3705,13 +3723,15 @@ app.patch(
       const patientId = Number(request.params.id);
       const orderId = request.params.orderId;
 
-      const { data: updatedOrder, error } = await supabase
+      let performedQuery = supabase
         .from("imaging_orders")
         .update({ status: "realizado", performed_at: new Date().toISOString() })
         .eq("id", orderId)
-        .eq("patient_id", patientId)
-        .select()
-        .single();
+        .eq("patient_id", patientId);
+      if (request.staffProfile?.clinic_id) {
+        performedQuery = performedQuery.eq("clinic_id", request.staffProfile.clinic_id);
+      }
+      const { data: updatedOrder, error } = await performedQuery.select().maybeSingle();
       if (error) throw error;
       if (!updatedOrder)
         return response
@@ -3763,7 +3783,7 @@ app.post(
 
       const { data: orderRow, error: orderError } = await supabase
         .from("imaging_orders")
-        .select("id")
+        .select("id, clinic_id")
         .eq("id", orderId)
         .eq("patient_id", patientId)
         .maybeSingle();
@@ -3772,6 +3792,17 @@ app.post(
         return response
           .status(404)
           .json({ error: "Orden de imagenología no encontrada." });
+      // Etapa 5: la orden ya se cargó arriba, solo falta comparar su
+      // clínica contra la de quien sube la imagen.
+      if (
+        request.staffProfile?.clinic_id &&
+        orderRow.clinic_id &&
+        orderRow.clinic_id !== request.staffProfile.clinic_id
+      ) {
+        return response
+          .status(404)
+          .json({ error: "Orden de imagenología no encontrada." });
+      }
 
       const dicomBuffer = Buffer.from(base64Data, "base64");
       const timestamp = Date.now();
@@ -3842,7 +3873,7 @@ app.get(
 
       const { data: orderRow, error: orderError } = await supabase
         .from("imaging_orders")
-        .select("id")
+        .select("id, clinic_id")
         .eq("id", orderId)
         .eq("patient_id", patientId)
         .maybeSingle();
@@ -3851,6 +3882,17 @@ app.get(
         return response
           .status(404)
           .json({ error: "Orden de imagenología no encontrada." });
+      // Etapa 5: la orden ya se cargó arriba, solo falta comparar su
+      // clínica contra la de quien pide las imágenes.
+      if (
+        request.staffProfile?.clinic_id &&
+        orderRow.clinic_id &&
+        orderRow.clinic_id !== request.staffProfile.clinic_id
+      ) {
+        return response
+          .status(404)
+          .json({ error: "Orden de imagenología no encontrada." });
+      }
 
       const { data: fileRows, error: filesError } = await supabase
         .from("imaging_files")

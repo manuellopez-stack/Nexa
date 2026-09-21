@@ -3896,9 +3896,16 @@ app.post(
           .json({ error: "Debes indicar la orden a la que vincular el estudio." });
       }
 
+      // Etapa 5: mismo criterio que agenda -- ninguno de los dos recursos
+      // (el estudio de Orthanc y la orden de imagenología) puede pertenecer
+      // a una clínica distinta a la de quien pide el vínculo. No se revela
+      // que el recurso existe en otra clínica: se responde 404 igual que si
+      // no existiera.
+      const requesterClinicId = request.staffProfile?.clinic_id ?? null;
+
       const { data: studyRow, error: studyError } = await supabase
         .from("orthanc_studies")
-        .select("status")
+        .select("status, clinic_id")
         .eq("orthanc_study_id", orthancStudyId)
         .maybeSingle();
       if (studyError) throw studyError;
@@ -3906,6 +3913,11 @@ app.post(
         return response
           .status(404)
           .json({ error: "Estudio de Orthanc no encontrado." });
+      if (requesterClinicId && studyRow.clinic_id && studyRow.clinic_id !== requesterClinicId) {
+        return response
+          .status(404)
+          .json({ error: "Estudio de Orthanc no encontrado." });
+      }
       if (studyRow.status === "linked")
         return response
           .status(409)
@@ -3913,7 +3925,7 @@ app.post(
 
       const { data: orderRow, error: orderError } = await supabase
         .from("imaging_orders")
-        .select("id")
+        .select("id, clinic_id")
         .eq("id", orderId)
         .maybeSingle();
       if (orderError) throw orderError;
@@ -3921,6 +3933,11 @@ app.post(
         return response
           .status(404)
           .json({ error: "Orden de imagenología no encontrada." });
+      if (requesterClinicId && orderRow.clinic_id && orderRow.clinic_id !== requesterClinicId) {
+        return response
+          .status(404)
+          .json({ error: "Orden de imagenología no encontrada." });
+      }
 
       const { totalInstances, copiedNow } = await linkOrthancStudyToOrder(supabase, {
         orthancStudyId,

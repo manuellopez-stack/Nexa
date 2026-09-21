@@ -1488,6 +1488,12 @@ app.get("/rooms", requireRole(AGENDA_STAFF), async (request, response) => {
       query = query.eq("active", true);
     }
 
+    // Mismo criterio que /patients: solo filtra si quien pide tiene clínica
+    // asignada.
+    if (request.staffProfile?.clinic_id) {
+      query = query.eq("clinic_id", request.staffProfile.clinic_id);
+    }
+
     const { data, error } = await query;
     if (error) throw error;
 
@@ -1543,6 +1549,12 @@ app.get("/appointments", requireRole(AGENDA_STAFF), async (request, response) =>
     if (roomId) query = query.eq("room_id", roomId);
     if (patientId) query = query.eq("patient_id", Number(patientId));
 
+    // Mismo criterio que /patients: solo filtra si quien pide tiene clínica
+    // asignada.
+    if (request.staffProfile?.clinic_id) {
+      query = query.eq("clinic_id", request.staffProfile.clinic_id);
+    }
+
     const { data, error } = await query;
     if (error) throw error;
 
@@ -1581,22 +1593,33 @@ app.post("/appointments", requireRole(AGENDA_STAFF), async (request, response) =
       }
     }
 
+    // Etapa 5: mismo criterio que /patients -- el paciente y la sala (si se
+    // indica) tienen que pertenecer a la misma clínica de quien crea la cita,
+    // no solo existir.
+    const requesterClinicId = request.staffProfile?.clinic_id ?? null;
+
     const { data: patientRow, error: patientError } = await supabase
       .from("patients")
-      .select("id")
+      .select("id, clinic_id")
       .eq("id", patientId)
       .maybeSingle();
     if (patientError) throw patientError;
     if (!patientRow) return response.status(404).json({ error: "Paciente no encontrado" });
+    if (requesterClinicId && patientRow.clinic_id && patientRow.clinic_id !== requesterClinicId) {
+      return response.status(404).json({ error: "Paciente no encontrado" });
+    }
 
     if (body.roomId) {
       const { data: roomRow, error: roomError } = await supabase
         .from("rooms")
-        .select("id")
+        .select("id, clinic_id")
         .eq("id", body.roomId)
         .maybeSingle();
       if (roomError) throw roomError;
       if (!roomRow) return response.status(404).json({ error: "La sala indicada no existe." });
+      if (requesterClinicId && roomRow.clinic_id && roomRow.clinic_id !== requesterClinicId) {
+        return response.status(404).json({ error: "La sala indicada no existe." });
+      }
     }
 
     // Choque de agenda: misma sala o mismo profesional a una hora que se
@@ -1624,6 +1647,9 @@ app.post("/appointments", requireRole(AGENDA_STAFF), async (request, response) =
         professional: body.professional?.trim() || null,
         reason: body.reason?.trim() || null,
         notes: body.notes?.trim() || null,
+        // clinic_id va al final para que nunca lo sobrescriba un campo del
+        // body (mismo criterio que POST /patients, Etapa 3).
+        clinic_id: requesterClinicId,
       })
       .select("*, patient:patients(name), room:rooms(name)")
       .single();
@@ -1700,6 +1726,14 @@ app.patch("/appointments/:id", requireRole(AGENDA_STAFF), async (request, respon
       .maybeSingle();
     if (existingError) throw existingError;
     if (!existing) return response.status(404).json({ error: "Cita no encontrada" });
+
+    // Etapa 5: mismo criterio que /patients -- la fila ya se cargó completa
+    // arriba, solo falta comparar su clínica contra la de quien pide el
+    // cambio.
+    const requesterClinicId = request.staffProfile?.clinic_id ?? null;
+    if (requesterClinicId && existing.clinic_id && existing.clinic_id !== requesterClinicId) {
+      return response.status(404).json({ error: "Cita no encontrada" });
+    }
 
     // Revalida el choque de agenda si cambió algo que afecta el solape (hora,
     // duración, sala o profesional). Los estados cancelada/no_asistio liberan

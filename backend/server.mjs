@@ -1346,8 +1346,12 @@ app.get("/patients/today", async (request, response) => {
 });
 
 // Métricas reales del dashboard, calculadas desde la base de datos.
-// Solo personal clínico: el rol recepcion no ve indicadores agregados.
-app.get("/dashboard/summary", requireRole(CLINICAL_STAFF), async (_request, response) => {
+// Personal clínico + recepción: son datos de agenda (pacientes de hoy, en
+// espera, salas en uso), no datos clínicos sensibles, así que además de
+// CLINICAL_STAFF se admite 'recepcion' aquí. No se agrega a CLINICAL_STAFF
+// porque esa constante se usa en otras rutas (fichas de pacientes,
+// laboratorio, dental, imagenología) donde recepción sí debe seguir bloqueada.
+app.get("/dashboard/summary", requireRole([...CLINICAL_STAFF, "recepcion"]), async (_request, response) => {
   try {
     // Total de salas: catálogo real (rooms activas). Si la tabla todavía no
     // existe o está vacía, se cae al valor histórico para no romper la métrica.

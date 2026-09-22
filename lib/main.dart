@@ -3,6 +3,7 @@ import 'widgets/nexa_ai_section.dart';
 import 'widgets/operational_status_section.dart';
 import 'widgets/dashboard_kpi_section.dart';
 import 'widgets/milmed_brand_mark.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 
 import 'core/nexa_colors.dart';
@@ -13,11 +14,31 @@ import 'screens/staff_management_page.dart';
 import 'services/api_service.dart';
 
 void main() {
-  runApp(const NexaApp());
+  runApp(NexaApp(inviteAccessToken: _extractInviteAccessToken()));
+}
+
+// El link del correo de invitación (ver /staff/invite en server.mjs) redirige
+// a la app web como https://.../#access_token=...&refresh_token=...&type=invite
+// -- Supabase pone esos datos en el fragmento de la URL, no en query params.
+// Solo aplica a la versión web: en las otras plataformas Uri.base no refleja
+// una URL de navegador, así que ahí se ignora.
+String? _extractInviteAccessToken() {
+  if (!kIsWeb) return null;
+
+  final fragment = Uri.base.fragment;
+  if (fragment.isEmpty) return null;
+
+  final params = Uri.splitQueryString(fragment);
+  if (params['type'] != 'invite') return null;
+
+  final token = params['access_token'];
+  return (token != null && token.isNotEmpty) ? token : null;
 }
 
 class NexaApp extends StatelessWidget {
-  const NexaApp({super.key});
+  const NexaApp({super.key, this.inviteAccessToken});
+
+  final String? inviteAccessToken;
 
   @override
   Widget build(BuildContext context) {
@@ -32,7 +53,9 @@ class NexaApp extends StatelessWidget {
           brightness: Brightness.light,
         ),
       ),
-      home: const WelcomePage(),
+      home: inviteAccessToken != null
+          ? CreatePasswordPage(accessToken: inviteAccessToken!)
+          : const WelcomePage(),
     );
   }
 }
@@ -137,7 +160,9 @@ class WelcomePage extends StatelessWidget {
 }
 
 class LoginPage extends StatefulWidget {
-  const LoginPage({super.key});
+  const LoginPage({super.key, this.successMessage});
+
+  final String? successMessage;
 
   @override
   State<LoginPage> createState() => _LoginPageState();
@@ -155,6 +180,7 @@ class _LoginPageState extends State<LoginPage> {
   bool _isLoading = false;
   bool _obscurePassword = true;
   String? _error;
+  late final String? _success = widget.successMessage;
 
   @override
   void initState() {
@@ -299,6 +325,24 @@ class _LoginPageState extends State<LoginPage> {
                     ),
                   ),
                   const SizedBox(height: 30),
+                  if (_success != null) ...[
+                    Container(
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFF0FDF4),
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: Text(
+                        _success,
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(
+                          color: Color(0xFF166534),
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                  ],
                   TextField(
                     controller: emailController,
                     textInputAction: TextInputAction.next,
@@ -387,6 +431,284 @@ class _LoginPageState extends State<LoginPage> {
   }
 }
 
+// Pantalla que reemplaza a WelcomePage cuando la URL trae el access_token de
+// una invitación de personal (ver _extractInviteAccessToken en main() y
+// POST /staff/accept-invite en server.mjs).
+class CreatePasswordPage extends StatefulWidget {
+  const CreatePasswordPage({super.key, required this.accessToken});
+
+  final String accessToken;
+
+  @override
+  State<CreatePasswordPage> createState() => _CreatePasswordPageState();
+}
+
+class _CreatePasswordPageState extends State<CreatePasswordPage> {
+  static const _minPasswordLength = 8;
+
+  final passwordController = TextEditingController();
+  final confirmController = TextEditingController();
+
+  bool get canSubmit =>
+      passwordController.text.length >= _minPasswordLength &&
+      confirmController.text.isNotEmpty &&
+      !_isLoading;
+
+  bool _isLoading = false;
+  bool _obscurePassword = true;
+  bool _obscureConfirm = true;
+  String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    passwordController.addListener(_refresh);
+    confirmController.addListener(_refresh);
+  }
+
+  void _refresh() => setState(() {});
+
+  @override
+  void dispose() {
+    passwordController.dispose();
+    confirmController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _submit() async {
+    if (!canSubmit) return;
+
+    if (passwordController.text != confirmController.text) {
+      setState(() => _error = 'Las contraseñas no coinciden.');
+      return;
+    }
+
+    setState(() {
+      _isLoading = true;
+      _error = null;
+    });
+
+    try {
+      await ApiService.acceptInvite(
+        accessToken: widget.accessToken,
+        password: passwordController.text,
+      );
+      if (!mounted) return;
+      Navigator.pushReplacement(
+        context,
+        MaterialPageRoute(
+          builder: (_) => const LoginPage(
+            successMessage: 'Tu contraseña quedó creada. Ya puedes iniciar sesión.',
+          ),
+        ),
+      );
+    } on ApiException catch (error) {
+      if (mounted) setState(() => _error = error.message);
+    } catch (_) {
+      if (mounted) {
+        setState(() => _error = 'No fue posible crear tu contraseña. Intenta de nuevo.');
+      }
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
+    }
+  }
+
+  InputDecoration _inputDecoration({
+    required String label,
+    required IconData icon,
+    Widget? suffixIcon,
+  }) {
+    return InputDecoration(
+      labelText: label,
+      prefixIcon: Icon(icon),
+      suffixIcon: suffixIcon,
+      filled: true,
+      fillColor: NexaColors.background,
+      border: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(15),
+        borderSide: const BorderSide(color: NexaColors.border),
+      ),
+      enabledBorder: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(15),
+        borderSide: const BorderSide(color: NexaColors.border),
+      ),
+      focusedBorder: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(15),
+        borderSide: const BorderSide(
+          color: NexaColors.primary,
+          width: 2,
+        ),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text(
+          'Crea tu contraseña',
+          style: TextStyle(
+            fontWeight: FontWeight.w600,
+            color: NexaColors.textPrimary,
+          ),
+        ),
+        backgroundColor: Colors.transparent,
+      ),
+      body: Center(
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.all(24),
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 440),
+            child: Container(
+              padding: const EdgeInsets.all(36),
+              decoration: BoxDecoration(
+                color: NexaColors.surface,
+                borderRadius: BorderRadius.circular(24),
+                border: Border.all(color: NexaColors.border),
+                boxShadow: const [
+                  BoxShadow(
+                    blurRadius: 32,
+                    offset: Offset(0, 14),
+                    color: Color(0x140F172A),
+                  ),
+                ],
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Center(
+                    child: Container(
+                      width: 70,
+                      height: 70,
+                      decoration: BoxDecoration(
+                        color: NexaColors.primary.withValues(alpha: 0.10),
+                        borderRadius: BorderRadius.circular(20),
+                      ),
+                      child: const Icon(
+                        Icons.lock_person_outlined,
+                        size: 36,
+                        color: NexaColors.primary,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 26),
+                  const Text(
+                    'Crea tu contraseña',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      fontSize: 32,
+                      fontWeight: FontWeight.w800,
+                      color: NexaColors.textPrimary,
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  const Text(
+                    'Elige una contraseña para activar tu cuenta en Imagenda',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      color: NexaColors.textSecondary,
+                    ),
+                  ),
+                  const SizedBox(height: 30),
+                  TextField(
+                    controller: passwordController,
+                    obscureText: _obscurePassword,
+                    textInputAction: TextInputAction.next,
+                    decoration: _inputDecoration(
+                      label: 'Contraseña (mínimo $_minPasswordLength caracteres)',
+                      icon: Icons.lock_outline,
+                      suffixIcon: IconButton(
+                        icon: Icon(
+                          _obscurePassword
+                              ? Icons.visibility_outlined
+                              : Icons.visibility_off_outlined,
+                        ),
+                        onPressed: () {
+                          setState(() => _obscurePassword = !_obscurePassword);
+                        },
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 18),
+                  TextField(
+                    controller: confirmController,
+                    obscureText: _obscureConfirm,
+                    textInputAction: TextInputAction.done,
+                    onSubmitted: (_) => _submit(),
+                    decoration: _inputDecoration(
+                      label: 'Confirmar contraseña',
+                      icon: Icons.lock_outline,
+                      suffixIcon: IconButton(
+                        icon: Icon(
+                          _obscureConfirm
+                              ? Icons.visibility_outlined
+                              : Icons.visibility_off_outlined,
+                        ),
+                        onPressed: () {
+                          setState(() => _obscureConfirm = !_obscureConfirm);
+                        },
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 24),
+                  if (_error != null) ...[
+                    Container(
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFFEF2F2),
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: Text(
+                        _error!,
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(
+                          color: Color(0xFF991B1B),
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                  ],
+                  SizedBox(
+                    height: 54,
+                    child: FilledButton(
+                      onPressed: canSubmit ? _submit : null,
+                      style: FilledButton.styleFrom(
+                        backgroundColor: NexaColors.primary,
+                        disabledBackgroundColor: const Color(0xFFE2E8F0),
+                        disabledForegroundColor: const Color(0xFF94A3B8),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(15),
+                        ),
+                      ),
+                      child: _isLoading
+                          ? const SizedBox(
+                              width: 22,
+                              height: 22,
+                              child: CircularProgressIndicator(
+                                strokeWidth: 2.4,
+                                color: Colors.white,
+                              ),
+                            )
+                          : const Text(
+                              'Crear contraseña',
+                              style: TextStyle(
+                                fontSize: 17,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
 
 class DashboardPage extends StatelessWidget {
   const DashboardPage({super.key});

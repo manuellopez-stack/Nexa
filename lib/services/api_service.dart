@@ -168,6 +168,35 @@ class ApiService {
     _setSession(accessToken, Map<String, dynamic>.from(user), role: role, fullName: fullName);
   }
 
+  /// Completa el flujo de invitación: fija la contraseña de una cuenta recién
+  /// invitada usando el access_token que Supabase entrega en el link del
+  /// correo de invitación (no la sesión de este cliente, que aún no existe).
+  static Future<void> acceptInvite({
+    required String accessToken,
+    required String password,
+  }) async {
+    final http.Response response;
+
+    try {
+      response = await http
+          .post(
+            Uri.parse('$_baseUrl/staff/accept-invite'),
+            headers: const {'Content-Type': 'application/json'},
+            body: jsonEncode({
+              'access_token': accessToken,
+              'password': password,
+            }),
+          )
+          .timeout(const Duration(seconds: 30));
+    } catch (_) {
+      throw const ApiException(
+        'No fue posible conectar con el backend de Imagenda.',
+      );
+    }
+
+    await _decodeMap(response);
+  }
+
   static Future<Map<String, dynamic>> getDashboardSummary() async {
     final http.Response response;
 

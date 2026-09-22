@@ -983,6 +983,39 @@ app.post("/auth/login", async (request, response) => {
   }
 });
 
+// Completa el flujo de invitación de personal iniciado en /staff/invite.
+// Vive fuera del bloque `app.use("/staff", requireAuth, ...)` de más abajo
+// (se registra antes) porque quien invoca esto todavía no tiene sesión: solo
+// trae el access_token que Supabase puso en el link del correo de invitación.
+app.post("/staff/accept-invite", async (request, response) => {
+  try {
+    const accessToken = typeof request.body?.access_token === "string" ? request.body.access_token.trim() : "";
+    const password = typeof request.body?.password === "string" ? request.body.password : "";
+
+    if (!accessToken || !password) {
+      return response.status(400).json({ error: "Faltan datos para crear tu contraseña." });
+    }
+    if (password.length < 8) {
+      return response.status(400).json({ error: "La contraseña debe tener al menos 8 caracteres." });
+    }
+
+    const { data, error } = await supabaseAuth.auth.getUser(accessToken);
+    if (error || !data?.user) {
+      return response.status(401).json({
+        error: "El enlace de invitación no es válido o ya expiró. Pide que te reenvíen la invitación.",
+      });
+    }
+
+    const { error: updateError } = await supabase.auth.admin.updateUserById(data.user.id, { password });
+    if (updateError) throw updateError;
+
+    return response.json({ ok: true });
+  } catch (error) {
+    console.error("Error al aceptar la invitación:", error);
+    return response.status(500).json({ error: "No fue posible crear tu contraseña. Intenta de nuevo." });
+  }
+});
+
 // A partir de aquí, todas las rutas requieren haber iniciado sesión y
 // tener un rol asignado. Algunas rutas además exigen un rol específico.
 app.use("/patients", requireAuth);

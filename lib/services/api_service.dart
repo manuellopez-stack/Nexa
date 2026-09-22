@@ -315,6 +315,31 @@ class ApiService {
     return _decodeMap(response);
   }
 
+  // Lista de documentos del paciente sin la ficha clínica completa
+  // (GET /patients/:id/documents). Es la que usa Recepción.
+  static Future<List<Map<String, dynamic>>> getPatientDocuments(
+    int patientId,
+  ) async {
+    final http.Response response;
+    try {
+      response = await http.get(
+        Uri.parse('$_baseUrl/patients/$patientId/documents'),
+        headers: _headers(extra: const {'Accept': 'application/json'}),
+      ).timeout(const Duration(seconds: 30));
+    } catch (_) {
+      throw const ApiException('No fue posible consultar los documentos del paciente.');
+    }
+    final decodedBody = await _decodeMap(response);
+    final documents = decodedBody['documents'];
+    if (documents is! List) {
+      throw const ApiException('El backend no entregó una lista de documentos válida.');
+    }
+    return documents
+        .whereType<Map>()
+        .map((item) => Map<String, dynamic>.from(item))
+        .toList();
+  }
+
   static Future<Map<String, dynamic>> getPatientDocument({
     required int patientId,
     required String filename,

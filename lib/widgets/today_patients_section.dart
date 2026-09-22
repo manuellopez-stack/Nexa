@@ -47,8 +47,9 @@ class _TodayPatientsSectionState extends State<TodayPatientsSection> {
 
     // El rol Recepción no tiene acceso a la ficha clínica completa
     // (/patients/:id -> CLINICAL_STAFF), pero sí necesita ver y gestionar
-    // los cobros del paciente. Se le abre un diálogo reducido solo con la
-    // sección "Cobros", sin datos clínicos.
+    // los cobros del paciente y consultar sus documentos. Se le abre un
+    // diálogo reducido con las pestañas "Cobros" y "Documentos", sin el
+    // resto de la ficha clínica.
     if (ApiService.isReception) {
       await showDialog<void>(
         context: context,
@@ -231,8 +232,10 @@ class _TodayPatientsSectionState extends State<TodayPatientsSection> {
   }
 }
 
-/// Diálogo reducido para el rol Recepción: solo identificación del paciente
-/// y la sección "Cobros". No carga la ficha clínica.
+/// Diálogo reducido para el rol Recepción: identificación del paciente, la
+/// sección "Cobros" y los documentos del paciente (ver y preguntar a la IA).
+/// No carga la ficha clínica: sin laboratorio, odontología, imagenología,
+/// resumen de IA ni historial.
 class _PatientBillingDialog extends StatelessWidget {
   const _PatientBillingDialog({required this.preview});
 
@@ -244,17 +247,19 @@ class _PatientBillingDialog extends StatelessWidget {
     final rut = preview['rut']?.toString() ?? '';
     final patientId = preview['id'] is int ? preview['id'] as int : null;
 
-    return AlertDialog(
-      title: Row(
-        children: [
-          const Icon(Icons.receipt_long_outlined, color: NexaColors.primary),
-          const SizedBox(width: 10),
-          Expanded(child: Text('Cobros — $name', overflow: TextOverflow.ellipsis)),
-        ],
-      ),
-      content: SizedBox(
-        width: 560,
-        child: SingleChildScrollView(
+    return DefaultTabController(
+      length: 2,
+      child: AlertDialog(
+        title: Row(
+          children: [
+            const Icon(Icons.person_outline, color: NexaColors.primary),
+            const SizedBox(width: 10),
+            Expanded(child: Text(name, overflow: TextOverflow.ellipsis)),
+          ],
+        ),
+        content: SizedBox(
+          width: 560,
+          height: 520,
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
@@ -263,18 +268,193 @@ class _PatientBillingDialog extends StatelessWidget {
                   'RUT: $rut',
                   style: const TextStyle(color: NexaColors.textSecondary),
                 ),
+              const TabBar(
+                tabs: [
+                  Tab(icon: Icon(Icons.receipt_long_outlined), text: 'Cobros'),
+                  Tab(icon: Icon(Icons.description_outlined), text: 'Documentos'),
+                ],
+              ),
               const SizedBox(height: 14),
-              BillingSection(patientId: patientId),
+              Expanded(
+                child: TabBarView(
+                  children: [
+                    SingleChildScrollView(
+                      child: BillingSection(patientId: patientId),
+                    ),
+                    _ReceptionDocumentsTab(patientId: patientId),
+                  ],
+                ),
+              ),
             ],
           ),
         ),
+        actions: [
+          FilledButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cerrar'),
+          ),
+        ],
       ),
-      actions: [
-        FilledButton(
-          onPressed: () => Navigator.pop(context),
-          child: const Text('Cerrar'),
+    );
+  }
+}
+
+/// Pestaña "Documentos" del diálogo de Recepción. Usa GET
+/// /patients/:id/documents (sin ficha clínica) y, al tocar uno, abre
+/// _SavedDocumentDialog con sus datos y la consulta a la IA.
+class _ReceptionDocumentsTab extends StatefulWidget {
+  const _ReceptionDocumentsTab({required this.patientId});
+
+  final int? patientId;
+
+  @override
+  State<_ReceptionDocumentsTab> createState() => _ReceptionDocumentsTabState();
+}
+
+class _ReceptionDocumentsTabState extends State<_ReceptionDocumentsTab> {
+  late Future<List<Map<String, dynamic>>> _documentsFuture;
+  String? _openingFilename;
+  String? _openError;
+
+  @override
+  void initState() {
+    super.initState();
+    _documentsFuture = _load();
+  }
+
+  Future<List<Map<String, dynamic>>> _load() {
+    final patientId = widget.patientId;
+    if (patientId == null) {
+      return Future.error(
+        const ApiException('El paciente no tiene un identificador válido.'),
+      );
+    }
+    return ApiService.getPatientDocuments(patientId);
+  }
+
+  Future<void> _openDocument(String filename) async {
+    final patientId = widget.patientId;
+    if (patientId == null || _openingFilename != null) return;
+    setState(() {
+      _openingFilename = filename;
+      _openError = null;
+    });
+
+    try {
+      final result = await ApiService.getPatientDocument(
+        patientId: patientId,
+        filename: filename,
+      );
+      if (!mounted) return;
+      final raw = result['document'];
+      if (raw is! Map) {
+        throw const ApiException('Imagenda no encontró información guardada para este documento.');
+      }
+      final document = Map<String, dynamic>.from(raw);
+
+      await showDialog<void>(
+        context: context,
+        builder: (_) => _SavedDocumentDialog(
+          patientId: patientId,
+          filename: filename,
+          document: document,
         ),
-      ],
+      );
+    } on ApiException catch (error) {
+      if (mounted) setState(() => _openError = error.message);
+    } catch (_) {
+      if (mounted) setState(() => _openError = 'No fue posible abrir el documento.');
+    } finally {
+      if (mounted) setState(() => _openingFilename = null);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return FutureBuilder<List<Map<String, dynamic>>>(
+      future: _documentsFuture,
+      builder: (context, snapshot) {
+        if (snapshot.connectionState != ConnectionState.done) {
+          return const Center(child: CircularProgressIndicator());
+        }
+        if (snapshot.hasError) {
+          final error = snapshot.error;
+          return Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                error is ApiException
+                    ? error.message
+                    : 'No fue posible cargar los documentos.',
+                style: const TextStyle(color: Color(0xFFB91C1C), fontWeight: FontWeight.w600),
+              ),
+              const SizedBox(height: 10),
+              TextButton.icon(
+                onPressed: () => setState(() => _documentsFuture = _load()),
+                icon: const Icon(Icons.refresh),
+                label: const Text('Reintentar'),
+              ),
+            ],
+          );
+        }
+
+        final documents = snapshot.data ?? const [];
+        if (documents.isEmpty) {
+          return const Center(
+            child: Text(
+              'Este paciente no tiene documentos guardados.',
+              style: TextStyle(color: NexaColors.textSecondary),
+            ),
+          );
+        }
+
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            if (_openError != null) ...[
+              Text(
+                _openError!,
+                style: const TextStyle(color: Color(0xFFB91C1C), fontWeight: FontWeight.w600),
+              ),
+              const SizedBox(height: 8),
+            ],
+            Expanded(
+              child: ListView.separated(
+                itemCount: documents.length,
+                separatorBuilder: (_, _) => const Divider(height: 1),
+                itemBuilder: (context, index) {
+                  final document = documents[index];
+                  final filename = document['filename']?.toString() ?? '';
+                  final subtitle = [
+                    document['documentType']?.toString() ?? '',
+                    document['date']?.toString() ?? '',
+                  ].where((part) => part.trim().isNotEmpty).join(' · ');
+                  final opening = _openingFilename == filename;
+
+                  return ListTile(
+                    leading: const Icon(Icons.picture_as_pdf_outlined),
+                    title: Text(
+                      filename.isEmpty ? 'Documento sin nombre' : filename,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    subtitle: subtitle.isEmpty ? null : Text(subtitle),
+                    trailing: opening
+                        ? const SizedBox(
+                            width: 18,
+                            height: 18,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : _ValidationBadge(
+                            status: document['validationStatus']?.toString() ?? 'pendiente',
+                          ),
+                    onTap: filename.isEmpty ? null : () => _openDocument(filename),
+                  );
+                },
+              ),
+            ),
+          ],
+        );
+      },
     );
   }
 }
@@ -2000,8 +2180,8 @@ class _SavedDocumentDialogState extends State<_SavedDocumentDialog> {
             const Text('Equipo / técnica', style: TextStyle(fontWeight: FontWeight.w800)),
             const SizedBox(height: 8),
             SelectableText(_value('equipment')),
-            // El backend solo permite consultar la IA sobre un documento
-            // (/documents/:filename/ask) a administrador y medico.
+            // El backend permite consultar la IA sobre un documento
+            // (/documents/:filename/ask) a AI_STAFF, que incluye Recepción.
             if (ApiService.canUseAi) ...[
             const SizedBox(height: 24),
             const Divider(),

@@ -2342,7 +2342,48 @@ app.patch("/patients/:id/from-document", requireRole(CLINICAL_STAFF), async (req
   }
 });
 
-app.get("/patients/:id/documents/:filename", requireRole(CLINICAL_STAFF), async (request, response) => {
+// Lista de documentos del paciente, sin la ficha clínica completa. Recepción
+// puede usarla (junto con el detalle y /ask de abajo) para ver y consultar
+// documentos puntuales; a diferencia de GET /patients/:id, no devuelve
+// aiSummary ni history ni dispara la generación del resumen de IA.
+app.get("/patients/:id/documents", requireRole([...CLINICAL_STAFF, "recepcion"]), async (request, response) => {
+  try {
+    const patientId = Number(request.params.id);
+
+    // Etapa 3 (paso 3b): mismo criterio que las rutas de ficha del paciente.
+    if (!(await patientBelongsToRequesterClinic(patientId, request))) {
+      return response.status(404).json({ error: "Paciente no encontrado" });
+    }
+
+    const { data: patientRow, error: patientError } = await supabase
+      .from("patients")
+      .select("id, name")
+      .eq("id", patientId)
+      .maybeSingle();
+    if (patientError) throw patientError;
+    if (!patientRow) return response.status(404).json({ error: "Paciente no encontrado" });
+
+    const { data: docs, error: docsError } = await supabase
+      .from("documents")
+      .select("*")
+      .eq("patient_id", patientId)
+      .order("incorporated_at", { ascending: true });
+    if (docsError) throw docsError;
+
+    return response.json({
+      patientId: patientRow.id,
+      patientName: patientRow.name,
+      documents: (docs ?? []).map(shapeDocumentRecord),
+    });
+  } catch (error) {
+    console.error("Error al listar documentos:", error);
+    return response.status(500).json({ error: "No fue posible obtener los documentos." });
+  }
+});
+
+// Recepción puede ver documentos puntuales del paciente, pero no la ficha
+// clínica completa (GET /patients/:id sigue limitado a CLINICAL_STAFF).
+app.get("/patients/:id/documents/:filename", requireRole([...CLINICAL_STAFF, "recepcion"]), async (request, response) => {
   try {
     const patientId = Number(request.params.id);
     const filename = decodeURIComponent(request.params.filename);

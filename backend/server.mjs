@@ -163,6 +163,21 @@ async function requireAuth(request, response, next) {
   request.user = data.user;
   request.staffRole = profileRow.role;
   request.staffProfile = profileRow;
+  request.isPlatformAdmin = profileRow.is_platform_admin === true;
+  next();
+}
+
+// Exige que la cuenta tenga clínica asignada. Va en todas las rutas de datos
+// de clínica (pacientes, agenda, órdenes, cobros...): una cuenta con
+// clinic_id nulo NO ve datos de ninguna clínica -- antes pasaba al revés, los
+// filtros se saltaban y veía los de todas. Ser admin de plataforma no cambia
+// esto: para datos clínicos cada cuenta ve solo los de su propia clínica.
+function requireClinic(request, response, next) {
+  if (!request.staffProfile?.clinic_id) {
+    return response.status(403).json({
+      error: "Tu cuenta no tiene una clínica asignada. Contacta a un administrador.",
+    });
+  }
   next();
 }
 
@@ -588,6 +603,8 @@ function shapeStaffRow(row) {
     email: row.email,
     fullName: row.full_name,
     role: row.role,
+    clinicId: row.clinic_id ?? null,
+    isPlatformAdmin: row.is_platform_admin === true,
     createdAt: row.created_at,
   };
 }
@@ -641,13 +658,12 @@ async function getPatientFull(id) {
   };
 }
 
-// Etapa 3 (paso 3a) del plan multi-clínica: true si el paciente puede verse/
-// editarse desde la sesión actual. Si el paciente o quien hace la petición
-// todavía no tienen clinic_id asignado (dato no migrado / rollout gradual),
-// no bloquea -- solo compara cuando ambos lados tienen clínica asignada.
+// True si el paciente puede verse/editarse desde la sesión actual: tiene que
+// ser de la misma clínica que quien pide. Un paciente sin clinic_id no es de
+// ninguna clínica, así que no lo ve nadie (antes lo veían todas).
 async function patientBelongsToRequesterClinic(patientId, request) {
   const requesterClinicId = request.staffProfile?.clinic_id ?? null;
-  if (!requesterClinicId) return true;
+  if (!requesterClinicId) return false;
 
   const { data, error } = await supabase
     .from("patients")
@@ -657,8 +673,7 @@ async function patientBelongsToRequesterClinic(patientId, request) {
   if (error) throw error;
   if (!data) return true; // no encontrado: que lo reporte el fetch principal
 
-  const patientClinicId = data.clinic_id ?? null;
-  return !patientClinicId || patientClinicId === requesterClinicId;
+  return data.clinic_id === requesterClinicId;
 }
 
 // Etapa 3 (paso 3a): clinicId es opcional -- cuando se pasa, la búsqueda de
@@ -975,6 +990,7 @@ app.post("/auth/login", async (request, response) => {
         role: profileRow?.role ?? null,
         fullName: profileRow?.full_name ?? null,
         clinicId: profileRow?.clinic_id ?? null,
+        isPlatformAdmin: profileRow?.is_platform_admin === true,
       },
     });
   } catch (error) {
@@ -1018,16 +1034,16 @@ app.post("/staff/accept-invite", async (request, response) => {
 
 // A partir de aquí, todas las rutas requieren haber iniciado sesión y
 // tener un rol asignado. Algunas rutas además exigen un rol específico.
-app.use("/patients", requireAuth);
+app.use("/patients", requireAuth, requireClinic);
 app.use("/dashboard", requireAuth);
-app.use("/rooms", requireAuth);
-app.use("/appointments", requireAuth);
+app.use("/rooms", requireAuth, requireClinic);
+app.use("/appointments", requireAuth, requireClinic);
 app.use("/chat", requireAuth, requireRole(AI_STAFF));
-app.use("/lab", requireAuth);
-app.use("/imaging", requireAuth);
-app.use("/orthanc-studies", requireAuth);
-app.use("/dental", requireAuth);
-app.use("/billing", requireAuth);
+app.use("/lab", requireAuth, requireClinic);
+app.use("/imaging", requireAuth, requireClinic);
+app.use("/orthanc-studies", requireAuth, requireClinic);
+app.use("/dental", requireAuth, requireClinic);
+app.use("/billing", requireAuth, requireClinic);
 app.use("/staff", requireAuth, requireRole(ADMIN_ONLY));
 app.use("/clinics", requireAuth, requireRole(ADMIN_ONLY));
 
@@ -1051,8 +1067,8 @@ async function loadTodayAgendaFromAppointments(canSeeClinicalData, clinicId = nu
     .neq("status", "cancelada")
     .order("scheduled_at", { ascending: true });
 
-  // Etapa 3 (paso 3a): solo /patients/today pasa clinicId -- /dashboard/summary
-  // sigue llamando esta función sin él, sin cambios de comportamiento ahí.
+  // clinicId nulo = todas las clínicas: solo lo usa el resumen del dashboard
+  // para un admin de plataforma.
   if (clinicId) {
     query = query.eq("clinic_id", clinicId);
   }
@@ -1108,9 +1124,7 @@ app.get("/patients", requireRole(AGENDA_STAFF), async (request, response) => {
       .limit(500);
 
     // Etapa 3 (paso 3a): solo filtra si quien pide tiene clínica asignada.
-    if (request.staffProfile?.clinic_id) {
-      query = query.eq("clinic_id", request.staffProfile.clinic_id);
-    }
+    query = query.eq("clinic_id", request.staffProfile.clinic_id);
 
     if (search) {
       query = query.or(`name.ilike.%${search}%,rut.ilike.%${search}%`);
@@ -1214,7 +1228,7 @@ app.get("/patients/:id/identity", requireRole(AGENDA_STAFF), async (request, res
     // Etapa 3 (paso 3a): si el paciente es de otra clínica, se responde igual
     // que "no encontrado" (no se confirma su existencia a quien no debería verla).
     const requesterClinicId = request.staffProfile?.clinic_id ?? null;
-    if (requesterClinicId && data.clinic_id && data.clinic_id !== requesterClinicId) {
+    if (data.clinic_id !== requesterClinicId) {
       return response.status(404).json({ error: "Paciente no encontrado" });
     }
 
@@ -1249,7 +1263,7 @@ app.patch("/patients/:id", requireRole(AGENDA_STAFF), async (request, response) 
 
     // Etapa 3 (paso 3a): mismo criterio que GET /patients/:id/identity.
     const requesterClinicId = request.staffProfile?.clinic_id ?? null;
-    if (requesterClinicId && existing.clinic_id && existing.clinic_id !== requesterClinicId) {
+    if (existing.clinic_id !== requesterClinicId) {
       return response.status(404).json({ error: "Paciente no encontrado" });
     }
 
@@ -1351,16 +1365,27 @@ app.get("/patients/today", async (request, response) => {
 // CLINICAL_STAFF se admite 'recepcion' aquí. No se agrega a CLINICAL_STAFF
 // porque esa constante se usa en otras rutas (fichas de pacientes,
 // laboratorio, dental, imagenología) donde recepción sí debe seguir bloqueada.
-app.get("/dashboard/summary", requireRole([...CLINICAL_STAFF, "recepcion"]), async (_request, response) => {
+app.get("/dashboard/summary", requireRole([...CLINICAL_STAFF, "recepcion"]), async (request, response) => {
   try {
+    // Alcance del resumen: la clínica de quien pregunta. Solo un admin de
+    // plataforma ve la suma de todas las clínicas (scopeClinicId = null).
+    const scopeClinicId = request.isPlatformAdmin ? null : request.staffProfile?.clinic_id ?? null;
+    if (!request.isPlatformAdmin && !scopeClinicId) {
+      return response.status(403).json({ error: "Tu cuenta no tiene una clínica asignada." });
+    }
+    const scoped = (query, column = "clinic_id") =>
+      scopeClinicId ? query.eq(column, scopeClinicId) : query;
+
     // Total de salas: catálogo real (rooms activas). Si la tabla todavía no
     // existe o está vacía, se cae al valor histórico para no romper la métrica.
     const FALLBACK_ROOM_COUNT = 3;
     let totalKnownRooms = FALLBACK_ROOM_COUNT;
-    const { count: activeRoomCount, error: roomsError } = await supabase
-      .from("rooms")
-      .select("id", { count: "exact", head: true })
-      .eq("active", true);
+    const { count: activeRoomCount, error: roomsError } = await scoped(
+      supabase
+        .from("rooms")
+        .select("id", { count: "exact", head: true })
+        .eq("active", true),
+    );
     if (!roomsError && typeof activeRoomCount === "number" && activeRoomCount > 0) {
       totalKnownRooms = activeRoomCount;
     }
@@ -1375,7 +1400,7 @@ app.get("/dashboard/summary", requireRole([...CLINICAL_STAFF, "recepcion"]), asy
     // Fallback si la tabla todavía no existe o no hay citas para hoy:
     // comportamiento histórico (todos los pacientes de la tabla patients),
     // para no romper el dashboard entre el deploy y el Run del SQL.
-    const todayAgenda = await loadTodayAgendaFromAppointments(true);
+    const todayAgenda = await loadTodayAgendaFromAppointments(true, scopeClinicId);
 
     let patientsToday;
     let waiting;
@@ -1396,9 +1421,9 @@ app.get("/dashboard/summary", requireRole([...CLINICAL_STAFF, "recepcion"]), asy
           .map((p) => p.roomId),
       ).size;
     } else {
-      const { data: patientRows, error: patientsError } = await supabase
-        .from("patients")
-        .select("id, status, room");
+      const { data: patientRows, error: patientsError } = await scoped(
+        supabase.from("patients").select("id, status, room"),
+      );
       if (patientsError) throw patientsError;
 
       const patients = patientRows ?? [];
@@ -1414,9 +1439,17 @@ app.get("/dashboard/summary", requireRole([...CLINICAL_STAFF, "recepcion"]), asy
       ).size;
     }
 
-    const { count: documentsCount, error: docsCountError } = await supabase
-      .from("documents")
-      .select("id", { count: "exact", head: true });
+    // documents se filtra por la clínica del paciente (no por
+    // documents.clinic_id, que los documentos nuevos no siempre traen).
+    const documentsQuery = () =>
+      scopeClinicId
+        ? supabase
+            .from("documents")
+            .select("id, patient:patients!inner(clinic_id)", { count: "exact", head: true })
+            .eq("patient.clinic_id", scopeClinicId)
+        : supabase.from("documents").select("id", { count: "exact", head: true });
+
+    const { count: documentsCount, error: docsCountError } = await documentsQuery();
     if (docsCountError) throw docsCountError;
 
     const totalDocuments = documentsCount ?? 0;
@@ -1429,7 +1462,9 @@ app.get("/dashboard/summary", requireRole([...CLINICAL_STAFF, "recepcion"]), asy
     let documentsAwaitingAnalysis = 0;
     let patientsWithAiSummary = 0;
     let aiAnalysesTotal = totalDocuments;
-    const { data: aiMetrics, error: aiMetricsError } = await supabase.rpc("ai_analysis_metrics");
+    const { data: aiMetrics, error: aiMetricsError } = scopeClinicId
+      ? await supabase.rpc("ai_analysis_metrics_for_clinic", { p_clinic_id: scopeClinicId })
+      : await supabase.rpc("ai_analysis_metrics");
     if (aiMetricsError) {
       console.warn("No fue posible obtener métricas de análisis de IA:", aiMetricsError.message);
     } else if (aiMetrics && typeof aiMetrics === "object") {
@@ -1443,10 +1478,11 @@ app.get("/dashboard/summary", requireRole([...CLINICAL_STAFF, "recepcion"]), asy
     // que revisar/aprobar: documentos sin validar + órdenes clínicas ya
     // listas (con resultado/informe) pero aún no validadas.
     const countPending = async (table, column, value) => {
-      const { count, error } = await supabase
-        .from(table)
-        .select("id", { count: "exact", head: true })
-        .eq(column, value);
+      const base =
+        table === "documents"
+          ? documentsQuery()
+          : scoped(supabase.from(table).select("id", { count: "exact", head: true }));
+      const { count, error } = await base.eq(column, value);
       if (error) throw error;
       return count ?? 0;
     };
@@ -1514,9 +1550,7 @@ app.get("/rooms", requireRole(AGENDA_STAFF), async (request, response) => {
 
     // Mismo criterio que /patients: solo filtra si quien pide tiene clínica
     // asignada.
-    if (request.staffProfile?.clinic_id) {
-      query = query.eq("clinic_id", request.staffProfile.clinic_id);
-    }
+    query = query.eq("clinic_id", request.staffProfile.clinic_id);
 
     const { data, error } = await query;
     if (error) throw error;
@@ -1575,9 +1609,7 @@ app.get("/appointments", requireRole(AGENDA_STAFF), async (request, response) =>
 
     // Mismo criterio que /patients: solo filtra si quien pide tiene clínica
     // asignada.
-    if (request.staffProfile?.clinic_id) {
-      query = query.eq("clinic_id", request.staffProfile.clinic_id);
-    }
+    query = query.eq("clinic_id", request.staffProfile.clinic_id);
 
     const { data, error } = await query;
     if (error) throw error;
@@ -1629,7 +1661,7 @@ app.post("/appointments", requireRole(AGENDA_STAFF), async (request, response) =
       .maybeSingle();
     if (patientError) throw patientError;
     if (!patientRow) return response.status(404).json({ error: "Paciente no encontrado" });
-    if (requesterClinicId && patientRow.clinic_id && patientRow.clinic_id !== requesterClinicId) {
+    if (patientRow.clinic_id !== requesterClinicId) {
       return response.status(404).json({ error: "Paciente no encontrado" });
     }
 
@@ -1641,7 +1673,7 @@ app.post("/appointments", requireRole(AGENDA_STAFF), async (request, response) =
         .maybeSingle();
       if (roomError) throw roomError;
       if (!roomRow) return response.status(404).json({ error: "La sala indicada no existe." });
-      if (requesterClinicId && roomRow.clinic_id && roomRow.clinic_id !== requesterClinicId) {
+      if (roomRow.clinic_id !== requesterClinicId) {
         return response.status(404).json({ error: "La sala indicada no existe." });
       }
     }
@@ -1724,11 +1756,13 @@ app.patch("/appointments/:id", requireRole(AGENDA_STAFF), async (request, respon
       if (body.roomId) {
         const { data: roomRow, error: roomError } = await supabase
           .from("rooms")
-          .select("id")
+          .select("id, clinic_id")
           .eq("id", body.roomId)
           .maybeSingle();
         if (roomError) throw roomError;
-        if (!roomRow) return response.status(404).json({ error: "La sala indicada no existe." });
+        if (!roomRow || roomRow.clinic_id !== request.staffProfile.clinic_id) {
+          return response.status(404).json({ error: "La sala indicada no existe." });
+        }
         patch.room_id = body.roomId;
       } else {
         patch.room_id = null;
@@ -1755,7 +1789,7 @@ app.patch("/appointments/:id", requireRole(AGENDA_STAFF), async (request, respon
     // arriba, solo falta comparar su clínica contra la de quien pide el
     // cambio.
     const requesterClinicId = request.staffProfile?.clinic_id ?? null;
-    if (requesterClinicId && existing.clinic_id && existing.clinic_id !== requesterClinicId) {
+    if (existing.clinic_id !== requesterClinicId) {
       return response.status(404).json({ error: "Cita no encontrada" });
     }
 
@@ -2943,7 +2977,7 @@ app.post("/patients/:id/lab-orders", requireRole(CLINICAL_STAFF), async (request
       .maybeSingle();
     if (patientError) throw patientError;
     if (!patientRow) return response.status(404).json({ error: "Paciente no encontrado" });
-    if (requesterClinicId && patientRow.clinic_id && patientRow.clinic_id !== requesterClinicId) {
+    if (patientRow.clinic_id !== requesterClinicId) {
       return response.status(404).json({ error: "Paciente no encontrado" });
     }
 
@@ -2991,9 +3025,7 @@ app.get("/patients/:id/lab-orders", requireRole(CLINICAL_STAFF), async (request,
 
     // Mismo criterio que /patients: solo filtra si quien pide tiene clínica
     // asignada.
-    if (request.staffProfile?.clinic_id) {
-      ordersQuery = ordersQuery.eq("clinic_id", request.staffProfile.clinic_id);
-    }
+    ordersQuery = ordersQuery.eq("clinic_id", request.staffProfile.clinic_id);
 
     const { data: orderRows, error: ordersError } = await ordersQuery;
     if (ordersError) throw ordersError;
@@ -3029,9 +3061,7 @@ app.get("/patients/:id/lab-orders/:orderId", requireRole(CLINICAL_STAFF), async 
       .select("*")
       .eq("id", orderId)
       .eq("patient_id", patientId);
-    if (request.staffProfile?.clinic_id) {
-      orderQuery = orderQuery.eq("clinic_id", request.staffProfile.clinic_id);
-    }
+    orderQuery = orderQuery.eq("clinic_id", request.staffProfile.clinic_id);
     const { data: orderRow, error: orderError } = await orderQuery.maybeSingle();
     if (orderError) throw orderError;
     if (!orderRow) return response.status(404).json({ error: "Orden de laboratorio no encontrada." });
@@ -3087,9 +3117,7 @@ app.patch("/patients/:id/lab-orders/:orderId/sample-taken", requireRole(CLINICAL
       .update({ status: "muestra_tomada", sample_taken_at: new Date().toISOString() })
       .eq("id", orderId)
       .eq("patient_id", patientId);
-    if (request.staffProfile?.clinic_id) {
-      sampleTakenQuery = sampleTakenQuery.eq("clinic_id", request.staffProfile.clinic_id);
-    }
+    sampleTakenQuery = sampleTakenQuery.eq("clinic_id", request.staffProfile.clinic_id);
     const { data: updatedOrder, error } = await sampleTakenQuery.select().maybeSingle();
     if (error) throw error;
     if (!updatedOrder) return response.status(404).json({ error: "Orden de laboratorio no encontrada." });
@@ -3130,8 +3158,6 @@ app.patch("/patients/:id/lab-orders/:orderId/results", requireRole(CLINICAL_STAF
     // Etapa 5: la orden ya se cargó completa arriba, solo falta comparar su
     // clínica contra la de quien pide guardar los resultados.
     if (
-      request.staffProfile?.clinic_id &&
-      orderRow.clinic_id &&
       orderRow.clinic_id !== request.staffProfile.clinic_id
     ) {
       return response.status(404).json({ error: "Orden de laboratorio no encontrada." });
@@ -3226,9 +3252,7 @@ app.patch("/patients/:id/lab-orders/:orderId/validate", requireRole(VALIDATORS),
       })
       .eq("id", orderId)
       .eq("patient_id", patientId);
-    if (request.staffProfile?.clinic_id) {
-      validateQuery = validateQuery.eq("clinic_id", request.staffProfile.clinic_id);
-    }
+    validateQuery = validateQuery.eq("clinic_id", request.staffProfile.clinic_id);
     const { data: updatedOrder, error } = await validateQuery.select().maybeSingle();
     if (error) throw error;
     if (!updatedOrder) return response.status(404).json({ error: "Orden de laboratorio no encontrada." });
@@ -3305,7 +3329,7 @@ app.post("/patients/:id/dental-orders", requireRole(CLINICAL_STAFF), async (requ
       .maybeSingle();
     if (patientError) throw patientError;
     if (!patientRow) return response.status(404).json({ error: "Paciente no encontrado" });
-    if (requesterClinicId && patientRow.clinic_id && patientRow.clinic_id !== requesterClinicId) {
+    if (patientRow.clinic_id !== requesterClinicId) {
       return response.status(404).json({ error: "Paciente no encontrado" });
     }
 
@@ -3344,9 +3368,7 @@ app.get("/patients/:id/dental-orders", requireRole(CLINICAL_STAFF), async (reque
 
     // Mismo criterio que /patients: solo filtra si quien pide tiene clínica
     // asignada.
-    if (request.staffProfile?.clinic_id) {
-      ordersQuery = ordersQuery.eq("clinic_id", request.staffProfile.clinic_id);
-    }
+    ordersQuery = ordersQuery.eq("clinic_id", request.staffProfile.clinic_id);
 
     const { data: orderRows, error: ordersError } = await ordersQuery;
     if (ordersError) throw ordersError;
@@ -3389,9 +3411,7 @@ app.get("/patients/:id/dental-orders/:orderId", requireRole(CLINICAL_STAFF), asy
       .select("*")
       .eq("id", orderId)
       .eq("patient_id", patientId);
-    if (request.staffProfile?.clinic_id) {
-      orderQuery = orderQuery.eq("clinic_id", request.staffProfile.clinic_id);
-    }
+    orderQuery = orderQuery.eq("clinic_id", request.staffProfile.clinic_id);
     const { data: orderRow, error: orderError } = await orderQuery.maybeSingle();
     if (orderError) throw orderError;
     if (!orderRow) return response.status(404).json({ error: "Orden dental no encontrada." });
@@ -3438,9 +3458,7 @@ app.patch(
         .update({ status: "realizado", performed_at: new Date().toISOString() })
         .eq("id", orderId)
         .eq("patient_id", patientId);
-      if (request.staffProfile?.clinic_id) {
-        performedQuery = performedQuery.eq("clinic_id", request.staffProfile.clinic_id);
-      }
+      performedQuery = performedQuery.eq("clinic_id", request.staffProfile.clinic_id);
       const { data: updatedOrder, error } = await performedQuery.select().maybeSingle();
       if (error) throw error;
       if (!updatedOrder) return response.status(404).json({ error: "Orden dental no encontrada." });
@@ -3474,8 +3492,6 @@ app.patch("/patients/:id/dental-orders/:orderId/results", requireRole(CLINICAL_S
     // Etapa 5: la orden ya se cargó completa arriba, solo falta comparar su
     // clínica contra la de quien pide guardar los resultados.
     if (
-      request.staffProfile?.clinic_id &&
-      orderRow.clinic_id &&
       orderRow.clinic_id !== request.staffProfile.clinic_id
     ) {
       return response.status(404).json({ error: "Orden dental no encontrada." });
@@ -3536,9 +3552,7 @@ app.patch("/patients/:id/dental-orders/:orderId/validate", requireRole(VALIDATOR
       })
       .eq("id", orderId)
       .eq("patient_id", patientId);
-    if (request.staffProfile?.clinic_id) {
-      validateQuery = validateQuery.eq("clinic_id", request.staffProfile.clinic_id);
-    }
+    validateQuery = validateQuery.eq("clinic_id", request.staffProfile.clinic_id);
     const { data: updatedOrder, error } = await validateQuery.select().maybeSingle();
     if (error) throw error;
     if (!updatedOrder) return response.status(404).json({ error: "Orden dental no encontrada." });
@@ -3618,7 +3632,7 @@ app.post("/patients/:id/imaging-orders", requireRole(CLINICAL_STAFF), async (req
     if (patientError) throw patientError;
     if (!patientRow)
       return response.status(404).json({ error: "Paciente no encontrado" });
-    if (requesterClinicId && patientRow.clinic_id && patientRow.clinic_id !== requesterClinicId) {
+    if (patientRow.clinic_id !== requesterClinicId) {
       return response.status(404).json({ error: "Paciente no encontrado" });
     }
 
@@ -3675,9 +3689,7 @@ app.get("/patients/:id/imaging-orders", requireRole(CLINICAL_STAFF), async (requ
 
     // Mismo criterio que /patients: solo filtra si quien pide tiene clínica
     // asignada.
-    if (request.staffProfile?.clinic_id) {
-      ordersQuery = ordersQuery.eq("clinic_id", request.staffProfile.clinic_id);
-    }
+    ordersQuery = ordersQuery.eq("clinic_id", request.staffProfile.clinic_id);
 
     const { data: orderRows, error: ordersError } = await ordersQuery;
     if (ordersError) throw ordersError;
@@ -3723,9 +3735,7 @@ app.get("/patients/:id/imaging-orders/:orderId", requireRole(CLINICAL_STAFF), as
       .select("*")
       .eq("id", orderId)
       .eq("patient_id", patientId);
-    if (request.staffProfile?.clinic_id) {
-      orderQuery = orderQuery.eq("clinic_id", request.staffProfile.clinic_id);
-    }
+    orderQuery = orderQuery.eq("clinic_id", request.staffProfile.clinic_id);
     const { data: orderRow, error: orderError } = await orderQuery.maybeSingle();
     if (orderError) throw orderError;
     if (!orderRow)
@@ -3776,9 +3786,7 @@ app.patch(
         .update({ status: "realizado", performed_at: new Date().toISOString() })
         .eq("id", orderId)
         .eq("patient_id", patientId);
-      if (request.staffProfile?.clinic_id) {
-        performedQuery = performedQuery.eq("clinic_id", request.staffProfile.clinic_id);
-      }
+      performedQuery = performedQuery.eq("clinic_id", request.staffProfile.clinic_id);
       const { data: updatedOrder, error } = await performedQuery.select().maybeSingle();
       if (error) throw error;
       if (!updatedOrder)
@@ -3843,8 +3851,6 @@ app.post(
       // Etapa 5: la orden ya se cargó arriba, solo falta comparar su
       // clínica contra la de quien sube la imagen.
       if (
-        request.staffProfile?.clinic_id &&
-        orderRow.clinic_id &&
         orderRow.clinic_id !== request.staffProfile.clinic_id
       ) {
         return response
@@ -3933,8 +3939,6 @@ app.get(
       // Etapa 5: la orden ya se cargó arriba, solo falta comparar su
       // clínica contra la de quien pide las imágenes.
       if (
-        request.staffProfile?.clinic_id &&
-        orderRow.clinic_id &&
         orderRow.clinic_id !== request.staffProfile.clinic_id
       ) {
         return response
@@ -4018,9 +4022,7 @@ app.get("/orthanc-studies", requireRole(CLINICAL_STAFF), async (request, respons
 
     // Etapa 4 (paso 2): mismo criterio que /patients y /patients/today --
     // solo filtra si quien pide tiene clínica asignada.
-    if (request.staffProfile?.clinic_id) {
-      query = query.eq("clinic_id", request.staffProfile.clinic_id);
-    }
+    query = query.eq("clinic_id", request.staffProfile.clinic_id);
 
     const { data, error } = await query;
     if (error) throw error;
@@ -4065,7 +4067,7 @@ app.post(
         return response
           .status(404)
           .json({ error: "Estudio de Orthanc no encontrado." });
-      if (requesterClinicId && studyRow.clinic_id && studyRow.clinic_id !== requesterClinicId) {
+      if (studyRow.clinic_id !== requesterClinicId) {
         return response
           .status(404)
           .json({ error: "Estudio de Orthanc no encontrado." });
@@ -4085,7 +4087,7 @@ app.post(
         return response
           .status(404)
           .json({ error: "Orden de imagenología no encontrada." });
-      if (requesterClinicId && orderRow.clinic_id && orderRow.clinic_id !== requesterClinicId) {
+      if (orderRow.clinic_id !== requesterClinicId) {
         return response
           .status(404)
           .json({ error: "Orden de imagenología no encontrada." });
@@ -4352,8 +4354,6 @@ app.post(
       // Etapa 5: el cobro ya se cargó completo arriba, solo falta comparar
       // su clínica contra la de quien registra el pago.
       if (
-        request.staffProfile?.clinic_id &&
-        orderRow.clinic_id &&
         orderRow.clinic_id !== request.staffProfile.clinic_id
       ) {
         return response.status(404).json({ error: "Cobro no encontrado." });
@@ -4421,9 +4421,7 @@ app.patch(
         .from("billing_orders")
         .update({ bono_folio: bonoFolio, updated_at: new Date().toISOString() })
         .eq("id", billingOrderId);
-      if (request.staffProfile?.clinic_id) {
-        bonoFolioQuery = bonoFolioQuery.eq("clinic_id", request.staffProfile.clinic_id);
-      }
+      bonoFolioQuery = bonoFolioQuery.eq("clinic_id", request.staffProfile.clinic_id);
       const { data: orderRow, error } = await bonoFolioQuery.select().maybeSingle();
       if (error) throw error;
       if (!orderRow) {
@@ -4444,6 +4442,16 @@ app.patch(
 // GESTIÓN DE EQUIPO (solo Administrador)
 // ============================================
 
+// Un admin de plataforma gestiona personal de cualquier clínica; un admin de
+// clínica, solo el de la suya, y nunca a un admin de plataforma (aunque
+// comparta clínica con él).
+function canManageStaffMember(request, targetRow) {
+  if (request.isPlatformAdmin) return true;
+  const requesterClinicId = request.staffProfile?.clinic_id ?? null;
+  if (!requesterClinicId) return false;
+  return targetRow.clinic_id === requesterClinicId && targetRow.is_platform_admin !== true;
+}
+
 app.get("/staff", async (request, response) => {
   try {
     let query = supabase
@@ -4451,9 +4459,12 @@ app.get("/staff", async (request, response) => {
       .select("*")
       .order("created_at", { ascending: true });
 
-    // Etapa 5: mismo criterio que el resto de rutas -- solo lista el
-    // personal de la clínica de quien pide.
-    if (request.staffProfile?.clinic_id) {
+    // Un admin de plataforma ve el personal de todas las clínicas (el
+    // frontend lo agrupa por clínica); un admin de clínica, solo el suyo.
+    if (!request.isPlatformAdmin) {
+      if (!request.staffProfile?.clinic_id) {
+        return response.status(403).json({ error: "Tu cuenta no tiene una clínica asignada." });
+      }
       query = query.eq("clinic_id", request.staffProfile.clinic_id);
     }
 
@@ -4477,6 +4488,41 @@ app.post("/staff/invite", async (request, response) => {
       return response.status(400).json({ error: "Debes indicar un email válido y un rol." });
     }
 
+    // Clínica de la persona invitada: la elegida en el formulario, nunca la
+    // de quien invita por arrastre. Solo un admin de plataforma puede elegir
+    // cualquier clínica; un admin de clínica solo puede invitar a la suya.
+    // Nunca se crea un staff sin clínica.
+    const requestedClinicId =
+      typeof request.body?.clinicId === "string" ? request.body.clinicId.trim() : "";
+    const ownClinicId = request.staffProfile?.clinic_id ?? null;
+    let targetClinicId;
+    if (request.isPlatformAdmin) {
+      if (!requestedClinicId) {
+        return response.status(400).json({ error: "Debes elegir la clínica de la persona invitada." });
+      }
+      targetClinicId = requestedClinicId;
+    } else {
+      if (!ownClinicId) {
+        return response.status(403).json({ error: "Tu cuenta no tiene una clínica asignada." });
+      }
+      if (requestedClinicId && requestedClinicId !== ownClinicId) {
+        return response.status(403).json({ error: "Solo puedes invitar personal a tu propia clínica." });
+      }
+      targetClinicId = ownClinicId;
+    }
+
+    // Se valida antes de mandar el correo de invitación, para no dejar una
+    // cuenta de Auth creada sin perfil si la clínica no existe.
+    const { data: clinicRow, error: clinicError } = await supabase
+      .from("clinics")
+      .select("id")
+      .eq("id", targetClinicId)
+      .maybeSingle();
+    if (clinicError) throw clinicError;
+    if (!clinicRow) {
+      return response.status(400).json({ error: "La clínica elegida no existe." });
+    }
+
     const { data: inviteData, error: inviteError } = await supabase.auth.admin.inviteUserByEmail(email);
     if (inviteError) throw inviteError;
 
@@ -4485,9 +4531,6 @@ app.post("/staff/invite", async (request, response) => {
       return response.status(500).json({ error: "No fue posible crear el usuario invitado." });
     }
 
-    // Etapa 5: la persona invitada queda en la misma clínica de quien
-    // invita, no sin clínica (mismo gap que tenían appointments/lab_orders/
-    // dental_orders/imaging_orders al principio).
     const { data: profileRow, error: profileError } = await supabase
       .from("staff_profiles")
       .insert({
@@ -4495,7 +4538,7 @@ app.post("/staff/invite", async (request, response) => {
         email,
         full_name: fullName || null,
         role,
-        clinic_id: request.staffProfile?.clinic_id ?? null,
+        clinic_id: targetClinicId,
       })
       .select()
       .single();
@@ -4522,15 +4565,14 @@ app.patch("/staff/:id/role", async (request, response) => {
 
     // Etapa 5: cargar el staff objetivo y comparar su clínica antes de
     // aplicar el cambio, mismo criterio que el resto de rutas.
-    const requesterClinicId = request.staffProfile?.clinic_id ?? null;
     const { data: targetRow, error: targetError } = await supabase
       .from("staff_profiles")
-      .select("id, clinic_id")
+      .select("id, clinic_id, is_platform_admin")
       .eq("id", staffId)
       .maybeSingle();
     if (targetError) throw targetError;
     if (!targetRow) return response.status(404).json({ error: "Persona no encontrada." });
-    if (requesterClinicId && targetRow.clinic_id && targetRow.clinic_id !== requesterClinicId) {
+    if (!canManageStaffMember(request, targetRow)) {
       return response.status(404).json({ error: "Persona no encontrada." });
     }
 
@@ -4561,15 +4603,14 @@ app.delete("/staff/:id", async (request, response) => {
     // Etapa 5: esta es la más irreversible de las cuatro rutas de staff, así
     // que el chequeo de clínica va antes de cualquier escritura -- se carga
     // el staff objetivo y se compara su clínica antes de borrar nada.
-    const requesterClinicId = request.staffProfile?.clinic_id ?? null;
     const { data: targetRow, error: targetError } = await supabase
       .from("staff_profiles")
-      .select("id, clinic_id")
+      .select("id, clinic_id, is_platform_admin")
       .eq("id", staffId)
       .maybeSingle();
     if (targetError) throw targetError;
     if (!targetRow) return response.status(404).json({ error: "Persona no encontrada." });
-    if (requesterClinicId && targetRow.clinic_id && targetRow.clinic_id !== requesterClinicId) {
+    if (!canManageStaffMember(request, targetRow)) {
       return response.status(404).json({ error: "Persona no encontrada." });
     }
 
@@ -4609,12 +4650,19 @@ app.delete("/staff/:id", async (request, response) => {
 const DICOM_MULTITENANT_BASE_PORT = 4244; // puerto legado de MILMED
 const DICOM_INTERNAL_PORT_OFFSET = 10000;
 
-app.get("/clinics", async (_request, response) => {
+app.get("/clinics", async (request, response) => {
   try {
-    const { data, error } = await supabase
+    // Un admin de plataforma ve todas; un admin de clínica, solo la suya
+    // (la usa la pantalla de equipo para mostrar el nombre de la clínica).
+    let query = supabase
       .from("clinics")
       .select("*")
       .order("created_at", { ascending: true });
+    if (!request.isPlatformAdmin) {
+      if (!request.staffProfile?.clinic_id) return response.json({ clinics: [] });
+      query = query.eq("id", request.staffProfile.clinic_id);
+    }
+    const { data, error } = await query;
     if (error) throw error;
 
     return response.json({ clinics: (data ?? []).map(shapeClinicRow) });
@@ -4626,6 +4674,9 @@ app.get("/clinics", async (_request, response) => {
 
 app.post("/clinics", async (request, response) => {
   try {
+    if (!request.isPlatformAdmin) {
+      return response.status(403).json({ error: "Solo un administrador de plataforma puede crear clínicas." });
+    }
     const name = typeof request.body?.name === "string" ? request.body.name.trim() : "";
     const address =
       typeof request.body?.address === "string" && request.body.address.trim().length > 0

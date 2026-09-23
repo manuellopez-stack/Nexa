@@ -18,24 +18,53 @@ class StaffManagementPage extends StatefulWidget {
   State<StaffManagementPage> createState() => _StaffManagementPageState();
 }
 
+/// Personal + clínicas visibles para quien administra. Un admin de clínica
+/// recibe solo su propia clínica en `clinics`; un admin de plataforma, todas.
+class _TeamData {
+  const _TeamData({required this.staff, required this.clinics});
+
+  final List<Map<String, dynamic>> staff;
+  final List<Map<String, dynamic>> clinics;
+
+  String? clinicName(String? clinicId) {
+    if (clinicId == null) return null;
+    for (final clinic in clinics) {
+      if (clinic['id'] == clinicId) return clinic['name']?.toString();
+    }
+    return null;
+  }
+}
+
 class _StaffManagementPageState extends State<StaffManagementPage> {
-  late Future<List<Map<String, dynamic>>> _staffFuture;
+  late Future<_TeamData> _dataFuture;
   String? _deletingId;
 
   @override
   void initState() {
     super.initState();
-    _staffFuture = _load();
+    _dataFuture = _load();
   }
 
-  Future<List<Map<String, dynamic>>> _load() {
-    return ApiService.getStaff();
+  Future<_TeamData> _load() async {
+    final results = await Future.wait([
+      ApiService.getStaff(),
+      ApiService.getClinics(),
+    ]);
+    return _TeamData(staff: results[0], clinics: results[1]);
   }
 
   void _reload() {
     setState(() {
-      _staffFuture = _load();
+      _dataFuture = _load();
     });
+  }
+
+  // Título según el alcance real de la pantalla: un admin de clínica gestiona
+  // solo el personal de su clínica; un admin de plataforma, el de todas.
+  String _title(_TeamData? data) {
+    if (ApiService.isPlatformAdmin) return 'Personal por clínica';
+    final name = data?.clinicName(ApiService.clinicId);
+    return name == null ? 'Personal de tu clínica' : 'Personal de $name';
   }
 
   void _showError(String message) {
@@ -45,9 +74,18 @@ class _StaffManagementPageState extends State<StaffManagementPage> {
   }
 
   Future<void> _openInviteDialog() async {
+    final List<Map<String, dynamic>> clinics;
+    try {
+      clinics = (await _dataFuture).clinics;
+    } catch (_) {
+      _showError('No fue posible cargar las clínicas.');
+      return;
+    }
+    if (!mounted) return;
+
     final invited = await showDialog<bool>(
       context: context,
-      builder: (_) => const _InviteStaffDialog(),
+      builder: (_) => _InviteStaffDialog(clinics: clinics),
     );
 
     if (invited == true) _reload();
@@ -176,13 +214,16 @@ class _StaffManagementPageState extends State<StaffManagementPage> {
                         color: NexaColors.primary,
                       ),
                       const SizedBox(width: 10),
-                      const Expanded(
-                        child: Text(
-                          'Personal de Imagenda',
-                          style: TextStyle(
-                            fontSize: 22,
-                            fontWeight: FontWeight.w800,
-                            color: NexaColors.textPrimary,
+                      Expanded(
+                        child: FutureBuilder<_TeamData>(
+                          future: _dataFuture,
+                          builder: (context, snapshot) => Text(
+                            _title(snapshot.data),
+                            style: const TextStyle(
+                              fontSize: 22,
+                              fontWeight: FontWeight.w800,
+                              color: NexaColors.textPrimary,
+                            ),
                           ),
                         ),
                       ),
@@ -194,13 +235,15 @@ class _StaffManagementPageState extends State<StaffManagementPage> {
                     ],
                   ),
                   const SizedBox(height: 6),
-                  const Text(
-                    'Administra quién tiene acceso a Imagenda y con qué rol.',
-                    style: TextStyle(color: NexaColors.textSecondary),
+                  Text(
+                    ApiService.isPlatformAdmin
+                        ? 'Administra quién tiene acceso a cada clínica y con qué rol.'
+                        : 'Administra quién tiene acceso a tu clínica y con qué rol.',
+                    style: const TextStyle(color: NexaColors.textSecondary),
                   ),
                   const SizedBox(height: 22),
-                  FutureBuilder<List<Map<String, dynamic>>>(
-                    future: _staffFuture,
+                  FutureBuilder<_TeamData>(
+                    future: _dataFuture,
                     builder: (context, snapshot) {
                       if (snapshot.connectionState ==
                           ConnectionState.waiting) {
@@ -220,26 +263,65 @@ class _StaffManagementPageState extends State<StaffManagementPage> {
                         );
                       }
 
-                      final staff = snapshot.data ?? [];
+                      final data = snapshot.data;
+                      final staff = data?.staff ?? [];
 
-                      if (staff.isEmpty) {
+                      if (data == null || staff.isEmpty) {
                         return const Padding(
                           padding: EdgeInsets.symmetric(vertical: 24),
                           child: Text('Todavía no hay personas invitadas.'),
                         );
                       }
 
-                      return Column(
-                        children: staff.map((member) {
-                          final id = member['id']?.toString() ?? '';
+                      Widget tile(Map<String, dynamic> member) {
+                        final id = member['id']?.toString() ?? '';
+                        return _StaffTile(
+                          member: member,
+                          isDeleting: _deletingId == id,
+                          onEditRole: () => _openEditRoleDialog(member),
+                          onDelete: () => _deleteMember(member),
+                        );
+                      }
 
-                          return _StaffTile(
-                            member: member,
-                            isDeleting: _deletingId == id,
-                            onEditRole: () => _openEditRoleDialog(member),
-                            onDelete: () => _deleteMember(member),
-                          );
-                        }).toList(),
+                      if (!ApiService.isPlatformAdmin) {
+                        return Column(children: staff.map(tile).toList());
+                      }
+
+                      // Admin de plataforma: una sección por clínica, en el
+                      // orden de la lista de clínicas; al final quien no
+                      // tenga clínica asignada.
+                      final groups = <String?, List<Map<String, dynamic>>>{};
+                      for (final clinic in data.clinics) {
+                        groups[clinic['id']?.toString()] = [];
+                      }
+                      for (final member in staff) {
+                        groups
+                            .putIfAbsent(member['clinicId']?.toString(), () => [])
+                            .add(member);
+                      }
+
+                      return Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          for (final entry in groups.entries)
+                            if (entry.value.isNotEmpty) ...[
+                              Padding(
+                                padding: const EdgeInsets.only(top: 12, bottom: 8),
+                                child: Text(
+                                  data.clinicName(entry.key) ??
+                                      (entry.key == null
+                                          ? 'Sin clínica asignada'
+                                          : 'Clínica desconocida'),
+                                  style: const TextStyle(
+                                    fontSize: 15,
+                                    fontWeight: FontWeight.w800,
+                                    color: NexaColors.textPrimary,
+                                  ),
+                                ),
+                              ),
+                              ...entry.value.map(tile),
+                            ],
+                        ],
                       );
                     },
                   ),
@@ -345,7 +427,9 @@ class _StaffTile extends StatelessWidget {
 }
 
 class _InviteStaffDialog extends StatefulWidget {
-  const _InviteStaffDialog();
+  const _InviteStaffDialog({required this.clinics});
+
+  final List<Map<String, dynamic>> clinics;
 
   @override
   State<_InviteStaffDialog> createState() => _InviteStaffDialogState();
@@ -355,8 +439,18 @@ class _InviteStaffDialogState extends State<_InviteStaffDialog> {
   final TextEditingController _emailController = TextEditingController();
   final TextEditingController _fullNameController = TextEditingController();
   String _role = _kStaffRoles.first;
+  // Admin de plataforma: sin valor inicial, para que elija la clínica a
+  // conciencia (así se coló la invitación de APSA en MILMED). Admin de
+  // clínica: fija en la suya, el selector queda deshabilitado.
+  String? _clinicId;
   bool _isSubmitting = false;
   String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    if (!ApiService.isPlatformAdmin) _clinicId = ApiService.clinicId;
+  }
 
   @override
   void dispose() {
@@ -368,8 +462,11 @@ class _InviteStaffDialogState extends State<_InviteStaffDialog> {
   Future<void> _submit() async {
     final email = _emailController.text.trim();
     final fullName = _fullNameController.text.trim();
+    final clinicId = _clinicId;
 
-    if (email.isEmpty || fullName.isEmpty || _isSubmitting) return;
+    if (email.isEmpty || fullName.isEmpty || clinicId == null || _isSubmitting) {
+      return;
+    }
 
     setState(() {
       _isSubmitting = true;
@@ -381,6 +478,7 @@ class _InviteStaffDialogState extends State<_InviteStaffDialog> {
         email: email,
         fullName: fullName,
         role: _role,
+        clinicId: clinicId,
       );
       if (mounted) Navigator.pop(context, true);
     } on ApiException catch (error) {
@@ -398,7 +496,10 @@ class _InviteStaffDialogState extends State<_InviteStaffDialog> {
   Widget build(BuildContext context) {
     final email = _emailController.text.trim();
     final fullName = _fullNameController.text.trim();
-    final canSubmit = email.isNotEmpty && fullName.isNotEmpty && !_isSubmitting;
+    final canSubmit = email.isNotEmpty &&
+        fullName.isNotEmpty &&
+        _clinicId != null &&
+        !_isSubmitting;
 
     return AlertDialog(
       title: const Text('Invitar a una persona'),
@@ -424,6 +525,29 @@ class _InviteStaffDialogState extends State<_InviteStaffDialog> {
                 labelText: 'Nombre completo',
                 border: OutlineInputBorder(),
               ),
+            ),
+            const SizedBox(height: 14),
+            DropdownButtonFormField<String>(
+              initialValue: _clinicId,
+              decoration: const InputDecoration(
+                labelText: 'Clínica',
+                border: OutlineInputBorder(),
+              ),
+              hint: const Text('Elige la clínica'),
+              items: widget.clinics
+                  .map(
+                    (clinic) => DropdownMenuItem(
+                      value: clinic['id']?.toString(),
+                      child: Text(
+                        clinic['name']?.toString() ?? '',
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                  )
+                  .toList(),
+              onChanged: ApiService.isPlatformAdmin
+                  ? (value) => setState(() => _clinicId = value)
+                  : null,
             ),
             const SizedBox(height: 14),
             DropdownButtonFormField<String>(

@@ -778,7 +778,7 @@ class DashboardPage extends StatelessWidget {
                 );
               },
             ),
-          if (ApiService.role == 'administrador')
+          if (ApiService.role == 'administrador' && ApiService.isPlatformAdmin)
             IconButton(
               tooltip: 'Clínicas',
               icon: const Icon(

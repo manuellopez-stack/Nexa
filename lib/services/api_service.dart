@@ -60,6 +60,10 @@ class ApiService {
   static bool get canManageBilling =>
       _role == 'administrador' || _role == 'recepcion';
   static bool get isReception => _role == 'recepcion';
+  //   - isPlatformAdmin -> staff_profiles.is_platform_admin: gestiona clínicas
+  //     y el personal de todas ellas (invitar a cualquier clínica, etc.).
+  static bool get isPlatformAdmin => _currentUser?['isPlatformAdmin'] == true;
+  static String? get clinicId => _currentUser?['clinicId'] as String?;
   //   - canAccessAgenda -> AGENDA_STAFF = administrador, medico, tecnico, recepcion
   //     (gestión de citas: pantalla nueva en el AppBar del dashboard)
   static bool get canAccessAgenda =>
@@ -1256,6 +1260,7 @@ class ApiService {
     required String email,
     required String fullName,
     required String role,
+    required String clinicId,
   }) async {
     final http.Response response;
 
@@ -1268,6 +1273,7 @@ class ApiService {
               'email': email,
               'fullName': fullName,
               'role': role,
+              'clinicId': clinicId,
             }),
           )
           .timeout(const Duration(seconds: 30));

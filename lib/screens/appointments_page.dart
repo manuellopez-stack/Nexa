@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../core/nexa_colors.dart';
 import '../services/api_service.dart';
-import '../widgets/milmed_brand_mark.dart';
+import '../widgets/imagenda_brand_mark.dart';
 import '../widgets/patient_picker_dialog.dart';
 
 // Códigos de estado de una cita (tabla appointments). Deben coincidir con
@@ -272,7 +272,7 @@ class _AppointmentsPageState extends State<AppointmentsPage> {
         title: const Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            MilmedBrandMark(),
+            ImagendaBrandMark(),
             SizedBox(width: 12),
             Text(
               'Agendamiento',

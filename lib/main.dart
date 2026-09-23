@@ -2,7 +2,7 @@ import 'widgets/today_patients_section.dart';
 import 'widgets/nexa_ai_section.dart';
 import 'widgets/operational_status_section.dart';
 import 'widgets/dashboard_kpi_section.dart';
-import 'widgets/milmed_brand_mark.dart';
+import 'widgets/imagenda_brand_mark.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 
@@ -74,32 +74,9 @@ class WelcomePage extends StatelessWidget {
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  crossAxisAlignment: CrossAxisAlignment.center,
-                  children: [
-                    ClipRRect(
-                      borderRadius: BorderRadius.circular(12),
-                      child: Image.asset(
-                        'assets/images/milmed_logo.png',
-                        height: 64,
-                      ),
-                    ),
-                    const SizedBox(width: 20),
-                    Container(
-                      width: 96,
-                      height: 96,
-                      decoration: BoxDecoration(
-                        color: NexaColors.primary.withValues(alpha: 0.10),
-                        borderRadius: BorderRadius.circular(28),
-                      ),
-                      child: const Icon(
-                        Icons.auto_awesome,
-                        size: 52,
-                        color: NexaColors.primary,
-                      ),
-                    ),
-                  ],
+                Image.asset(
+                  'assets/images/imagenda_logo.png',
+                  height: 64,
                 ),
                 const SizedBox(height: 32),
                 const Text(
@@ -721,7 +698,7 @@ class DashboardPage extends StatelessWidget {
         title: const Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            MilmedBrandMark(),
+            ImagendaBrandMark(),
             SizedBox(width: 12),
             Text(
               'Centro de Control',
@@ -924,38 +901,9 @@ class NexaLogo extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Row(
-      children: [
-        ClipRRect(
-          borderRadius: BorderRadius.circular(8),
-          child: Image.asset(
-            'assets/images/milmed_logo.png',
-            height: 32,
-          ),
-        ),
-        const SizedBox(width: 12),
-        Container(
-          width: 42,
-          height: 42,
-          decoration: BoxDecoration(
-            color: NexaColors.primary,
-            borderRadius: BorderRadius.circular(13),
-          ),
-          child: const Icon(
-            Icons.auto_awesome,
-            color: Colors.white,
-          ),
-        ),
-        const SizedBox(width: 12),
-        const Text(
-          'Imagenda',
-          style: TextStyle(
-            fontSize: 25,
-            fontWeight: FontWeight.w800,
-            color: NexaColors.textPrimary,
-          ),
-        ),
-      ],
+    return Image.asset(
+      'assets/images/imagenda_logo.png',
+      height: 32,
     );
   }
 }

@@ -3,7 +3,7 @@ import 'package:flutter/services.dart';
 
 import '../core/nexa_colors.dart';
 import '../services/api_service.dart';
-import '../widgets/milmed_brand_mark.dart';
+import '../widgets/imagenda_brand_mark.dart';
 
 class ClinicsPage extends StatefulWidget {
   const ClinicsPage({super.key});
@@ -59,7 +59,7 @@ class _ClinicsPageState extends State<ClinicsPage> {
         title: const Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            MilmedBrandMark(),
+            ImagendaBrandMark(),
             SizedBox(width: 12),
             Text(
               'Clínicas',

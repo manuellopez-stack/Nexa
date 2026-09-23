@@ -146,7 +146,7 @@ class _ChatPageState extends State<ChatPage> {
             ClipRRect(
               borderRadius: BorderRadius.circular(8),
               child: Image.asset(
-                'assets/images/milmed_logo.png',
+                'assets/images/imagenda_simbolo.png',
                 height: 28,
               ),
             ),

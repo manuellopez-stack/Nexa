@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../core/nexa_colors.dart';
 import '../services/api_service.dart';
-import '../widgets/milmed_brand_mark.dart';
+import '../widgets/imagenda_brand_mark.dart';
 
 const List<String> _kStaffRoles = [
   'administrador',
@@ -159,7 +159,7 @@ class _StaffManagementPageState extends State<StaffManagementPage> {
         title: const Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            MilmedBrandMark(),
+            ImagendaBrandMark(),
             SizedBox(width: 12),
             Text(
               'Gestión de equipo',

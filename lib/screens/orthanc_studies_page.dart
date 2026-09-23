@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../core/nexa_colors.dart';
 import '../services/api_service.dart';
-import '../widgets/milmed_brand_mark.dart';
+import '../widgets/imagenda_brand_mark.dart';
 import '../widgets/patient_picker_dialog.dart';
 
 /// Pantalla "Estudios sin vincular": estudios DICOM recibidos en Orthanc que
@@ -99,7 +99,7 @@ class _OrthancStudiesPageState extends State<OrthancStudiesPage> {
         title: const Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            MilmedBrandMark(),
+            ImagendaBrandMark(),
             SizedBox(width: 12),
             Text(
               'Estudios sin vincular',

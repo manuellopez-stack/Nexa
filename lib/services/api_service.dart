@@ -1,5 +1,7 @@
+import 'dart:async';
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 
 class ApiException implements Exception {
@@ -36,6 +38,10 @@ class ApiService {
   static Map<String, dynamic>? _currentUser;
     static String? _role;
   static String? _fullName;
+
+  // Logo de la clínica de quien está conectado (null si no tiene). Lo lee
+  // ImagendaBrandMark para mostrarlo en la barra superior.
+  static final ValueNotifier<Uint8List?> clinicLogo = ValueNotifier(null);
 
   static bool get isLoggedIn => _accessToken != null;
   static Map<String, dynamic>? get currentUser => _currentUser;
@@ -84,6 +90,7 @@ class ApiService {
     _currentUser = null;
     _role = null;
     _fullName = null;
+    clinicLogo.value = null;
   }
 
   /// True si `url` apunta al propio backend de Imagenda (mismo esquema, host y
@@ -170,6 +177,8 @@ class ApiService {
     final fullName = user['fullName'] as String?;
 
     _setSession(accessToken, Map<String, dynamic>.from(user), role: role, fullName: fullName);
+    // El logo se carga en segundo plano: no retrasa el ingreso.
+    unawaited(loadMyClinicLogo());
   }
 
   /// Completa el flujo de invitación: fija la contraseña de una cuenta recién
@@ -1409,6 +1418,104 @@ class ApiService {
       'clinic': Map<String, dynamic>.from(clinic),
       'orthancSetup': Map<String, dynamic>.from(orthancSetup),
     };
+  }
+
+  /// Carga el logo de la clínica de quien está conectado en [clinicLogo]
+  /// (null si no tiene o si falla). Nunca lanza.
+  static Future<void> loadMyClinicLogo() async {
+    final token = _accessToken;
+    if (token == null) {
+      clinicLogo.value = null;
+      return;
+    }
+
+    Uint8List? bytes;
+    try {
+      final response = await http
+          .get(Uri.parse('$_baseUrl/my-clinic/logo'), headers: _headers())
+          .timeout(const Duration(seconds: 30));
+      if (response.statusCode == 200 && response.bodyBytes.isNotEmpty) {
+        bytes = response.bodyBytes;
+      }
+    } catch (_) {
+      bytes = null;
+    }
+
+    // Si la sesión cambió mientras se cargaba (logout u otro login), no
+    // pisar el valor de la sesión nueva.
+    if (_accessToken == token) clinicLogo.value = bytes;
+  }
+
+  static Future<Map<String, dynamic>> uploadClinicLogo(
+    String clinicId,
+    Uint8List bytes,
+    String contentType,
+  ) async {
+    final http.Response response;
+
+    try {
+      response = await http
+          .put(
+            Uri.parse('$_baseUrl/clinics/$clinicId/logo'),
+            headers: _headers(extra: const {'Content-Type': 'application/json'}),
+            body: jsonEncode({
+              'base64Data': base64Encode(bytes),
+              'contentType': contentType,
+            }),
+          )
+          .timeout(const Duration(seconds: 60));
+    } catch (_) {
+      throw const ApiException('No fue posible subir el logo.');
+    }
+
+    final decodedBody = await _decodeMap(response);
+    final clinic = decodedBody['clinic'];
+    if (clinic is! Map) {
+      throw const ApiException('El backend no entregó la clínica actualizada.');
+    }
+    return Map<String, dynamic>.from(clinic);
+  }
+
+  static Future<Map<String, dynamic>> deleteClinicLogo(String clinicId) async {
+    final http.Response response;
+
+    try {
+      response = await http
+          .delete(
+            Uri.parse('$_baseUrl/clinics/$clinicId/logo'),
+            headers: _headers(),
+          )
+          .timeout(const Duration(seconds: 30));
+    } catch (_) {
+      throw const ApiException('No fue posible quitar el logo.');
+    }
+
+    final decodedBody = await _decodeMap(response);
+    final clinic = decodedBody['clinic'];
+    if (clinic is! Map) {
+      throw const ApiException('El backend no entregó la clínica actualizada.');
+    }
+    return Map<String, dynamic>.from(clinic);
+  }
+
+  /// Bytes del logo de una clínica, o null si no tiene.
+  static Future<Uint8List?> getClinicLogo(String clinicId) async {
+    final http.Response response;
+
+    try {
+      response = await http
+          .get(
+            Uri.parse('$_baseUrl/clinics/$clinicId/logo'),
+            headers: _headers(),
+          )
+          .timeout(const Duration(seconds: 30));
+    } catch (_) {
+      throw const ApiException('No fue posible cargar el logo.');
+    }
+
+    if (response.statusCode == 404) return null;
+    if (response.statusCode != 200) await _decodeMap(response);
+    return response.bodyBytes;
   }
 
   // ============================================

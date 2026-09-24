@@ -4582,6 +4582,11 @@ app.patch("/staff/:id/role", async (request, response) => {
       .maybeSingle();
     if (targetError) throw targetError;
     if (!targetRow) return response.status(404).json({ error: "Persona no encontrada." });
+    if (targetRow.id === request.staffProfile.id) {
+      return response
+        .status(403)
+        .json({ error: "No puedes cambiar tu propio rol ni eliminar tu propia cuenta." });
+    }
     if (!canManageStaffMember(request, targetRow)) {
       return response.status(404).json({ error: "Persona no encontrada." });
     }
@@ -4620,6 +4625,11 @@ app.delete("/staff/:id", async (request, response) => {
       .maybeSingle();
     if (targetError) throw targetError;
     if (!targetRow) return response.status(404).json({ error: "Persona no encontrada." });
+    if (targetRow.id === request.staffProfile.id) {
+      return response
+        .status(403)
+        .json({ error: "No puedes cambiar tu propio rol ni eliminar tu propia cuenta." });
+    }
     if (!canManageStaffMember(request, targetRow)) {
       return response.status(404).json({ error: "Persona no encontrada." });
     }

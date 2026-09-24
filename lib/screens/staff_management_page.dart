@@ -353,6 +353,9 @@ class _StaffTile extends StatelessWidget {
     final fullName = member['fullName']?.toString().trim() ?? '';
     final email = member['email']?.toString() ?? '';
     final role = member['role']?.toString() ?? '';
+    // La propia cuenta no se puede editar ni quitar (el backend responde 403).
+    final isSelf =
+        member['id']?.toString() == ApiService.currentUser?['id']?.toString();
 
     return Container(
       margin: const EdgeInsets.only(bottom: 8),
@@ -361,7 +364,7 @@ class _StaffTile extends StatelessWidget {
         borderRadius: BorderRadius.circular(12),
         child: InkWell(
           borderRadius: BorderRadius.circular(12),
-          onTap: onEditRole,
+          onTap: isSelf ? null : onEditRole,
           child: Container(
             padding: const EdgeInsets.all(12),
             decoration: BoxDecoration(
@@ -393,30 +396,32 @@ class _StaffTile extends StatelessWidget {
                 ),
                 const SizedBox(width: 10),
                 _RoleBadge(role: role),
-                const SizedBox(width: 6),
-                IconButton(
-                  tooltip: 'Cambiar rol',
-                  onPressed: onEditRole,
-                  icon: const Icon(Icons.edit_outlined, size: 19),
-                ),
-                SizedBox(
-                  width: 40,
-                  height: 40,
-                  child: isDeleting
-                      ? const Padding(
-                          padding: EdgeInsets.all(10),
-                          child: CircularProgressIndicator(strokeWidth: 2),
-                        )
-                      : IconButton(
-                          tooltip: 'Quitar del equipo',
-                          onPressed: onDelete,
-                          icon: const Icon(
-                            Icons.person_remove_outlined,
-                            size: 19,
-                            color: Color(0xFFB91C1C),
+                if (!isSelf) ...[
+                  const SizedBox(width: 6),
+                  IconButton(
+                    tooltip: 'Cambiar rol',
+                    onPressed: onEditRole,
+                    icon: const Icon(Icons.edit_outlined, size: 19),
+                  ),
+                  SizedBox(
+                    width: 40,
+                    height: 40,
+                    child: isDeleting
+                        ? const Padding(
+                            padding: EdgeInsets.all(10),
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : IconButton(
+                            tooltip: 'Quitar del equipo',
+                            onPressed: onDelete,
+                            icon: const Icon(
+                              Icons.person_remove_outlined,
+                              size: 19,
+                              color: Color(0xFFB91C1C),
+                            ),
                           ),
-                        ),
-                ),
+                  ),
+                ],
               ],
             ),
           ),

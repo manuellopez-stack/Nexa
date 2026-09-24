@@ -234,6 +234,8 @@ class _AppBarLayout extends MultiChildLayoutDelegate {
 
 /// Credencial de la clínica de quien está conectado: logo en un cuadro blanco
 /// y, en pantallas anchas, el nombre de la clínica y el correo del usuario.
+/// Para la cuenta de administración de plataforma muestra el ícono de
+/// administración y 'Administración Imagenda' en lugar de la clínica.
 class _ClinicBadge extends StatelessWidget {
   const _ClinicBadge({required this.showText});
 
@@ -241,7 +243,12 @@ class _ClinicBadge extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final clinicName = ApiService.clinicName ?? 'Sin clínica asignada';
+    // La cuenta de administración de plataforma no pertenece a una clínica:
+    // muestra solo la marca Imagenda, sin logo ni nombre de clínica.
+    final isPlatformAdmin = ApiService.isPlatformAdmin;
+    final clinicName = isPlatformAdmin
+        ? 'Administración Imagenda'
+        : ApiService.clinicName ?? 'Sin clínica asignada';
     final email = ApiService.currentUser?['email']?.toString();
 
     final logoBox = Container(
@@ -252,15 +259,20 @@ class _ClinicBadge extends StatelessWidget {
         color: Colors.white,
         borderRadius: BorderRadius.circular(9),
       ),
-      child: ValueListenableBuilder<Uint8List?>(
-        valueListenable: ApiService.clinicLogo,
-        builder: (context, logo, _) => logo == null
-            ? const Icon(
-                Icons.local_hospital_outlined,
-                color: NexaColors.primary,
-              )
-            : Image.memory(logo, fit: BoxFit.contain),
-      ),
+      child: isPlatformAdmin
+          ? const Icon(
+              Icons.admin_panel_settings_outlined,
+              color: NexaColors.primary,
+            )
+          : ValueListenableBuilder<Uint8List?>(
+              valueListenable: ApiService.clinicLogo,
+              builder: (context, logo, _) => logo == null
+                  ? const Icon(
+                      Icons.local_hospital_outlined,
+                      color: NexaColors.primary,
+                    )
+                  : Image.memory(logo, fit: BoxFit.contain),
+            ),
     );
 
     return Container(

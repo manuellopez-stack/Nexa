@@ -1422,10 +1422,11 @@ class ApiService {
   }
 
   /// Carga el logo de la clínica de quien está conectado en [clinicLogo]
-  /// (null si no tiene o si falla). Nunca lanza.
+  /// (null si no tiene, si falla o si es la cuenta de administración de
+  /// plataforma, que no muestra logo de clínica). Nunca lanza.
   static Future<void> loadMyClinicLogo() async {
     final token = _accessToken;
-    if (token == null) {
+    if (token == null || isPlatformAdmin) {
       clinicLogo.value = null;
       return;
     }

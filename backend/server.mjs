@@ -3000,6 +3000,7 @@ app.post("/patients/:id/lab-orders", requireRole(CLINICAL_STAFF), async (request
       sourceOrderId: orderRow.id,
       category: "laboratorio",
       itemIds: panelIds,
+      clinicId: requesterClinicId,
     });
 
     return response.json({
@@ -3662,6 +3663,7 @@ app.post("/patients/:id/imaging-orders", requireRole(CLINICAL_STAFF), async (req
       sourceOrderId: orderRow.id,
       category: "imagenologia",
       itemIds: typeIds,
+      clinicId: requesterClinicId,
     });
 
     return response.json({
@@ -4153,15 +4155,21 @@ function shapePaymentRow(row) {
 // "laboratorio" o "imagenologia"; `itemIds` son ids de lab_panels o de
 // imaging_types. Devuelve el total y la lista de exámenes que no tienen
 // precio en el catálogo.
-async function sumBillingItems(category, itemIds) {
+//
+// Solo cuenta los precios de `clinicId`: cada centro tiene su propia lista
+// (ver clinics_stage2.sql). Sin clínica se buscan ítems con clinic_id nulo,
+// nunca los de otro centro -- si no hay, el examen queda como "sin precio".
+async function sumBillingItems(category, itemIds, clinicId) {
   const ids = Array.isArray(itemIds) ? itemIds.filter(Boolean) : [];
   if (ids.length === 0) return { total: 0, missing: [] };
 
-  const { data, error } = await supabase
+  let query = supabase
     .from("billing_items")
     .select("item_id, price, active")
     .eq("category", category)
     .in("item_id", ids);
+  query = clinicId ? query.eq("clinic_id", clinicId) : query.is("clinic_id", null);
+  const { data, error } = await query;
   if (error) throw error;
 
   const priceByItem = new Map(
@@ -4188,9 +4196,10 @@ async function createBillingOrderForSource({
   sourceOrderId,
   category,
   itemIds,
+  clinicId,
 }) {
   try {
-    const { total, missing } = await sumBillingItems(category, itemIds);
+    const { total, missing } = await sumBillingItems(category, itemIds, clinicId);
 
     const { data, error } = await supabase
       .from("billing_orders")
@@ -4199,6 +4208,7 @@ async function createBillingOrderForSource({
         source_type: sourceType,
         source_order_id: sourceOrderId,
         total_amount: total,
+        clinic_id: clinicId ?? null,
       })
       .select()
       .single();

@@ -269,18 +269,9 @@ class _LoginPageState extends State<LoginPage> {
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
                   Center(
-                    child: Container(
-                      width: 70,
-                      height: 70,
-                      decoration: BoxDecoration(
-                        color: NexaColors.primary.withValues(alpha: 0.10),
-                        borderRadius: BorderRadius.circular(20),
-                      ),
-                      child: const Icon(
-                        Icons.auto_awesome,
-                        size: 36,
-                        color: NexaColors.primary,
-                      ),
+                    child: Image.asset(
+                      'assets/images/imagenda_logo.png',
+                      height: 44,
                     ),
                   ),
                   const SizedBox(height: 26),

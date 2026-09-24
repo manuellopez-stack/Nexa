@@ -103,6 +103,15 @@ export async function linkOrthancStudyToOrder(supabase, { orthancStudyId, orderI
     );
   if (upsertError) throw upsertError;
 
+  // Recibir el estudio implica que el examen se hizo. Solo avanza órdenes en
+  // 'ordenado' para no retroceder una orden ya informada o validada.
+  const { error: orderError } = await supabase
+    .from("imaging_orders")
+    .update({ status: "realizado", performed_at: new Date().toISOString() })
+    .eq("id", orderId)
+    .eq("status", "ordenado");
+  if (orderError) throw orderError;
+
   await orthancDelete(`/studies/${orthancStudyId}`);
 
   return { totalInstances, copiedNow };

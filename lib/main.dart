@@ -80,7 +80,7 @@ class WelcomePage extends StatelessWidget {
                 ),
                 const SizedBox(height: 28),
                 const Text(
-                  'Gestión clínica con inteligencia artificial\npara centros de imagenología',
+                  'Gestión clínica inteligente,\ntodo en un solo sistema.',
                   textAlign: TextAlign.center,
                   style: TextStyle(
                     fontSize: 18,

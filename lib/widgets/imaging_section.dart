@@ -124,6 +124,8 @@ class _ImagingOrdersSectionState extends State<ImagingOrdersSection> {
                     .join(', ');
                 final status = order['status']?.toString() ?? 'ordenado';
                 final orderId = order['id']?.toString() ?? '';
+                final accessionNumber =
+                    order['accessionNumber']?.toString().trim() ?? '';
 
                 return Container(
                   margin: const EdgeInsets.only(bottom: 8),
@@ -144,12 +146,26 @@ class _ImagingOrdersSectionState extends State<ImagingOrdersSection> {
                         child: Row(
                           children: [
                             Expanded(
-                              child: Text(
-                                types.isEmpty
-                                    ? 'Estudio de imagenología'
-                                    : types,
-                                style:
-                                    const TextStyle(fontWeight: FontWeight.w600),
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    types.isEmpty
+                                        ? 'Estudio de imagenología'
+                                        : types,
+                                    style: const TextStyle(
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  ),
+                                  if (accessionNumber.isNotEmpty)
+                                    Text(
+                                      'N° de acceso: $accessionNumber',
+                                      style: const TextStyle(
+                                        fontSize: 12,
+                                        color: NexaColors.textSecondary,
+                                      ),
+                                    ),
+                                ],
                               ),
                             ),
                             _ImagingStatusBadge(status: status),

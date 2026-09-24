@@ -40,7 +40,7 @@ class ApiService {
   static String? _fullName;
 
   // Logo de la clínica de quien está conectado (null si no tiene). Lo lee
-  // ImagendaAppBar para mostrarlo en la credencial de la barra superior.
+  // ImagendaShell para mostrarlo en la credencial del menú lateral.
   static final ValueNotifier<Uint8List?> clinicLogo = ValueNotifier(null);
 
   static bool get isLoggedIn => _accessToken != null;

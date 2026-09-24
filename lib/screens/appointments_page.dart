@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../core/nexa_colors.dart';
 import '../services/api_service.dart';
-import '../widgets/imagenda_app_bar.dart';
+import '../widgets/imagenda_shell.dart';
 import '../widgets/patient_picker_dialog.dart';
 
 // Códigos de estado de una cita (tabla appointments). Deben coincidir con
@@ -61,7 +61,11 @@ String _friendlyDate(DateTime d) {
 }
 
 class AppointmentsPage extends StatefulWidget {
-  const AppointmentsPage({super.key});
+  const AppointmentsPage({super.key, this.openNewAppointment = false});
+
+  /// Abre el diálogo de nueva cita apenas se muestra la pantalla (botón
+  /// '+ Nueva cita' del Centro de Control).
+  final bool openNewAppointment;
 
   @override
   State<AppointmentsPage> createState() => _AppointmentsPageState();
@@ -79,6 +83,11 @@ class _AppointmentsPageState extends State<AppointmentsPage> {
   void initState() {
     super.initState();
     _future = _load();
+    if (widget.openNewAppointment) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _openEditor();
+      });
+    }
   }
 
   Future<List<Map<String, dynamic>>> _load() {
@@ -265,38 +274,35 @@ class _AppointmentsPageState extends State<AppointmentsPage> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: NexaColors.background,
-      appBar: ImagendaAppBar(
-        title: 'Agendamiento',
-        actions: [
-          Padding(
-            padding: const EdgeInsets.only(right: 8),
-            child: FilledButton.icon(
-              onPressed: () => _openEditor(),
-              icon: const Icon(Icons.add, size: 18),
-              label: const Text('Nueva cita'),
-              style: FilledButton.styleFrom(
-                backgroundColor: NexaColors.primary,
-              ),
-            ),
-          ),
-          IconButton(
-            tooltip: 'Actualizar',
-            onPressed: _reload,
-            icon: const Icon(Icons.refresh),
-          ),
-          const SizedBox(width: 8),
-        ],
-      ),
-      body: Center(
+    return ImagendaShell(
+      selected: ShellSection.agenda,
+      child: Center(
         child: ConstrainedBox(
           constraints: const BoxConstraints(maxWidth: 880),
           child: Padding(
-            padding: const EdgeInsets.fromLTRB(20, 16, 20, 0),
+            padding: const EdgeInsets.fromLTRB(20, 24, 20, 0),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
+                ImagendaPageHeader(
+                  title: 'Agendamiento',
+                  actions: [
+                    FilledButton.icon(
+                      onPressed: () => _openEditor(),
+                      icon: const Icon(Icons.add, size: 18),
+                      label: const Text('Nueva cita'),
+                      style: FilledButton.styleFrom(
+                        backgroundColor: NexaColors.primary,
+                      ),
+                    ),
+                    IconButton(
+                      tooltip: 'Actualizar',
+                      onPressed: _reload,
+                      icon: const Icon(Icons.refresh),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 16),
                 _DateNavigator(
                   label: _friendlyDate(_selectedDate),
                   isToday: _sameDay(_selectedDate, DateTime.now()),

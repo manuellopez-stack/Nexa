@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../core/nexa_colors.dart';
 import '../services/api_service.dart';
-import '../widgets/imagenda_app_bar.dart';
+import '../widgets/imagenda_shell.dart';
 import '../widgets/patient_picker_dialog.dart';
 
 /// Pantalla "Estudios sin vincular": estudios DICOM recibidos en Orthanc que
@@ -34,6 +34,7 @@ class _OrthancStudiesPageState extends State<OrthancStudiesPage> {
     setState(() {
       _studiesFuture = _load();
     });
+    ImagendaShell.refreshUnlinkedStudiesCount();
   }
 
   void _notify(String message) {
@@ -92,105 +93,111 @@ class _OrthancStudiesPageState extends State<OrthancStudiesPage> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: NexaColors.background,
-      appBar: const ImagendaAppBar(title: 'Estudios sin vincular'),
-      body: SingleChildScrollView(
+    return ImagendaShell(
+      selected: ShellSection.unlinkedStudies,
+      child: SingleChildScrollView(
         padding: const EdgeInsets.all(24),
         child: Center(
           child: ConstrainedBox(
             constraints: const BoxConstraints(maxWidth: 900),
-            child: Container(
-              width: double.infinity,
-              padding: const EdgeInsets.all(24),
-              decoration: BoxDecoration(
-                color: NexaColors.surface,
-                borderRadius: BorderRadius.circular(20),
-                border: Border.all(color: NexaColors.border),
-                boxShadow: const [
-                  BoxShadow(
-                    color: Color(0x0D0F172A),
-                    blurRadius: 24,
-                    offset: Offset(0, 10),
-                  ),
-                ],
-              ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(
-                    children: [
-                      const Icon(Icons.link_off, color: NexaColors.primary),
-                      const SizedBox(width: 10),
-                      const Expanded(
-                        child: Text(
-                          'Estudios DICOM sin vincular',
-                          style: TextStyle(
-                            fontSize: 22,
-                            fontWeight: FontWeight.w800,
-                            color: NexaColors.textPrimary,
-                          ),
-                        ),
-                      ),
-                      IconButton(
-                        tooltip: 'Actualizar',
-                        onPressed: _reload,
-                        icon: const Icon(Icons.refresh),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                const ImagendaPageHeader(title: 'Estudios sin vincular'),
+                const SizedBox(height: 20),
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(24),
+                  decoration: BoxDecoration(
+                    color: NexaColors.surface,
+                    borderRadius: BorderRadius.circular(20),
+                    border: Border.all(color: NexaColors.border),
+                    boxShadow: const [
+                      BoxShadow(
+                        color: Color(0x0D0F172A),
+                        blurRadius: 24,
+                        offset: Offset(0, 10),
                       ),
                     ],
                   ),
-                  const SizedBox(height: 6),
-                  const Text(
-                    'Estudios recibidos desde el equipo de imagenología que no '
-                    'se pudieron casar automáticamente con una orden. Vincúlalos '
-                    'a mano eligiendo el paciente y la orden correspondiente.',
-                    style: TextStyle(color: NexaColors.textSecondary),
-                  ),
-                  const SizedBox(height: 22),
-                  FutureBuilder<List<Map<String, dynamic>>>(
-                    future: _studiesFuture,
-                    builder: (context, snapshot) {
-                      if (snapshot.connectionState == ConnectionState.waiting) {
-                        return const Padding(
-                          padding: EdgeInsets.symmetric(vertical: 24),
-                          child: Center(child: CircularProgressIndicator()),
-                        );
-                      }
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          const Icon(Icons.link_off, color: NexaColors.primary),
+                          const SizedBox(width: 10),
+                          const Expanded(
+                            child: Text(
+                              'Estudios DICOM sin vincular',
+                              style: TextStyle(
+                                fontSize: 22,
+                                fontWeight: FontWeight.w800,
+                                color: NexaColors.textPrimary,
+                              ),
+                            ),
+                          ),
+                          IconButton(
+                            tooltip: 'Actualizar',
+                            onPressed: _reload,
+                            icon: const Icon(Icons.refresh),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 6),
+                      const Text(
+                        'Estudios recibidos desde el equipo de imagenología que no '
+                        'se pudieron casar automáticamente con una orden. Vincúlalos '
+                        'a mano eligiendo el paciente y la orden correspondiente.',
+                        style: TextStyle(color: NexaColors.textSecondary),
+                      ),
+                      const SizedBox(height: 22),
+                      FutureBuilder<List<Map<String, dynamic>>>(
+                        future: _studiesFuture,
+                        builder: (context, snapshot) {
+                          if (snapshot.connectionState == ConnectionState.waiting) {
+                            return const Padding(
+                              padding: EdgeInsets.symmetric(vertical: 24),
+                              child: Center(child: CircularProgressIndicator()),
+                            );
+                          }
 
-                      if (snapshot.hasError) {
-                        final error = snapshot.error;
-                        return _ErrorMessage(
-                          message: error is ApiException
-                              ? error.message
-                              : 'No fue posible cargar los estudios de Orthanc.',
-                          onRetry: _reload,
-                        );
-                      }
+                          if (snapshot.hasError) {
+                            final error = snapshot.error;
+                            return _ErrorMessage(
+                              message: error is ApiException
+                                  ? error.message
+                                  : 'No fue posible cargar los estudios de Orthanc.',
+                              onRetry: _reload,
+                            );
+                          }
 
-                      final studies = snapshot.data ?? [];
+                          final studies = snapshot.data ?? [];
 
-                      if (studies.isEmpty) {
-                        return const Padding(
-                          padding: EdgeInsets.symmetric(vertical: 24),
-                          child: Text('No hay estudios pendientes de vincular.'),
-                        );
-                      }
+                          if (studies.isEmpty) {
+                            return const Padding(
+                              padding: EdgeInsets.symmetric(vertical: 24),
+                              child: Text('No hay estudios pendientes de vincular.'),
+                            );
+                          }
 
-                      return Column(
-                        children: studies.map((study) {
-                          final orthancStudyId =
-                              study['orthancStudyId']?.toString() ?? '';
-                          return _UnlinkedStudyTile(
-                            study: study,
-                            isLinking: _linkingStudyId == orthancStudyId,
-                            onLink: () => _linkStudy(study),
+                          return Column(
+                            children: studies.map((study) {
+                              final orthancStudyId =
+                                  study['orthancStudyId']?.toString() ?? '';
+                              return _UnlinkedStudyTile(
+                                study: study,
+                                isLinking: _linkingStudyId == orthancStudyId,
+                                onLink: () => _linkStudy(study),
+                              );
+                            }).toList(),
                           );
-                        }).toList(),
-                      );
-                    },
+                        },
+                      ),
+                    ],
                   ),
-                ],
-              ),
+                ),
+              ],
             ),
           ),
         ),

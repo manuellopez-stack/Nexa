@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../core/nexa_colors.dart';
 import '../services/api_service.dart';
-import '../widgets/imagenda_app_bar.dart';
+import '../widgets/imagenda_shell.dart';
 
 const List<String> _kStaffRoles = [
   'administrador',
@@ -152,167 +152,170 @@ class _StaffManagementPageState extends State<StaffManagementPage> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: NexaColors.background,
-      appBar: ImagendaAppBar(
-        title: 'Gestión de equipo',
-        actions: [
-          Padding(
-            padding: const EdgeInsets.only(right: 12),
-            child: FilledButton.icon(
-              onPressed: _openInviteDialog,
-              icon: const Icon(Icons.person_add_alt, size: 18),
-              label: const Text('Invitar'),
-              style: FilledButton.styleFrom(
-                backgroundColor: NexaColors.primary,
-              ),
-            ),
-          ),
-        ],
-      ),
-      body: SingleChildScrollView(
+    return ImagendaShell(
+      selected: ShellSection.team,
+      child: SingleChildScrollView(
         padding: const EdgeInsets.all(24),
         child: Center(
           child: ConstrainedBox(
             constraints: const BoxConstraints(maxWidth: 900),
-            child: Container(
-              width: double.infinity,
-              padding: const EdgeInsets.all(24),
-              decoration: BoxDecoration(
-                color: NexaColors.surface,
-                borderRadius: BorderRadius.circular(20),
-                border: Border.all(color: NexaColors.border),
-                boxShadow: const [
-                  BoxShadow(
-                    color: Color(0x0D0F172A),
-                    blurRadius: 24,
-                    offset: Offset(0, 10),
-                  ),
-                ],
-              ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(
-                    children: [
-                      const Icon(
-                        Icons.groups_outlined,
-                        color: NexaColors.primary,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                ImagendaPageHeader(
+                  title: 'Gestión de equipo',
+                  actions: [
+                    FilledButton.icon(
+                      onPressed: _openInviteDialog,
+                      icon: const Icon(Icons.person_add_alt, size: 18),
+                      label: const Text('Invitar'),
+                      style: FilledButton.styleFrom(
+                        backgroundColor: NexaColors.primary,
                       ),
-                      const SizedBox(width: 10),
-                      Expanded(
-                        child: FutureBuilder<_TeamData>(
-                          future: _dataFuture,
-                          builder: (context, snapshot) => Text(
-                            _title(snapshot.data),
-                            style: const TextStyle(
-                              fontSize: 22,
-                              fontWeight: FontWeight.w800,
-                              color: NexaColors.textPrimary,
-                            ),
-                          ),
-                        ),
-                      ),
-                      IconButton(
-                        tooltip: 'Actualizar',
-                        onPressed: _reload,
-                        icon: const Icon(Icons.refresh),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 20),
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(24),
+                  decoration: BoxDecoration(
+                    color: NexaColors.surface,
+                    borderRadius: BorderRadius.circular(20),
+                    border: Border.all(color: NexaColors.border),
+                    boxShadow: const [
+                      BoxShadow(
+                        color: Color(0x0D0F172A),
+                        blurRadius: 24,
+                        offset: Offset(0, 10),
                       ),
                     ],
                   ),
-                  const SizedBox(height: 6),
-                  Text(
-                    ApiService.isPlatformAdmin
-                        ? 'Administra quién tiene acceso a cada clínica y con qué rol.'
-                        : 'Administra quién tiene acceso a tu clínica y con qué rol.',
-                    style: const TextStyle(color: NexaColors.textSecondary),
-                  ),
-                  const SizedBox(height: 22),
-                  FutureBuilder<_TeamData>(
-                    future: _dataFuture,
-                    builder: (context, snapshot) {
-                      if (snapshot.connectionState ==
-                          ConnectionState.waiting) {
-                        return const Padding(
-                          padding: EdgeInsets.symmetric(vertical: 24),
-                          child: Center(child: CircularProgressIndicator()),
-                        );
-                      }
-
-                      if (snapshot.hasError) {
-                        final error = snapshot.error;
-                        return _ErrorMessage(
-                          message: error is ApiException
-                              ? error.message
-                              : 'No fue posible cargar el equipo.',
-                          onRetry: _reload,
-                        );
-                      }
-
-                      final data = snapshot.data;
-                      final staff = data?.staff ?? [];
-
-                      if (data == null || staff.isEmpty) {
-                        return const Padding(
-                          padding: EdgeInsets.symmetric(vertical: 24),
-                          child: Text('Todavía no hay personas invitadas.'),
-                        );
-                      }
-
-                      Widget tile(Map<String, dynamic> member) {
-                        final id = member['id']?.toString() ?? '';
-                        return _StaffTile(
-                          member: member,
-                          isDeleting: _deletingId == id,
-                          onEditRole: () => _openEditRoleDialog(member),
-                          onDelete: () => _deleteMember(member),
-                        );
-                      }
-
-                      if (!ApiService.isPlatformAdmin) {
-                        return Column(children: staff.map(tile).toList());
-                      }
-
-                      // Admin de plataforma: una sección por clínica, en el
-                      // orden de la lista de clínicas; al final quien no
-                      // tenga clínica asignada.
-                      final groups = <String?, List<Map<String, dynamic>>>{};
-                      for (final clinic in data.clinics) {
-                        groups[clinic['id']?.toString()] = [];
-                      }
-                      for (final member in staff) {
-                        groups
-                            .putIfAbsent(member['clinicId']?.toString(), () => [])
-                            .add(member);
-                      }
-
-                      return Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
                         children: [
-                          for (final entry in groups.entries)
-                            if (entry.value.isNotEmpty) ...[
-                              Padding(
-                                padding: const EdgeInsets.only(top: 12, bottom: 8),
-                                child: Text(
-                                  data.clinicName(entry.key) ??
-                                      (entry.key == null
-                                          ? 'Sin clínica asignada'
-                                          : 'Clínica desconocida'),
-                                  style: const TextStyle(
-                                    fontSize: 15,
-                                    fontWeight: FontWeight.w800,
-                                    color: NexaColors.textPrimary,
-                                  ),
+                          const Icon(
+                            Icons.groups_outlined,
+                            color: NexaColors.primary,
+                          ),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: FutureBuilder<_TeamData>(
+                              future: _dataFuture,
+                              builder: (context, snapshot) => Text(
+                                _title(snapshot.data),
+                                style: const TextStyle(
+                                  fontSize: 22,
+                                  fontWeight: FontWeight.w800,
+                                  color: NexaColors.textPrimary,
                                 ),
                               ),
-                              ...entry.value.map(tile),
-                            ],
+                            ),
+                          ),
+                          IconButton(
+                            tooltip: 'Actualizar',
+                            onPressed: _reload,
+                            icon: const Icon(Icons.refresh),
+                          ),
                         ],
-                      );
-                    },
+                      ),
+                      const SizedBox(height: 6),
+                      Text(
+                        ApiService.isPlatformAdmin
+                            ? 'Administra quién tiene acceso a cada clínica y con qué rol.'
+                            : 'Administra quién tiene acceso a tu clínica y con qué rol.',
+                        style: const TextStyle(color: NexaColors.textSecondary),
+                      ),
+                      const SizedBox(height: 22),
+                      FutureBuilder<_TeamData>(
+                        future: _dataFuture,
+                        builder: (context, snapshot) {
+                          if (snapshot.connectionState ==
+                              ConnectionState.waiting) {
+                            return const Padding(
+                              padding: EdgeInsets.symmetric(vertical: 24),
+                              child: Center(child: CircularProgressIndicator()),
+                            );
+                          }
+
+                          if (snapshot.hasError) {
+                            final error = snapshot.error;
+                            return _ErrorMessage(
+                              message: error is ApiException
+                                  ? error.message
+                                  : 'No fue posible cargar el equipo.',
+                              onRetry: _reload,
+                            );
+                          }
+
+                          final data = snapshot.data;
+                          final staff = data?.staff ?? [];
+
+                          if (data == null || staff.isEmpty) {
+                            return const Padding(
+                              padding: EdgeInsets.symmetric(vertical: 24),
+                              child: Text('Todavía no hay personas invitadas.'),
+                            );
+                          }
+
+                          Widget tile(Map<String, dynamic> member) {
+                            final id = member['id']?.toString() ?? '';
+                            return _StaffTile(
+                              member: member,
+                              isDeleting: _deletingId == id,
+                              onEditRole: () => _openEditRoleDialog(member),
+                              onDelete: () => _deleteMember(member),
+                            );
+                          }
+
+                          if (!ApiService.isPlatformAdmin) {
+                            return Column(children: staff.map(tile).toList());
+                          }
+
+                          // Admin de plataforma: una sección por clínica, en el
+                          // orden de la lista de clínicas; al final quien no
+                          // tenga clínica asignada.
+                          final groups = <String?, List<Map<String, dynamic>>>{};
+                          for (final clinic in data.clinics) {
+                            groups[clinic['id']?.toString()] = [];
+                          }
+                          for (final member in staff) {
+                            groups
+                                .putIfAbsent(member['clinicId']?.toString(), () => [])
+                                .add(member);
+                          }
+
+                          return Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              for (final entry in groups.entries)
+                                if (entry.value.isNotEmpty) ...[
+                                  Padding(
+                                    padding: const EdgeInsets.only(top: 12, bottom: 8),
+                                    child: Text(
+                                      data.clinicName(entry.key) ??
+                                          (entry.key == null
+                                              ? 'Sin clínica asignada'
+                                              : 'Clínica desconocida'),
+                                      style: const TextStyle(
+                                        fontSize: 15,
+                                        fontWeight: FontWeight.w800,
+                                        color: NexaColors.textPrimary,
+                                      ),
+                                    ),
+                                  ),
+                                  ...entry.value.map(tile),
+                                ],
+                            ],
+                          );
+                        },
+                      ),
+                    ],
                   ),
-                ],
-              ),
+                ),
+              ],
             ),
           ),
         ),

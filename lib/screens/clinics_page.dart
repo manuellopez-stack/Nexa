@@ -4,7 +4,7 @@ import 'package:flutter/services.dart';
 
 import '../core/nexa_colors.dart';
 import '../services/api_service.dart';
-import '../widgets/imagenda_app_bar.dart';
+import '../widgets/imagenda_shell.dart';
 
 class ClinicsPage extends StatefulWidget {
   const ClinicsPage({super.key});
@@ -53,121 +53,124 @@ class _ClinicsPageState extends State<ClinicsPage> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: NexaColors.background,
-      appBar: ImagendaAppBar(
-        title: 'Clínicas',
-        actions: [
-          Padding(
-            padding: const EdgeInsets.only(right: 12),
-            child: FilledButton.icon(
-              onPressed: _openAddDialog,
-              icon: const Icon(Icons.add_business_outlined, size: 18),
-              label: const Text('Agregar clínica'),
-              style: FilledButton.styleFrom(
-                backgroundColor: NexaColors.primary,
-              ),
-            ),
-          ),
-        ],
-      ),
-      body: SingleChildScrollView(
+    return ImagendaShell(
+      selected: ShellSection.clinics,
+      child: SingleChildScrollView(
         padding: const EdgeInsets.all(24),
         child: Center(
           child: ConstrainedBox(
             constraints: const BoxConstraints(maxWidth: 900),
-            child: Container(
-              width: double.infinity,
-              padding: const EdgeInsets.all(24),
-              decoration: BoxDecoration(
-                color: NexaColors.surface,
-                borderRadius: BorderRadius.circular(20),
-                border: Border.all(color: NexaColors.border),
-                boxShadow: const [
-                  BoxShadow(
-                    color: Color(0x0D0F172A),
-                    blurRadius: 24,
-                    offset: Offset(0, 10),
-                  ),
-                ],
-              ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(
-                    children: [
-                      const Icon(
-                        Icons.local_hospital_outlined,
-                        color: NexaColors.primary,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                ImagendaPageHeader(
+                  title: 'Clínicas',
+                  actions: [
+                    FilledButton.icon(
+                      onPressed: _openAddDialog,
+                      icon: const Icon(Icons.add_business_outlined, size: 18),
+                      label: const Text('Agregar clínica'),
+                      style: FilledButton.styleFrom(
+                        backgroundColor: NexaColors.primary,
                       ),
-                      const SizedBox(width: 10),
-                      const Expanded(
-                        child: Text(
-                          'Clínicas de Imagenda',
-                          style: TextStyle(
-                            fontSize: 22,
-                            fontWeight: FontWeight.w800,
-                            color: NexaColors.textPrimary,
-                          ),
-                        ),
-                      ),
-                      IconButton(
-                        tooltip: 'Actualizar',
-                        onPressed: _reload,
-                        icon: const Icon(Icons.refresh),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 20),
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(24),
+                  decoration: BoxDecoration(
+                    color: NexaColors.surface,
+                    borderRadius: BorderRadius.circular(20),
+                    border: Border.all(color: NexaColors.border),
+                    boxShadow: const [
+                      BoxShadow(
+                        color: Color(0x0D0F172A),
+                        blurRadius: 24,
+                        offset: Offset(0, 10),
                       ),
                     ],
                   ),
-                  const SizedBox(height: 6),
-                  const Text(
-                    'Cada clínica tiene su propio AE Title y puerto DICOM en Orthanc.',
-                    style: TextStyle(color: NexaColors.textSecondary),
-                  ),
-                  const SizedBox(height: 22),
-                  FutureBuilder<List<Map<String, dynamic>>>(
-                    future: _clinicsFuture,
-                    builder: (context, snapshot) {
-                      if (snapshot.connectionState ==
-                          ConnectionState.waiting) {
-                        return const Padding(
-                          padding: EdgeInsets.symmetric(vertical: 24),
-                          child: Center(child: CircularProgressIndicator()),
-                        );
-                      }
-
-                      if (snapshot.hasError) {
-                        final error = snapshot.error;
-                        return _ErrorMessage(
-                          message: error is ApiException
-                              ? error.message
-                              : 'No fue posible cargar las clínicas.',
-                          onRetry: _reload,
-                        );
-                      }
-
-                      final clinics = snapshot.data ?? [];
-
-                      if (clinics.isEmpty) {
-                        return const Padding(
-                          padding: EdgeInsets.symmetric(vertical: 24),
-                          child: Text('Todavía no hay clínicas registradas.'),
-                        );
-                      }
-
-                      return Column(
-                        children: clinics
-                            .map(
-                              (clinic) => _ClinicTile(
-                                key: ValueKey(clinic['id']),
-                                clinic: clinic,
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          const Icon(
+                            Icons.local_hospital_outlined,
+                            color: NexaColors.primary,
+                          ),
+                          const SizedBox(width: 10),
+                          const Expanded(
+                            child: Text(
+                              'Clínicas de Imagenda',
+                              style: TextStyle(
+                                fontSize: 22,
+                                fontWeight: FontWeight.w800,
+                                color: NexaColors.textPrimary,
                               ),
-                            )
-                            .toList(),
-                      );
-                    },
+                            ),
+                          ),
+                          IconButton(
+                            tooltip: 'Actualizar',
+                            onPressed: _reload,
+                            icon: const Icon(Icons.refresh),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 6),
+                      const Text(
+                        'Cada clínica tiene su propio AE Title y puerto DICOM en Orthanc.',
+                        style: TextStyle(color: NexaColors.textSecondary),
+                      ),
+                      const SizedBox(height: 22),
+                      FutureBuilder<List<Map<String, dynamic>>>(
+                        future: _clinicsFuture,
+                        builder: (context, snapshot) {
+                          if (snapshot.connectionState ==
+                              ConnectionState.waiting) {
+                            return const Padding(
+                              padding: EdgeInsets.symmetric(vertical: 24),
+                              child: Center(child: CircularProgressIndicator()),
+                            );
+                          }
+
+                          if (snapshot.hasError) {
+                            final error = snapshot.error;
+                            return _ErrorMessage(
+                              message: error is ApiException
+                                  ? error.message
+                                  : 'No fue posible cargar las clínicas.',
+                              onRetry: _reload,
+                            );
+                          }
+
+                          final clinics = snapshot.data ?? [];
+
+                          if (clinics.isEmpty) {
+                            return const Padding(
+                              padding: EdgeInsets.symmetric(vertical: 24),
+                              child: Text('Todavía no hay clínicas registradas.'),
+                            );
+                          }
+
+                          return Column(
+                            children: clinics
+                                .map(
+                                  (clinic) => _ClinicTile(
+                                    key: ValueKey(clinic['id']),
+                                    clinic: clinic,
+                                  ),
+                                )
+                                .toList(),
+                          );
+                        },
+                      ),
+                    ],
                   ),
-                ],
-              ),
+                ),
+              ],
             ),
           ),
         ),

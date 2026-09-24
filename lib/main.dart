@@ -76,24 +76,14 @@ class WelcomePage extends StatelessWidget {
               children: [
                 Image.asset(
                   'assets/images/imagenda_logo.png',
-                  height: 64,
+                  height: 72,
                 ),
-                const SizedBox(height: 32),
+                const SizedBox(height: 28),
                 const Text(
-                  'Imagenda',
-                  style: TextStyle(
-                    fontSize: 48,
-                    fontWeight: FontWeight.w800,
-                    color: NexaColors.textPrimary,
-                    letterSpacing: -1.2,
-                  ),
-                ),
-                const SizedBox(height: 14),
-                const Text(
-                  'La IA que entiende\ncómo trabaja tu empresa',
+                  'Gestión clínica con inteligencia artificial\npara centros de imagenología',
                   textAlign: TextAlign.center,
                   style: TextStyle(
-                    fontSize: 20,
+                    fontSize: 18,
                     height: 1.45,
                     color: NexaColors.textSecondary,
                   ),

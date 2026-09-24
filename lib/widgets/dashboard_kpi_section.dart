@@ -119,7 +119,7 @@ class _DashboardKpiSectionState extends State<DashboardKpiSection> {
                 ? '$awaitingAnalysis sin analizar · $patientsWithAiSummary fichas resumidas'
                 : '$awaitingAnalysis sin analizar',
             icon: Icons.description_outlined,
-            accentColor: const Color(0xFF06B6D4),
+            accentColor: const Color(0xFF5FB39A),
             progress: totalUploaded > 0 ? totalAnalyzed / totalUploaded : 0,
           ),
           KpiCard(

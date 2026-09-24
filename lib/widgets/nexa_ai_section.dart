@@ -78,7 +78,7 @@ class _NexaAiSectionState extends State<NexaAiSection> {
                   gradient: const LinearGradient(
                     colors: [
                       NexaColors.primary,
-                      Color(0xFF06B6D4),
+                      Color(0xFF5FB39A),
                     ],
                   ),
                   borderRadius: BorderRadius.circular(14),
@@ -203,7 +203,7 @@ class _NexaAiSectionState extends State<NexaAiSection> {
                   ),
                 if (roomsInUse > 0)
                   _InsightRow(
-                    color: const Color(0xFF06B6D4),
+                    color: const Color(0xFF5FB39A),
                     icon: Icons.meeting_room_outlined,
                     text: '$roomsInUse de $totalKnownRooms salas en uso.',
                   ),

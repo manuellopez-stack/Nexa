@@ -3,9 +3,9 @@ import 'package:flutter/material.dart';
 class NexaColors {
   NexaColors._();
 
-  static const Color primary = Color(0xFF2563EB);
-  static const Color primaryDark = Color(0xFF1D4ED8);
-  static const Color secondary = Color(0xFF06B6D4);
+  static const Color primary = Color(0xFF0F6D63);
+  static const Color primaryDark = Color(0xFF0B4F48);
+  static const Color secondary = Color(0xFFE3A23C);
   static const Color background = Color(0xFFF8FAFC);
   static const Color surface = Colors.white;
   static const Color sidebar = Color(0xFFF1F5F9);

@@ -50,7 +50,13 @@ class NexaApp extends StatelessWidget {
         scaffoldBackgroundColor: NexaColors.background,
         colorScheme: ColorScheme.fromSeed(
           seedColor: NexaColors.primary,
+          primary: NexaColors.primary,
+          surface: Colors.white,
           brightness: Brightness.light,
+        ),
+        dialogTheme: const DialogThemeData(
+          backgroundColor: Colors.white,
+          surfaceTintColor: Colors.transparent,
         ),
       ),
       home: inviteAccessToken != null

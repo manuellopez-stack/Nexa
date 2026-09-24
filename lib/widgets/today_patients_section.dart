@@ -2187,7 +2187,7 @@ class _SavedDocumentDialogState extends State<_SavedDocumentDialog> {
             const Divider(),
             const SizedBox(height: 12),
             const Row(children: [
-              Icon(Icons.auto_awesome, size: 20, color: Color(0xFF4F64A3)),
+              Icon(Icons.auto_awesome, size: 20, color: NexaColors.primary),
               SizedBox(width: 8),
               Text('Preguntar a Imagenda sobre este documento', style: TextStyle(fontWeight: FontWeight.w800)),
             ]),

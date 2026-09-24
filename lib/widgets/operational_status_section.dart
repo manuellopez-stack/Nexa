@@ -113,7 +113,7 @@ class _OperationalStatusSectionState extends State<OperationalStatusSection> {
                         ? roomsInUse / totalKnownRooms
                         : 0,
                     label: '$roomsInUse de $totalKnownRooms en uso',
-                    color: const Color(0xFF06B6D4),
+                    color: const Color(0xFF5FB39A),
                   ),
                   const SizedBox(height: 18),
                   StatusBar(

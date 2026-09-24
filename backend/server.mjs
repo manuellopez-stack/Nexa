@@ -617,6 +617,7 @@ function shapeClinicRow(row) {
     status: row.status,
     dicomAeTitle: row.dicom_ae_title,
     dicomPort: row.dicom_port,
+    hasLogo: Boolean(row.logo_path),
     createdAt: row.created_at,
   };
 }
@@ -1046,6 +1047,7 @@ app.use("/dental", requireAuth, requireClinic);
 app.use("/billing", requireAuth, requireClinic);
 app.use("/staff", requireAuth, requireRole(ADMIN_ONLY));
 app.use("/clinics", requireAuth, requireRole(ADMIN_ONLY));
+app.use("/my-clinic", requireAuth);
 
 // Agenda del día leída desde la tabla appointments. Devuelve filas con la MISMA
 // forma que /patients/today esperaba (id = id del paciente, para abrir la
@@ -4783,6 +4785,181 @@ app.post("/clinics", async (request, response) => {
   } catch (error) {
     console.error("Error al crear la clínica:", error);
     return response.status(500).json({ error: "No fue posible crear la clínica." });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Logo por clínica. Los archivos viven en el bucket privado "clinic-logos"
+// (<clinicId>/logo-<timestamp>.<ext>) y la ruta en clinics.logo_path; el
+// cliente nunca recibe URLs del bucket, pide los bytes a estas rutas.
+// ---------------------------------------------------------------------------
+const CLINIC_LOGO_BUCKET = "clinic-logos";
+const CLINIC_LOGO_MAX_BYTES = 1024 * 1024;
+const CLINIC_LOGO_TYPES = {
+  "image/png": "png",
+  "image/jpeg": "jpg",
+  "image/webp": "webp",
+};
+const CLINIC_LOGO_EXT_TYPES = { png: "image/png", jpg: "image/jpeg", webp: "image/webp" };
+
+// Tipo real según los primeros bytes; no se confía solo en el contentType
+// que manda el cliente.
+function detectLogoType(buffer) {
+  if (
+    buffer.length >= 8 &&
+    buffer.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))
+  ) {
+    return "image/png";
+  }
+  if (buffer.length >= 3 && buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) {
+    return "image/jpeg";
+  }
+  if (
+    buffer.length >= 12 &&
+    buffer.subarray(0, 4).toString("ascii") === "RIFF" &&
+    buffer.subarray(8, 12).toString("ascii") === "WEBP"
+  ) {
+    return "image/webp";
+  }
+  return null;
+}
+
+// Carga la clínica si quien pide puede gestionar su logo: un admin de
+// plataforma (cualquier clínica) o un administrador de esa misma clínica.
+// Devuelve null en cualquier otro caso, y la ruta responde 404 igual que si
+// no existiera (no revela clínicas ajenas). El rol ya lo exige requireRole.
+async function loadManageableClinic(request, clinicId) {
+  if (!request.isPlatformAdmin && request.staffProfile?.clinic_id !== clinicId) return null;
+  const { data, error } = await supabase.from("clinics").select("*").eq("id", clinicId).maybeSingle();
+  if (error) throw error;
+  return data ?? null;
+}
+
+async function sendClinicLogo(response, logoPath) {
+  const { data, error } = await supabase.storage.from(CLINIC_LOGO_BUCKET).download(logoPath);
+  if (error || !data) {
+    console.error("Error al descargar el logo de la clínica:", error);
+    return response.status(404).json({ error: "La clínica no tiene logo." });
+  }
+  const ext = logoPath.split(".").pop()?.toLowerCase();
+  response.set("Content-Type", CLINIC_LOGO_EXT_TYPES[ext] ?? "application/octet-stream");
+  response.set("Cache-Control", "private, no-store");
+  return response.send(Buffer.from(await data.arrayBuffer()));
+}
+
+app.put("/clinics/:id/logo", async (request, response) => {
+  try {
+    const clinicRow = await loadManageableClinic(request, request.params.id);
+    if (!clinicRow) return response.status(404).json({ error: "Clínica no encontrada." });
+
+    const base64Data = request.body?.base64Data;
+    const contentType = request.body?.contentType;
+    if (typeof base64Data !== "string" || base64Data.length === 0) {
+      return response.status(400).json({ error: "Falta la imagen del logo." });
+    }
+    if (!CLINIC_LOGO_TYPES[contentType]) {
+      return response.status(400).json({ error: "El logo debe ser una imagen PNG, JPG o WEBP." });
+    }
+
+    const buffer = Buffer.from(base64Data, "base64");
+    if (buffer.length > CLINIC_LOGO_MAX_BYTES) {
+      return response.status(400).json({ error: "El logo no puede pesar más de 1 MB." });
+    }
+    if (detectLogoType(buffer) !== contentType) {
+      return response
+        .status(400)
+        .json({ error: "El archivo no es una imagen PNG, JPG o WEBP válida." });
+    }
+
+    const newPath = `${clinicRow.id}/logo-${Date.now()}.${CLINIC_LOGO_TYPES[contentType]}`;
+    const { error: uploadError } = await supabase.storage
+      .from(CLINIC_LOGO_BUCKET)
+      .upload(newPath, buffer, { contentType });
+    if (uploadError) throw uploadError;
+
+    const { data: updatedRow, error: updateError } = await supabase
+      .from("clinics")
+      .update({ logo_path: newPath })
+      .eq("id", clinicRow.id)
+      .select()
+      .single();
+    if (updateError) {
+      // No dejar un archivo huérfano si no se pudo guardar la ruta.
+      await supabase.storage.from(CLINIC_LOGO_BUCKET).remove([newPath]);
+      throw updateError;
+    }
+
+    if (clinicRow.logo_path && clinicRow.logo_path !== newPath) {
+      const { error: removeError } = await supabase.storage
+        .from(CLINIC_LOGO_BUCKET)
+        .remove([clinicRow.logo_path]);
+      if (removeError) console.error("No fue posible borrar el logo anterior:", removeError);
+    }
+
+    return response.json({ clinic: shapeClinicRow(updatedRow) });
+  } catch (error) {
+    console.error("Error al subir el logo de la clínica:", error);
+    return response.status(500).json({ error: "No fue posible subir el logo." });
+  }
+});
+
+app.delete("/clinics/:id/logo", async (request, response) => {
+  try {
+    const clinicRow = await loadManageableClinic(request, request.params.id);
+    if (!clinicRow) return response.status(404).json({ error: "Clínica no encontrada." });
+
+    const { data: updatedRow, error: updateError } = await supabase
+      .from("clinics")
+      .update({ logo_path: null })
+      .eq("id", clinicRow.id)
+      .select()
+      .single();
+    if (updateError) throw updateError;
+
+    if (clinicRow.logo_path) {
+      const { error: removeError } = await supabase.storage
+        .from(CLINIC_LOGO_BUCKET)
+        .remove([clinicRow.logo_path]);
+      if (removeError) console.error("No fue posible borrar el archivo del logo:", removeError);
+    }
+
+    return response.json({ clinic: shapeClinicRow(updatedRow) });
+  } catch (error) {
+    console.error("Error al quitar el logo de la clínica:", error);
+    return response.status(500).json({ error: "No fue posible quitar el logo." });
+  }
+});
+
+app.get("/clinics/:id/logo", async (request, response) => {
+  try {
+    const clinicRow = await loadManageableClinic(request, request.params.id);
+    if (!clinicRow) return response.status(404).json({ error: "Clínica no encontrada." });
+    if (!clinicRow.logo_path) return response.status(404).json({ error: "La clínica no tiene logo." });
+    return await sendClinicLogo(response, clinicRow.logo_path);
+  } catch (error) {
+    console.error("Error al obtener el logo de la clínica:", error);
+    return response.status(500).json({ error: "No fue posible obtener el logo." });
+  }
+});
+
+// Logo de la clínica de quien está conectado (cualquier rol), para la barra
+// superior de la app.
+app.get("/my-clinic/logo", async (request, response) => {
+  try {
+    const clinicId = request.staffProfile?.clinic_id;
+    if (!clinicId) return response.status(404).json({ error: "Tu cuenta no tiene clínica asignada." });
+
+    const { data: clinicRow, error } = await supabase
+      .from("clinics")
+      .select("logo_path")
+      .eq("id", clinicId)
+      .maybeSingle();
+    if (error) throw error;
+    if (!clinicRow?.logo_path) return response.status(404).json({ error: "La clínica no tiene logo." });
+    return await sendClinicLogo(response, clinicRow.logo_path);
+  } catch (error) {
+    console.error("Error al obtener el logo de mi clínica:", error);
+    return response.status(500).json({ error: "No fue posible obtener el logo." });
   }
 });
 

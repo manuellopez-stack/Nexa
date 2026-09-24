@@ -1,3 +1,4 @@
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -169,7 +170,12 @@ class _ClinicsPageState extends State<ClinicsPage> {
 
                       return Column(
                         children: clinics
-                            .map((clinic) => _ClinicTile(clinic: clinic))
+                            .map(
+                              (clinic) => _ClinicTile(
+                                key: ValueKey(clinic['id']),
+                                clinic: clinic,
+                              ),
+                            )
                             .toList(),
                       );
                     },
@@ -184,18 +190,145 @@ class _ClinicsPageState extends State<ClinicsPage> {
   }
 }
 
-class _ClinicTile extends StatelessWidget {
-  const _ClinicTile({required this.clinic});
+class _ClinicTile extends StatefulWidget {
+  const _ClinicTile({super.key, required this.clinic});
 
   final Map<String, dynamic> clinic;
 
   @override
+  State<_ClinicTile> createState() => _ClinicTileState();
+}
+
+class _ClinicTileState extends State<_ClinicTile> {
+  static const _logoContentTypes = {
+    'png': 'image/png',
+    'jpg': 'image/jpeg',
+    'jpeg': 'image/jpeg',
+    'webp': 'image/webp',
+  };
+
+  late Map<String, dynamic> _clinic;
+  Future<Uint8List?>? _logoFuture;
+  bool _isBusy = false;
+
+  String get _clinicId => _clinic['id']?.toString() ?? '';
+  bool get _hasLogo => _clinic['hasLogo'] == true;
+
+  @override
+  void initState() {
+    super.initState();
+    _clinic = widget.clinic;
+    _loadLogo();
+  }
+
+  // Al recargar la lista ("Actualizar") llega un mapa nuevo de la clínica.
+  @override
+  void didUpdateWidget(covariant _ClinicTile oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (!identical(oldWidget.clinic, widget.clinic)) {
+      _clinic = widget.clinic;
+      _loadLogo();
+    }
+  }
+
+  void _loadLogo() {
+    _logoFuture = _hasLogo && _clinicId.isNotEmpty
+        ? ApiService.getClinicLogo(_clinicId)
+        : null;
+  }
+
+  void _showMessage(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(message)),
+    );
+  }
+
+  // Si el logo cambiado es el de la clínica de quien está conectado, la
+  // barra superior se actualiza al instante.
+  Future<void> _refreshOwnLogo() async {
+    if (_clinicId == ApiService.clinicId) {
+      await ApiService.loadMyClinicLogo();
+    }
+  }
+
+  Future<void> _uploadLogo() async {
+    if (_isBusy) return;
+
+    final result = await FilePicker.pickFiles(
+      type: FileType.custom,
+      allowedExtensions: const ['png', 'jpg', 'jpeg', 'webp'],
+      withData: true,
+    );
+    if (result == null || result.files.isEmpty) return;
+
+    final file = result.files.single;
+    final bytes = file.bytes;
+    final contentType = _logoContentTypes[file.extension?.toLowerCase()];
+
+    if (bytes == null) {
+      _showMessage('No fue posible leer el archivo seleccionado.');
+      return;
+    }
+    if (contentType == null) {
+      _showMessage('El logo debe ser una imagen PNG, JPG o WEBP.');
+      return;
+    }
+    if (bytes.length > 1024 * 1024) {
+      _showMessage('El logo no puede pesar más de 1 MB.');
+      return;
+    }
+
+    setState(() => _isBusy = true);
+    try {
+      final updated = await ApiService.uploadClinicLogo(
+        _clinicId,
+        bytes,
+        contentType,
+      );
+      if (!mounted) return;
+      setState(() {
+        _clinic = updated;
+        _loadLogo();
+      });
+      await _refreshOwnLogo();
+    } on ApiException catch (error) {
+      _showMessage(error.message);
+    } catch (_) {
+      _showMessage('No fue posible subir el logo.');
+    } finally {
+      if (mounted) setState(() => _isBusy = false);
+    }
+  }
+
+  Future<void> _deleteLogo() async {
+    if (_isBusy) return;
+
+    setState(() => _isBusy = true);
+    try {
+      final updated = await ApiService.deleteClinicLogo(_clinicId);
+      if (!mounted) return;
+      setState(() {
+        _clinic = updated;
+        _loadLogo();
+      });
+      await _refreshOwnLogo();
+    } on ApiException catch (error) {
+      _showMessage(error.message);
+    } catch (_) {
+      _showMessage('No fue posible quitar el logo.');
+    } finally {
+      if (mounted) setState(() => _isBusy = false);
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
-    final name = clinic['name']?.toString() ?? '';
-    final address = clinic['address']?.toString().trim() ?? '';
-    final status = clinic['status']?.toString() ?? '';
-    final aeTitle = clinic['dicomAeTitle']?.toString() ?? '—';
-    final port = clinic['dicomPort']?.toString() ?? '—';
+    final name = _clinic['name']?.toString() ?? '';
+    final address = _clinic['address']?.toString().trim() ?? '';
+    final status = _clinic['status']?.toString() ?? '';
+    final aeTitle = _clinic['dicomAeTitle']?.toString() ?? '—';
+    final port = _clinic['dicomPort']?.toString() ?? '—';
 
     return Container(
       margin: const EdgeInsets.only(bottom: 8),
@@ -206,6 +339,8 @@ class _ClinicTile extends StatelessWidget {
       ),
       child: Row(
         children: [
+          _LogoThumbnail(logoFuture: _logoFuture),
+          const SizedBox(width: 12),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -221,6 +356,34 @@ class _ClinicTile extends StatelessWidget {
                     ),
                   ),
                 ],
+                const SizedBox(height: 6),
+                Wrap(
+                  spacing: 4,
+                  runSpacing: 4,
+                  crossAxisAlignment: WrapCrossAlignment.center,
+                  children: [
+                    TextButton.icon(
+                      onPressed: _isBusy ? null : _uploadLogo,
+                      icon: const Icon(Icons.upload_outlined, size: 18),
+                      label: Text(_hasLogo ? 'Cambiar logo' : 'Subir logo'),
+                    ),
+                    if (_hasLogo)
+                      TextButton.icon(
+                        onPressed: _isBusy ? null : _deleteLogo,
+                        icon: const Icon(Icons.delete_outline, size: 18),
+                        label: const Text('Quitar logo'),
+                        style: TextButton.styleFrom(
+                          foregroundColor: const Color(0xFFB91C1C),
+                        ),
+                      ),
+                    if (_isBusy)
+                      const SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      ),
+                  ],
+                ),
               ],
             ),
           ),
@@ -247,6 +410,73 @@ class _ClinicTile extends StatelessWidget {
           ),
         ],
       ),
+    );
+  }
+}
+
+/// Miniatura del logo de una clínica; si no tiene, un recuadro gris claro
+/// con el texto 'Sin logo'.
+class _LogoThumbnail extends StatelessWidget {
+  const _LogoThumbnail({required this.logoFuture});
+
+  final Future<Uint8List?>? logoFuture;
+
+  static const double _size = 56;
+
+  Widget _placeholder() {
+    return Container(
+      width: _size,
+      height: _size,
+      alignment: Alignment.center,
+      decoration: BoxDecoration(
+        color: NexaColors.sidebar,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: NexaColors.border),
+      ),
+      child: const Text(
+        'Sin logo',
+        textAlign: TextAlign.center,
+        style: TextStyle(fontSize: 11, color: NexaColors.textSecondary),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (logoFuture == null) return _placeholder();
+
+    return FutureBuilder<Uint8List?>(
+      future: logoFuture,
+      builder: (context, snapshot) {
+        if (snapshot.connectionState == ConnectionState.waiting) {
+          return const SizedBox(
+            width: _size,
+            height: _size,
+            child: Center(
+              child: SizedBox(
+                width: 18,
+                height: 18,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              ),
+            ),
+          );
+        }
+
+        final logo = snapshot.data;
+        if (logo == null) return _placeholder();
+
+        return Container(
+          width: _size,
+          height: _size,
+          padding: const EdgeInsets.all(4),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(color: NexaColors.border),
+          ),
+          child: Image.memory(logo, fit: BoxFit.contain),
+        );
+      },
     );
   }
 }

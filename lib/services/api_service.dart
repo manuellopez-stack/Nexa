@@ -40,7 +40,7 @@ class ApiService {
   static String? _fullName;
 
   // Logo de la clínica de quien está conectado (null si no tiene). Lo lee
-  // ImagendaBrandMark para mostrarlo en la barra superior.
+  // ImagendaAppBar para mostrarlo en la credencial de la barra superior.
   static final ValueNotifier<Uint8List?> clinicLogo = ValueNotifier(null);
 
   static bool get isLoggedIn => _accessToken != null;
@@ -70,6 +70,7 @@ class ApiService {
   //     y el personal de todas ellas (invitar a cualquier clínica, etc.).
   static bool get isPlatformAdmin => _currentUser?['isPlatformAdmin'] == true;
   static String? get clinicId => _currentUser?['clinicId'] as String?;
+  static String? get clinicName => _currentUser?['clinicName'] as String?;
   //   - canAccessAgenda -> AGENDA_STAFF = administrador, medico, tecnico, recepcion
   //     (gestión de citas: pantalla nueva en el AppBar del dashboard)
   static bool get canAccessAgenda =>

@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../core/nexa_colors.dart';
 import '../services/api_service.dart';
-import '../widgets/imagenda_brand_mark.dart';
+import '../widgets/imagenda_app_bar.dart';
 import '../widgets/patient_picker_dialog.dart';
 
 // Códigos de estado de una cita (tabla appointments). Deben coincidir con
@@ -267,22 +267,8 @@ class _AppointmentsPageState extends State<AppointmentsPage> {
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: NexaColors.background,
-      appBar: AppBar(
-        backgroundColor: NexaColors.surface,
-        title: const Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            ImagendaBrandMark(),
-            SizedBox(width: 12),
-            Text(
-              'Agendamiento',
-              style: TextStyle(
-                fontWeight: FontWeight.w700,
-                color: NexaColors.textPrimary,
-              ),
-            ),
-          ],
-        ),
+      appBar: ImagendaAppBar(
+        title: 'Agendamiento',
         actions: [
           Padding(
             padding: const EdgeInsets.only(right: 8),

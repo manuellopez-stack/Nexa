@@ -2,7 +2,7 @@ import 'widgets/today_patients_section.dart';
 import 'widgets/nexa_ai_section.dart';
 import 'widgets/operational_status_section.dart';
 import 'widgets/dashboard_kpi_section.dart';
-import 'widgets/imagenda_brand_mark.dart';
+import 'widgets/imagenda_app_bar.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 
@@ -681,22 +681,9 @@ class DashboardPage extends StatelessWidget {
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: NexaColors.background,
-      appBar: AppBar(
-        title: const Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            ImagendaBrandMark(),
-            SizedBox(width: 12),
-            Text(
-              'Centro de Control',
-              style: TextStyle(
-                fontWeight: FontWeight.w700,
-                color: NexaColors.textPrimary,
-              ),
-            ),
-          ],
-        ),
-        backgroundColor: NexaColors.surface,
+      appBar: ImagendaAppBar(
+        title: 'Centro de Control',
+        subtitle: 'Resumen de la operación de hoy',
         actions: [
           if (ApiService.canAccessAgenda)
             IconButton(
@@ -756,19 +743,6 @@ class DashboardPage extends StatelessWidget {
                 );
               },
             ),
-          if (ApiService.currentUser?['email'] != null)
-            Padding(
-              padding: const EdgeInsets.only(right: 8),
-              child: Center(
-                child: Text(
-                  ApiService.currentUser!['email'].toString(),
-                  style: const TextStyle(
-                    color: NexaColors.textSecondary,
-                    fontSize: 13,
-                  ),
-                ),
-              ),
-            ),
           IconButton(
             tooltip: 'Cerrar sesión',
             icon: const Icon(Icons.logout, color: NexaColors.textSecondary),
@@ -796,14 +770,6 @@ class DashboardPage extends StatelessWidget {
           // documentos y salas) no se muestran al rol recepcion: solo al
           // personal clínico (administrador, medico, tecnico).
           if (ApiService.canAccessClinical) ...[
-            const Text(
-              'Resumen ejecutivo de la operación de hoy',
-              style: TextStyle(
-                fontSize: 15,
-                color: NexaColors.textSecondary,
-              ),
-            ),
-            const SizedBox(height: 24),
             const DashboardKpiSection(),
             const SizedBox(height: 28),
             const OperationalStatusSection(),

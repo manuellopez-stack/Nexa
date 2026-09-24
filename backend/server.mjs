@@ -983,6 +983,17 @@ app.post("/auth/login", async (request, response) => {
       .eq("id", data.user.id)
       .maybeSingle();
 
+    // Nombre de la clínica para la credencial de la barra superior.
+    let clinicName = null;
+    if (profileRow?.clinic_id) {
+      const { data: clinicRow } = await supabase
+        .from("clinics")
+        .select("name")
+        .eq("id", profileRow.clinic_id)
+        .maybeSingle();
+      clinicName = clinicRow?.name ?? null;
+    }
+
     return response.json({
       accessToken: data.session.access_token,
       user: {
@@ -991,6 +1002,7 @@ app.post("/auth/login", async (request, response) => {
         role: profileRow?.role ?? null,
         fullName: profileRow?.full_name ?? null,
         clinicId: profileRow?.clinic_id ?? null,
+        clinicName,
         isPlatformAdmin: profileRow?.is_platform_admin === true,
       },
     });

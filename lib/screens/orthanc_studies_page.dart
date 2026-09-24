@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../core/nexa_colors.dart';
 import '../services/api_service.dart';
-import '../widgets/imagenda_brand_mark.dart';
+import '../widgets/imagenda_app_bar.dart';
 import '../widgets/patient_picker_dialog.dart';
 
 /// Pantalla "Estudios sin vincular": estudios DICOM recibidos en Orthanc que
@@ -94,23 +94,7 @@ class _OrthancStudiesPageState extends State<OrthancStudiesPage> {
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: NexaColors.background,
-      appBar: AppBar(
-        backgroundColor: NexaColors.surface,
-        title: const Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            ImagendaBrandMark(),
-            SizedBox(width: 12),
-            Text(
-              'Estudios sin vincular',
-              style: TextStyle(
-                fontWeight: FontWeight.w700,
-                color: NexaColors.textPrimary,
-              ),
-            ),
-          ],
-        ),
-      ),
+      appBar: const ImagendaAppBar(title: 'Estudios sin vincular'),
       body: SingleChildScrollView(
         padding: const EdgeInsets.all(24),
         child: Center(

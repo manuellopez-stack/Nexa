@@ -4,7 +4,7 @@ import 'package:flutter/services.dart';
 
 import '../core/nexa_colors.dart';
 import '../services/api_service.dart';
-import '../widgets/imagenda_brand_mark.dart';
+import '../widgets/imagenda_app_bar.dart';
 
 class ClinicsPage extends StatefulWidget {
   const ClinicsPage({super.key});
@@ -55,22 +55,8 @@ class _ClinicsPageState extends State<ClinicsPage> {
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: NexaColors.background,
-      appBar: AppBar(
-        backgroundColor: NexaColors.surface,
-        title: const Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            ImagendaBrandMark(),
-            SizedBox(width: 12),
-            Text(
-              'Clínicas',
-              style: TextStyle(
-                fontWeight: FontWeight.w700,
-                color: NexaColors.textPrimary,
-              ),
-            ),
-          ],
-        ),
+      appBar: ImagendaAppBar(
+        title: 'Clínicas',
         actions: [
           Padding(
             padding: const EdgeInsets.only(right: 12),

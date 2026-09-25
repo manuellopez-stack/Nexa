@@ -6,31 +6,44 @@ import 'screens/dashboard_page.dart';
 import 'services/api_service.dart';
 
 void main() {
-  runApp(NexaApp(inviteAccessToken: _extractInviteAccessToken()));
+  final inviteLink = _extractInviteAccessToken();
+  runApp(NexaApp(
+    inviteAccessToken: inviteLink?.accessToken,
+    isPasswordRecovery: inviteLink?.isRecovery ?? false,
+  ));
 }
 
 // El link del correo de invitación (ver /staff/invite en server.mjs) redirige
 // a la app web como https://.../#access_token=...&refresh_token=...&type=invite
 // -- Supabase pone esos datos en el fragmento de la URL, no en query params.
+// El correo de recuperar contraseña (ver /auth/forgot-password) hace lo mismo
+// pero con type=recovery.
 // Solo aplica a la versión web: en las otras plataformas Uri.base no refleja
 // una URL de navegador, así que ahí se ignora.
-String? _extractInviteAccessToken() {
+({String accessToken, bool isRecovery})? _extractInviteAccessToken() {
   if (!kIsWeb) return null;
 
   final fragment = Uri.base.fragment;
   if (fragment.isEmpty) return null;
 
   final params = Uri.splitQueryString(fragment);
-  if (params['type'] != 'invite') return null;
+  final type = params['type'];
+  if (type != 'invite' && type != 'recovery') return null;
 
   final token = params['access_token'];
-  return (token != null && token.isNotEmpty) ? token : null;
+  if (token == null || token.isEmpty) return null;
+  return (accessToken: token, isRecovery: type == 'recovery');
 }
 
 class NexaApp extends StatelessWidget {
-  const NexaApp({super.key, this.inviteAccessToken});
+  const NexaApp({
+    super.key,
+    this.inviteAccessToken,
+    this.isPasswordRecovery = false,
+  });
 
   final String? inviteAccessToken;
+  final bool isPasswordRecovery;
 
   @override
   Widget build(BuildContext context) {
@@ -52,7 +65,10 @@ class NexaApp extends StatelessWidget {
         ),
       ),
       home: inviteAccessToken != null
-          ? CreatePasswordPage(accessToken: inviteAccessToken!)
+          ? CreatePasswordPage(
+              accessToken: inviteAccessToken!,
+              isRecovery: isPasswordRecovery,
+            )
           : const WelcomePage(),
     );
   }
@@ -190,6 +206,15 @@ class _LoginPageState extends State<LoginPage> {
     } finally {
       if (mounted) setState(() => _isLoading = false);
     }
+  }
+
+  Future<void> _showForgotPasswordDialog() async {
+    await showDialog<void>(
+      context: context,
+      builder: (_) => _ForgotPasswordDialog(
+        initialEmail: emailController.text.trim(),
+      ),
+    );
   }
 
   InputDecoration _inputDecoration({
@@ -377,6 +402,13 @@ class _LoginPageState extends State<LoginPage> {
                             ),
                     ),
                   ),
+                  const SizedBox(height: 12),
+                  Center(
+                    child: TextButton(
+                      onPressed: _isLoading ? null : _showForgotPasswordDialog,
+                      child: const Text('¿Olvidaste tu contraseña?'),
+                    ),
+                  ),
                 ],
               ),
             ),
@@ -387,13 +419,151 @@ class _LoginPageState extends State<LoginPage> {
   }
 }
 
+// Diálogo "Recuperar contraseña" del LoginPage. El backend responde lo mismo
+// exista o no la cuenta, así que tras enviar solo se muestra el aviso genérico.
+class _ForgotPasswordDialog extends StatefulWidget {
+  const _ForgotPasswordDialog({required this.initialEmail});
+
+  final String initialEmail;
+
+  @override
+  State<_ForgotPasswordDialog> createState() => _ForgotPasswordDialogState();
+}
+
+class _ForgotPasswordDialogState extends State<_ForgotPasswordDialog> {
+  late final emailController = TextEditingController(text: widget.initialEmail);
+
+  bool _isSending = false;
+  bool _sent = false;
+  String? _error;
+
+  bool get canSubmit => emailController.text.trim().isNotEmpty && !_isSending;
+
+  @override
+  void initState() {
+    super.initState();
+    emailController.addListener(_refresh);
+  }
+
+  void _refresh() => setState(() {});
+
+  @override
+  void dispose() {
+    emailController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _submit() async {
+    if (!canSubmit) return;
+
+    setState(() {
+      _isSending = true;
+      _error = null;
+    });
+
+    try {
+      await ApiService.forgotPassword(emailController.text.trim());
+      if (mounted) setState(() => _sent = true);
+    } on ApiException catch (error) {
+      if (mounted) setState(() => _error = error.message);
+    } catch (_) {
+      if (mounted) {
+        setState(() => _error = 'No fue posible enviar el enlace. Intenta de nuevo.');
+      }
+    } finally {
+      if (mounted) setState(() => _isSending = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_sent) {
+      return AlertDialog(
+        title: const Text('Recuperar contraseña'),
+        content: const SizedBox(
+          width: 380,
+          child: Text(
+            'Si el correo está registrado, te enviamos un enlace para crear '
+            'una nueva contraseña. Revisa también la carpeta de spam.',
+          ),
+        ),
+        actions: [
+          FilledButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Entendido'),
+          ),
+        ],
+      );
+    }
+
+    return AlertDialog(
+      title: const Text('Recuperar contraseña'),
+      content: SizedBox(
+        width: 380,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            TextField(
+              controller: emailController,
+              autofocus: true,
+              keyboardType: TextInputType.emailAddress,
+              textInputAction: TextInputAction.done,
+              onSubmitted: (_) => _submit(),
+              decoration: const InputDecoration(
+                labelText: 'Correo electrónico',
+                prefixIcon: Icon(Icons.mail_outline),
+              ),
+            ),
+            if (_error != null) ...[
+              const SizedBox(height: 12),
+              Text(
+                _error!,
+                style: const TextStyle(
+                  color: Color(0xFF991B1B),
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ],
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: _isSending ? null : () => Navigator.pop(context),
+          child: const Text('Cancelar'),
+        ),
+        FilledButton(
+          onPressed: canSubmit ? _submit : null,
+          child: _isSending
+              ? const SizedBox(
+                  width: 18,
+                  height: 18,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 2,
+                    color: Colors.white,
+                  ),
+                )
+              : const Text('Enviar enlace'),
+        ),
+      ],
+    );
+  }
+}
+
 // Pantalla que reemplaza a WelcomePage cuando la URL trae el access_token de
-// una invitación de personal (ver _extractInviteAccessToken en main() y
-// POST /staff/accept-invite en server.mjs).
+// una invitación de personal o de un correo de recuperar contraseña (ver
+// _extractInviteAccessToken en main() y POST /staff/accept-invite en
+// server.mjs, que sirve para ambos).
 class CreatePasswordPage extends StatefulWidget {
-  const CreatePasswordPage({super.key, required this.accessToken});
+  const CreatePasswordPage({
+    super.key,
+    required this.accessToken,
+    this.isRecovery = false,
+  });
 
   final String accessToken;
+  final bool isRecovery;
 
   @override
   State<CreatePasswordPage> createState() => _CreatePasswordPageState();
@@ -453,8 +623,10 @@ class _CreatePasswordPageState extends State<CreatePasswordPage> {
       Navigator.pushReplacement(
         context,
         MaterialPageRoute(
-          builder: (_) => const LoginPage(
-            successMessage: 'Tu contraseña quedó creada. Ya puedes iniciar sesión.',
+          builder: (_) => LoginPage(
+            successMessage: widget.isRecovery
+                ? 'Tu nueva contraseña quedó guardada. Ya puedes iniciar sesión.'
+                : 'Tu contraseña quedó creada. Ya puedes iniciar sesión.',
           ),
         ),
       );
@@ -500,10 +672,13 @@ class _CreatePasswordPageState extends State<CreatePasswordPage> {
 
   @override
   Widget build(BuildContext context) {
+    final title =
+        widget.isRecovery ? 'Crea una nueva contraseña' : 'Crea tu contraseña';
+
     return Scaffold(
       appBar: AppBar(
-        title: const Text(
-          'Crea tu contraseña',
+        title: Text(
+          title,
           style: TextStyle(
             fontWeight: FontWeight.w600,
             color: NexaColors.textPrimary,
@@ -549,20 +724,22 @@ class _CreatePasswordPageState extends State<CreatePasswordPage> {
                     ),
                   ),
                   const SizedBox(height: 26),
-                  const Text(
-                    'Crea tu contraseña',
+                  Text(
+                    title,
                     textAlign: TextAlign.center,
-                    style: TextStyle(
+                    style: const TextStyle(
                       fontSize: 32,
                       fontWeight: FontWeight.w800,
                       color: NexaColors.textPrimary,
                     ),
                   ),
                   const SizedBox(height: 8),
-                  const Text(
-                    'Elige una contraseña para activar tu cuenta en Imagenda',
+                  Text(
+                    widget.isRecovery
+                        ? 'Elige una nueva contraseña para tu cuenta de Imagenda'
+                        : 'Elige una contraseña para activar tu cuenta en Imagenda',
                     textAlign: TextAlign.center,
-                    style: TextStyle(
+                    style: const TextStyle(
                       color: NexaColors.textSecondary,
                     ),
                   ),

@@ -1114,10 +1114,33 @@ app.post("/auth/login", async (request, response) => {
   }
 });
 
+// Envía el correo de "recuperar contraseña". Pública (quien la usa no tiene
+// sesión). Sin redirectTo: Supabase usa el Site URL, igual que la invitación,
+// y el link vuelve a la app con type=recovery (ver main.dart). Siempre
+// responde lo mismo para no revelar si el correo tiene cuenta.
+app.post("/auth/forgot-password", async (request, response) => {
+  const email = typeof request.body?.email === "string" ? request.body.email.trim() : "";
+
+  if (email) {
+    try {
+      const { error } = await supabaseAuth.auth.resetPasswordForEmail(email);
+      if (error) console.error("Error al enviar el correo de recuperación:", error);
+    } catch (error) {
+      console.error("Error al enviar el correo de recuperación:", error);
+    }
+  }
+
+  return response.json({
+    ok: true,
+    message: "Si el correo está registrado, te enviamos un enlace para crear una nueva contraseña.",
+  });
+});
+
 // Completa el flujo de invitación de personal iniciado en /staff/invite.
 // Vive fuera del bloque `app.use("/staff", requireAuth, ...)` de más abajo
 // (se registra antes) porque quien invoca esto todavía no tiene sesión: solo
-// trae el access_token que Supabase puso en el link del correo de invitación.
+// trae el access_token que Supabase puso en el link del correo de invitación
+// (o del correo de recuperar contraseña: sirve igual para ambos tokens).
 app.post("/staff/accept-invite", async (request, response) => {
   try {
     const accessToken = typeof request.body?.access_token === "string" ? request.body.access_token.trim() : "";
@@ -1133,7 +1156,7 @@ app.post("/staff/accept-invite", async (request, response) => {
     const { data, error } = await supabaseAuth.auth.getUser(accessToken);
     if (error || !data?.user) {
       return response.status(401).json({
-        error: "El enlace de invitación no es válido o ya expiró. Pide que te reenvíen la invitación.",
+        error: "El enlace no es válido o ya expiró. Pide uno nuevo.",
       });
     }
 

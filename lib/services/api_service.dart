@@ -218,6 +218,28 @@ class ApiService {
     await _decodeMap(response);
   }
 
+  /// Pide el correo de "recuperar contraseña". El backend responde lo mismo
+  /// exista o no la cuenta, así que no hay nada que devolver.
+  static Future<void> forgotPassword(String email) async {
+    final http.Response response;
+
+    try {
+      response = await http
+          .post(
+            Uri.parse('$_baseUrl/auth/forgot-password'),
+            headers: const {'Content-Type': 'application/json'},
+            body: jsonEncode({'email': email}),
+          )
+          .timeout(const Duration(seconds: 30));
+    } catch (_) {
+      throw const ApiException(
+        'No fue posible conectar con el backend de Imagenda.',
+      );
+    }
+
+    await _decodeMap(response);
+  }
+
   static Future<Map<String, dynamic>> getDashboardSummary() async {
     final http.Response response;
 

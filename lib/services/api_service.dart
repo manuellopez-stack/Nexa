@@ -66,6 +66,9 @@ class ApiService {
   static bool get canManageBilling =>
       _role == 'administrador' || _role == 'recepcion';
   static bool get isReception => _role == 'recepcion';
+  //   - canDownloadDvd -> DVD_ROLES = CLINICAL_STAFF + recepcion
+  //     ("Descargar para DVD" de un estudio de imagenología)
+  static bool get canDownloadDvd => canAccessClinical || isReception;
   //   - isPlatformAdmin -> staff_profiles.is_platform_admin: gestiona clínicas
   //     y el personal de todas ellas (invitar a cualquier clínica, etc.).
   static bool get isPlatformAdmin => _currentUser?['isPlatformAdmin'] == true;
@@ -1262,6 +1265,78 @@ class ApiService {
         .whereType<Map>()
         .map((file) => Map<String, dynamic>.from(file))
         .toList();
+  }
+
+  /// Órdenes del paciente con imágenes DICOM que se pueden bajar para DVD
+  /// (GET /patients/:id/dvd-studies). Cada fila trae orderId,
+  /// accessionNumber, examDate, examTypes e imageCount.
+  static Future<List<Map<String, dynamic>>> getDvdStudies(int patientId) async {
+    final http.Response response;
+
+    try {
+      response = await http
+          .get(
+            Uri.parse('$_baseUrl/patients/$patientId/dvd-studies'),
+            headers: _headers(),
+          )
+          .timeout(const Duration(seconds: 30));
+    } catch (_) {
+      throw const ApiException(
+        'No fue posible conectar con el backend de Imagenda.',
+      );
+    }
+
+    final decodedBody = await _decodeMap(response);
+    final studies = decodedBody['studies'];
+
+    if (studies is! List) {
+      throw const ApiException(
+        'El backend no entregó los estudios del paciente.',
+      );
+    }
+
+    return studies
+        .whereType<Map>()
+        .map((study) => Map<String, dynamic>.from(study))
+        .toList();
+  }
+
+  /// Prepara la descarga "para DVD" de una orden (POST .../dvd-link) y
+  /// devuelve { url, filename, viewerIncluded, viewerVersion }, con `url` ya
+  /// absoluta: un enlace firmado que vence en 10 minutos y que el navegador
+  /// puede bajar sin el header de sesión. La primera vez el servidor
+  /// descarga el visor Weasis, por eso el timeout largo.
+  static Future<Map<String, dynamic>> prepareDvdDownload({
+    required int patientId,
+    required String orderId,
+  }) async {
+    final http.Response response;
+
+    try {
+      response = await http
+          .post(
+            Uri.parse(
+              '$_baseUrl/patients/$patientId/imaging-orders/$orderId/dvd-link',
+            ),
+            headers: _headers(),
+          )
+          .timeout(const Duration(minutes: 5));
+    } catch (_) {
+      throw const ApiException(
+        'No fue posible conectar con el backend de Imagenda.',
+      );
+    }
+
+    final decodedBody = await _decodeMap(response);
+    final url = decodedBody['url'];
+
+    if (url is! String || url.isEmpty) {
+      throw const ApiException(
+        'El backend no entregó el enlace de descarga.',
+      );
+    }
+
+    return {...decodedBody, 'url': '$_baseUrl$url'};
   }
 
   /// Estudios recibidos en Orthanc que todavía no se pudieron casar

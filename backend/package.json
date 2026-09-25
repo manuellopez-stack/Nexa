@@ -6,7 +6,7 @@
   "type": "module",
   "scripts": {
     "start": "node server.mjs",
-    "test": "node --import ./test/support/register-mocks.mjs --test \"test/*.test.mjs\"",
+    "test": "node --import ./test/support/register-mocks.mjs --test --test-concurrency=1 \"test/*.test.mjs\"",
     "sync-orthanc": "node syncOrthanc.mjs"
   },
   "keywords": [],
@@ -14,11 +14,15 @@
   "license": "ISC",
   "dependencies": {
     "@supabase/supabase-js": "^2.112.3",
+    "7zip-bin": "^5.2.0",
+    "archiver": "^8.0.0",
+    "cfb": "^1.2.2",
     "cors": "^2.8.5",
     "dicom-parser": "^1.8.21",
     "dotenv": "^17.4.2",
     "express": "^5.1.0",
     "openai": "^6.49.0",
-    "sharp": "^0.35.3"
+    "sharp": "^0.35.3",
+    "unzipper": "^0.12.5"
   }
 }

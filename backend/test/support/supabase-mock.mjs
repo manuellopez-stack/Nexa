@@ -11,10 +11,13 @@ import { randomUUID } from "node:crypto";
 export const db = {};
 /** Tokens de sesión simulados: { token: { id, email } }. */
 export const users = {};
+/** Storage simulado: { "bucket/ruta": Buffer }. Vacío = sin archivos. */
+export const storageFiles = {};
 
 export function resetDb(seed = {}) {
   for (const key of Object.keys(db)) delete db[key];
   for (const key of Object.keys(users)) delete users[key];
+  for (const key of Object.keys(storageFiles)) delete storageFiles[key];
   for (const [table, rows] of Object.entries(seed)) {
     db[table] = rows.map((row) => ({ ...row }));
   }
@@ -308,8 +311,11 @@ export function createClient() {
           : { data: { user: null }, error: { message: "token inválido" } },
     },
     storage: {
-      from: () => ({
-        download: async () => ({ data: null, error: { message: "supabase-mock: sin storage" } }),
+      from: (bucket) => ({
+        download: async (filePath) =>
+          storageFiles[`${bucket}/${filePath}`]
+            ? { data: new Blob([storageFiles[`${bucket}/${filePath}`]]), error: null }
+            : { data: null, error: { message: "supabase-mock: sin storage" } },
         upload: async () => ({ data: null, error: { message: "supabase-mock: sin storage" } }),
         remove: async () => ({ data: null, error: null }),
       }),

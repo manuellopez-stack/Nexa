@@ -27,12 +27,17 @@ function getConfig() {
   return cachedConfig;
 }
 
-async function orthancRequest(path, { method = "GET" } = {}) {
+async function orthancRequest(path, { method = "GET", body, contentType, signal } = {}) {
   const { baseUrl, authHeader } = getConfig();
 
   const response = await fetch(`${baseUrl}${path}`, {
     method,
-    headers: { Authorization: authHeader },
+    headers: {
+      Authorization: authHeader,
+      ...(contentType ? { "Content-Type": contentType } : {}),
+    },
+    body,
+    signal,
   });
 
   if (response.status === 404) return null;
@@ -60,4 +65,29 @@ export async function orthancGetBinary(path) {
 
 export async function orthancDelete(path) {
   await orthancRequest(path, { method: "DELETE" });
+}
+
+// Sube un archivo DICOM (POST /instances). Devuelve la respuesta de Orthanc:
+// { ID, ParentStudy, Status: "Success" | "AlreadyStored", ... }.
+export async function orthancUploadInstance(dicomBuffer) {
+  const response = await orthancRequest("/instances", {
+    method: "POST",
+    body: dicomBuffer,
+    contentType: "application/dicom",
+  });
+  return response ? response.json() : null;
+}
+
+export async function orthancPut(path, body = "") {
+  await orthancRequest(path, { method: "PUT", body });
+}
+
+// Respuesta sin leer, para pasar el cuerpo en streaming (ZIP de medios).
+// Devuelve null si Orthanc responde 404.
+export async function orthancStream(path, { method = "GET", json, signal } = {}) {
+  return orthancRequest(path, {
+    method,
+    signal,
+    ...(json !== undefined ? { body: JSON.stringify(json), contentType: "application/json" } : {}),
+  });
 }

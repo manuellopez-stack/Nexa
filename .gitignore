@@ -8,3 +8,6 @@ build/
 # Visor DICOM (Cornerstone3D) — deps de build
 tools/dicom-viewer/node_modules/
 tools/dicom-viewer/dist/
+
+# Caché del visor Weasis para "Descargar para DVD"
+backend/.cache/

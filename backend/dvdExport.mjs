@@ -1,0 +1,340 @@
+// "Descargar para DVD": arma en streaming un único ZIP con el paquete de
+// medios DICOM de Orthanc (DICOMDIR + IMAGES/), el visor Weasis portable para
+// Windows (weasisPortable.mjs), un autorun.inf, un lanzador "Abrir imagenes"
+// y un LEAME.txt. La ruta HTTP vive en server.mjs.
+//
+// Los estudios vinculados a una orden ya NO están en Orthanc: al vincularlos
+// se copian a Storage (imaging_files) y se borran de Orthanc (ver
+// orthancStudies.mjs). Para pedir /studies/{id}/media, openOrderMedia sube de
+// nuevo a Orthanc, de a una, las instancias DICOM de la orden, les pone la
+// label DVD_TEMP_LABEL (syncOrthanc.mjs ignora esos estudios) y, al terminar
+// la descarga, borra de Orthanc los estudios que subió ella misma.
+import { finished, pipeline } from "node:stream/promises";
+import { Readable } from "node:stream";
+import path from "node:path";
+import { ZipArchive } from "archiver";
+import unzipper from "unzipper";
+import {
+  orthancDelete,
+  orthancPut,
+  orthancStream,
+  orthancUploadInstance,
+} from "./orthancClient.mjs";
+
+export const DVD_TEMP_LABEL = "imagenda-dvd-temporal";
+export const VIEWER_FOLDER = "viewer";
+export const LAUNCHER_NAME = "Abrir imagenes.cmd";
+
+const CLINIC_TIME_ZONE = "America/Santiago";
+
+// ----------------------------------------------------------------------------
+// Nombre del archivo y textos del disco
+// ----------------------------------------------------------------------------
+
+function asciiSlug(value) {
+  return String(value ?? "")
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "")
+    .replace(/[^A-Za-z0-9-]+/g, "");
+}
+
+// patients.name es un solo campo ("Nombres ApellidoPaterno ApellidoMaterno").
+// Con tres palabras o más se toma la penúltima (apellido paterno); con dos,
+// la última.
+export function surnameFromFullName(fullName) {
+  const words = String(fullName ?? "").trim().split(/\s+/).filter(Boolean);
+  const surname = words.length >= 3 ? words[words.length - 2] : words[words.length - 1];
+  return asciiSlug(surname) || "Paciente";
+}
+
+function formatDate(value, locale) {
+  const date = value ? new Date(value) : null;
+  if (!date || Number.isNaN(date.getTime())) return null;
+  return new Intl.DateTimeFormat(locale, {
+    timeZone: CLINIC_TIME_ZONE,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(date);
+}
+
+// DVD_<apellido>_<fecha>_<accession>.zip, fecha AAAA-MM-DD.
+export function dvdFilename({ patientName, examDate, accessionNumber }) {
+  const date = formatDate(examDate, "en-CA") ?? "sin-fecha";
+  const accession = asciiSlug(accessionNumber) || "sin-acceso";
+  return `DVD_${surnameFromFullName(patientName)}_${date}_${accession}.zip`;
+}
+
+// Texto para el Bloc de notas de Windows: UTF-8 con BOM y fin de línea CRLF.
+function windowsText(lines) {
+  return "﻿" + lines.join("\r\n") + "\r\n";
+}
+
+export function buildLeame({
+  clinicName,
+  patientName,
+  patientRut,
+  examDate,
+  examTypes,
+  accessionNumber,
+  viewer,
+}) {
+  const lines = [
+    "IMÁGENES DE SU EXAMEN",
+    "=====================",
+    "",
+    `Clínica:          ${clinicName || "-"}`,
+    `Paciente:         ${patientName || "-"}`,
+    `RUT:              ${patientRut || "-"}`,
+    `Fecha del examen: ${formatDate(examDate, "es-CL") ?? "-"}`,
+    `Tipo de examen:   ${examTypes?.length ? examTypes.join(", ") : "-"}`,
+    `N° de acceso:     ${accessionNumber || "-"}`,
+    "",
+    "CÓMO ABRIR LAS IMÁGENES EN WINDOWS",
+    "----------------------------------",
+  ];
+
+  if (viewer) {
+    lines.push(
+      "Este disco incluye un visor de imágenes (Weasis), no hace falta instalar nada.",
+      "1. Inserte el disco. Si Windows pregunta qué hacer con él, elija \"Abrir imagenes\".",
+      "2. Si no pregunta, abra el disco en el Explorador de archivos y haga doble clic",
+      "   en \"Abrir imagenes\".",
+      "El visor se ejecuta desde el disco, así que puede tardar un poco en abrir.",
+    );
+  } else {
+    lines.push(
+      "Este disco NO incluye un visor de imágenes.",
+      "Use cualquier visor DICOM instalado en su computador (por ejemplo Weasis,",
+      "gratuito en https://weasis.org) o el que indique su médico, y abra con él",
+      "el archivo DICOMDIR de este disco.",
+    );
+  }
+
+  lines.push(
+    "",
+    "CÓMO ABRIR LAS IMÁGENES EN MAC",
+    "------------------------------",
+    ...(viewer ? ["El visor incluido funciona solo en Windows."] : []),
+    "Use cualquier visor DICOM, por ejemplo Horos o el que indique su médico, y abra",
+    "con él el archivo DICOMDIR de este disco.",
+    "",
+    "IMPORTANTE",
+    "----------",
+    "El visor incluido sirve para ver las imágenes; el diagnóstico oficial es el informe del radiólogo.",
+    "",
+    "CONTENIDO DEL DISCO",
+    "-------------------",
+    "DICOMDIR y carpeta IMAGES: las imágenes del examen en formato DICOM.",
+  );
+
+  if (viewer) {
+    lines.push(
+      `${VIEWER_FOLDER}: visor Weasis ${viewer.version} para Windows, software libre`,
+      "  (licencia EPL 2.0, https://github.com/nroduit/Weasis).",
+      "Abrir imagenes y autorun.inf: abren el visor con las imágenes del disco.",
+    );
+  }
+
+  return windowsText(lines);
+}
+
+// Weasis recibe los comandos de arranque como URI weasis:// (igual que el
+// Autorun.inf y el RUN.bat que el propio Weasis pone en sus CD). La ruta del
+// DICOMDIR va relativa: Windows ejecuta el autorun con la raíz del disco como
+// carpeta de trabajo, y el lanzador hace cd a su propia carpeta.
+const WEASIS_OPEN_DICOMDIR_URI = "weasis://%24dicom%3Aget%20-l%20DICOMDIR";
+
+export function buildAutorunInf() {
+  return [
+    "[autorun]",
+    `open=${VIEWER_FOLDER}\\Weasis.exe ${WEASIS_OPEN_DICOMDIR_URI}`,
+    "action=Abrir imagenes",
+    `icon=${VIEWER_FOLDER}\\Weasis.exe,0`,
+    "label=Imagenes",
+    "",
+  ].join("\r\n");
+}
+
+export function buildLauncherCmd() {
+  // En un .cmd el % se escribe %% para que no se lea como variable.
+  const uri = WEASIS_OPEN_DICOMDIR_URI.replaceAll("%", "%%");
+  return [
+    "@echo off",
+    "REM Abre las imagenes de este disco con el visor incluido.",
+    'cd /d "%~dp0"',
+    `start "" "${VIEWER_FOLDER}\\Weasis.exe" "${uri}"`,
+    "",
+  ].join("\r\n");
+}
+
+// ----------------------------------------------------------------------------
+// Armado del ZIP en streaming
+// ----------------------------------------------------------------------------
+
+const RESERVED_ROOT_NAMES = new Set(
+  ["leame.txt", "autorun.inf", LAUNCHER_NAME.toLowerCase(), VIEWER_FOLDER].map((n) => n.toLowerCase()),
+);
+
+// Ruta segura dentro del ZIP de salida, o null si la entrada se descarta
+// (absoluta, con "..", o que pisaría un archivo nuestro de la raíz).
+function safeMediaEntryName(rawPath) {
+  const normalized = String(rawPath).replaceAll("\\", "/").replace(/^\/+/, "");
+  const segments = normalized.split("/").filter(Boolean);
+  if (segments.length === 0 || segments.some((s) => s === "." || s === "..")) return null;
+  if (RESERVED_ROOT_NAMES.has(segments[0].toLowerCase())) return null;
+  return segments.join("/");
+}
+
+/**
+ * Escribe en `output` el ZIP del DVD. Nada se carga entero en memoria: cada
+ * entrada del ZIP de Orthanc (`mediaZip`, un Readable) pasa directo del
+ * lector al compresor, y los archivos del visor se leen del disco uno a uno.
+ *
+ * viewer: { dir, version, files: [{ path, size }] } o null (sin visor: no
+ * van autorun.inf ni el lanzador, y el LEAME lo dice).
+ */
+export async function writeDvdZip({ mediaZip, output, viewer, leame }) {
+  const archive = new ZipArchive({ zlib: { level: 1 } });
+  const written = pipeline(archive, output);
+  written.catch(() => {}); // el error se re-lanza abajo con await
+
+  const date = new Date();
+  let mediaEntries = 0;
+
+  try {
+    archive.append(leame, { name: "LEAME.txt", date });
+    if (viewer) {
+      archive.append(buildAutorunInf(), { name: "autorun.inf", date });
+      archive.append(buildLauncherCmd(), { name: LAUNCHER_NAME, date });
+    }
+
+    const entries = mediaZip.pipe(unzipper.Parse({ forceStream: true }));
+    mediaZip.on("error", (error) => entries.destroy(error));
+
+    for await (const entry of entries) {
+      const name = entry.type === "File" ? safeMediaEntryName(entry.path) : null;
+      if (!name) {
+        entry.autodrain();
+        continue;
+      }
+      archive.append(entry, { name, date });
+      // El lector no entrega la entrada siguiente hasta que esta se consuma:
+      // así nunca hay más de una entrada de Orthanc en vuelo.
+      await finished(entry);
+      mediaEntries += 1;
+    }
+
+    if (mediaEntries === 0) throw new Error("El paquete de medios de Orthanc vino vacío.");
+
+    if (viewer) {
+      for (const file of viewer.files) {
+        archive.file(path.join(viewer.dir, ...file.path.split("/")), {
+          name: `${VIEWER_FOLDER}/${file.path}`,
+          date,
+        });
+      }
+    }
+
+    await archive.finalize();
+    await written;
+    return { mediaEntries };
+  } catch (error) {
+    archive.abort();
+    mediaZip.destroy?.();
+    throw error;
+  }
+}
+
+// ----------------------------------------------------------------------------
+// Estudio en Orthanc para /media (rehidratación temporal)
+// ----------------------------------------------------------------------------
+
+// Estudios que este proceso subió a Orthanc y que todavía usa alguna
+// descarga: studyId -> cuántas descargas lo usan. Solo se borran de Orthanc
+// cuando la última termina.
+const temporaryStudies = new Map();
+
+async function releaseStudies(ownedStudyIds) {
+  for (const studyId of ownedStudyIds) {
+    const users = (temporaryStudies.get(studyId) ?? 1) - 1;
+    if (users > 0) {
+      temporaryStudies.set(studyId, users);
+      continue;
+    }
+    temporaryStudies.delete(studyId);
+    try {
+      await orthancDelete(`/studies/${studyId}`);
+    } catch (error) {
+      console.error(`[DVD] No se pudo borrar de Orthanc el estudio temporal ${studyId}:`, error);
+    }
+  }
+}
+
+/**
+ * Sube a Orthanc las instancias DICOM de la orden (desde Storage) y abre el
+ * ZIP de medios. Devuelve { body: Readable, release } -- release() debe
+ * llamarse siempre al terminar (borra lo que se subió solo para esto).
+ *
+ * dicomPaths: rutas en el bucket "imaging" (imaging_files.dicom_path).
+ */
+export async function openOrderMedia({ supabase, dicomPaths, signal }) {
+  const studies = new Set();
+  const owned = new Set();
+
+  try {
+    for (const dicomPath of dicomPaths) {
+      signal?.throwIfAborted();
+      const { data, error } = await supabase.storage.from("imaging").download(dicomPath);
+      if (error || !data) {
+        throw new Error(`No se pudo leer ${dicomPath} de Storage: ${error?.message ?? "sin datos"}`);
+      }
+      const buffer = Buffer.from(await data.arrayBuffer());
+      const result = await orthancUploadInstance(buffer);
+      const studyId = result?.ParentStudy;
+      if (!studyId) throw new Error(`Orthanc no aceptó ${dicomPath} como DICOM.`);
+      if (studies.has(studyId)) continue;
+
+      studies.add(studyId);
+      // "AlreadyStored" en la primera instancia = el estudio ya estaba en
+      // Orthanc por otra vía (p. ej. sin vincular): no es nuestro, no se borra.
+      const isOurs = result.Status === "Success" || temporaryStudies.has(studyId);
+      if (!isOurs) continue;
+
+      owned.add(studyId);
+      temporaryStudies.set(studyId, (temporaryStudies.get(studyId) ?? 0) + 1);
+      try {
+        await orthancPut(`/studies/${studyId}/labels/${DVD_TEMP_LABEL}`);
+      } catch (labelError) {
+        console.warn(`[DVD] No se pudo etiquetar el estudio temporal ${studyId}:`, labelError.message);
+      }
+    }
+
+    if (studies.size === 0) throw new Error("La orden no tiene instancias DICOM.");
+
+    const ids = [...studies];
+    const response =
+      ids.length === 1
+        ? await orthancStream(`/studies/${ids[0]}/media`, { signal })
+        : await orthancStream("/tools/create-media", {
+            method: "POST",
+            json: { Resources: ids, Synchronous: true },
+            signal,
+          });
+    if (!response?.body) throw new Error("Orthanc no devolvió el paquete de medios.");
+
+    let released = false;
+    return {
+      body: Readable.fromWeb(response.body),
+      studyIds: ids,
+      release: async () => {
+        if (released) return;
+        released = true;
+        await releaseStudies(owned);
+      },
+    };
+  } catch (error) {
+    await releaseStudies(owned);
+    throw error;
+  }
+}

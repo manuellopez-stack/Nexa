@@ -8,6 +8,8 @@ import OpenAI from "openai";
 import { createClient } from "@supabase/supabase-js";
 import { convertDicomToPng } from "./dicomPreview.mjs";
 import { linkOrthancStudyToOrder } from "./orthancStudies.mjs";
+import { buildLeame, dvdFilename, openOrderMedia, writeDvdZip } from "./dvdExport.mjs";
+import { getWeasisViewer } from "./weasisPortable.mjs";
 dotenv.config({ quiet: true });
 
 const app = express();
@@ -4698,6 +4700,302 @@ app.get(
     }
   },
 );
+
+// ============================================
+// IMAGENOLOGÍA — DESCARGAR PARA DVD
+// ============================================
+// ZIP listo para grabar: paquete de medios de Orthanc (DICOMDIR + IMAGES/),
+// visor Weasis portable para Windows, autorun.inf, "Abrir imagenes" y
+// LEAME.txt (ver dvdExport.mjs y weasisPortable.mjs). Lo pueden bajar
+// CLINICAL_STAFF y recepción; una orden de otra clínica responde 404.
+//
+// Dos formas de pedirlo, mismo contenido:
+//   - GET /patients/:id/imaging-orders/:orderId/dvd con el token de sesión
+//     (Authorization), como el resto de la API.
+//   - La app web no puede poner ese header en una descarga nativa del
+//     navegador (que es lo que permite bajar cientos de MB sin cargarlos en
+//     la pestaña), así que primero pide POST .../dvd-link -- que además deja
+//     listo el visor en caché -- y recibe una URL /dvd-downloads/<token> firmada
+//     (HMAC), atada a la persona, su clínica y esa orden, que vence en 10 min.
+
+const DVD_ROLES = [...CLINICAL_STAFF, "recepcion"];
+const DVD_LINK_TTL_MS = 10 * 60 * 1000;
+
+function dvdLinkSecret() {
+  return crypto
+    .createHash("sha256")
+    .update(`imagenda-dvd:${process.env.DOWNLOAD_TOKEN_SECRET || process.env.SUPABASE_SERVICE_ROLE_KEY}`)
+    .digest();
+}
+
+function signDvdLink(payload) {
+  const body = Buffer.from(JSON.stringify({ ...payload, exp: Date.now() + DVD_LINK_TTL_MS })).toString("base64url");
+  const signature = crypto.createHmac("sha256", dvdLinkSecret()).update(body).digest("base64url");
+  return `${body}.${signature}`;
+}
+
+function verifyDvdLink(token) {
+  const [body, signature] = String(token ?? "").split(".");
+  if (!body || !signature) return null;
+  const expected = crypto.createHmac("sha256", dvdLinkSecret()).update(body).digest();
+  const received = Buffer.from(signature, "base64url");
+  if (received.length !== expected.length || !crypto.timingSafeEqual(received, expected)) return null;
+  try {
+    const payload = JSON.parse(Buffer.from(body, "base64url").toString("utf8"));
+    return typeof payload.exp === "number" && payload.exp > Date.now() ? payload : null;
+  } catch {
+    return null;
+  }
+}
+
+// Todo lo que el DVD necesita de la base. null = la orden no existe, no es
+// de ese paciente o es de otra clínica (el caller responde 404).
+async function loadDvdContext({ patientId, orderId, clinicId }) {
+  const { data: order, error: orderError } = await supabase
+    .from("imaging_orders")
+    .select("*")
+    .eq("id", orderId)
+    .eq("patient_id", patientId)
+    .eq("clinic_id", clinicId)
+    .maybeSingle();
+  if (orderError) throw orderError;
+  if (!order) return null;
+
+  const [patientResult, clinicResult, typesResult, filesResult] = await Promise.all([
+    supabase.from("patients").select("name, rut").eq("id", patientId).maybeSingle(),
+    supabase.from("clinics").select("name").eq("id", clinicId).maybeSingle(),
+    supabase.from("imaging_order_types").select("imaging_types(name)").eq("order_id", orderId),
+    supabase
+      .from("imaging_files")
+      .select("dicom_path, uploaded_at")
+      .eq("order_id", orderId)
+      .order("uploaded_at", { ascending: true }),
+  ]);
+  for (const result of [patientResult, clinicResult, typesResult, filesResult]) {
+    if (result.error) throw result.error;
+  }
+
+  const dicomPaths = (filesResult.data ?? []).map((row) => row.dicom_path).filter(Boolean);
+  const patientName = patientResult.data?.name ?? "";
+  const examDate = order.performed_at ?? order.requested_at;
+
+  return {
+    order,
+    dicomPaths,
+    filename: dvdFilename({ patientName, examDate, accessionNumber: order.accession_number }),
+    readme: {
+      clinicName: clinicResult.data?.name ?? "",
+      patientName,
+      patientRut: patientResult.data?.rut ? formatRutCanonical(patientResult.data.rut) : "",
+      examDate,
+      examTypes: (typesResult.data ?? []).map((row) => row.imaging_types?.name).filter(Boolean),
+      accessionNumber: order.accession_number,
+    },
+  };
+}
+
+const DVD_NO_IMAGES_ERROR = "Esta orden no tiene imágenes DICOM para grabar.";
+
+async function streamDvd(request, response, context) {
+  const abort = new AbortController();
+  response.on("close", () => {
+    if (!response.writableFinished) abort.abort();
+  });
+
+  const { viewer, error: viewerError } = await getWeasisViewer();
+  if (!viewer) {
+    console.error(`[DVD] Orden ${context.order.id}: se entrega sin visor. Motivo: ${viewerError}`);
+  }
+
+  let media;
+  try {
+    media = await openOrderMedia({ supabase, dicomPaths: context.dicomPaths, signal: abort.signal });
+  } catch (error) {
+    console.error(`[DVD] Orden ${context.order.id}: no se pudo obtener el paquete de Orthanc:`, error);
+    if (!response.headersSent && !abort.signal.aborted) {
+      response.status(502).json({ error: "No fue posible obtener las imágenes del estudio desde el PACS." });
+    }
+    return;
+  }
+
+  try {
+    response.setHeader("Content-Type", "application/zip");
+    response.setHeader(
+      "Content-Disposition",
+      `attachment; filename="${context.filename}"; filename*=UTF-8''${encodeURIComponent(context.filename)}`,
+    );
+    response.setHeader("Cache-Control", "no-store");
+    await writeDvdZip({
+      mediaZip: media.body,
+      output: response,
+      viewer,
+      leame: buildLeame({ ...context.readme, viewer }),
+    });
+  } catch (error) {
+    if (!abort.signal.aborted) {
+      console.error(`[DVD] Orden ${context.order.id}: falló el armado del ZIP:`, error);
+    }
+    response.destroy();
+  } finally {
+    await media.release();
+  }
+}
+
+// Órdenes del paciente que se pueden bajar para DVD (con imágenes DICOM).
+// Es lo que ve recepción, que no tiene acceso a /imaging-orders: solo fecha,
+// tipo de examen y N° de acceso, lo mismo que va en el LEAME del disco. No
+// cuelga de /imaging-orders/... porque ahí la tomaría /:orderId, que es
+// solo para CLINICAL_STAFF.
+app.get("/patients/:id/dvd-studies", requireRole(DVD_ROLES), async (request, response) => {
+  try {
+    const { data: orders, error: ordersError } = await supabase
+      .from("imaging_orders")
+      .select("id, accession_number, requested_at, performed_at")
+      .eq("patient_id", Number(request.params.id))
+      .eq("clinic_id", request.staffProfile.clinic_id)
+      .order("requested_at", { ascending: false });
+    if (ordersError) throw ordersError;
+
+    const orderIds = (orders ?? []).map((order) => order.id);
+    if (orderIds.length === 0) return response.json({ studies: [] });
+
+    const [filesResult, typesResult] = await Promise.all([
+      supabase.from("imaging_files").select("order_id, dicom_path").in("order_id", orderIds),
+      supabase.from("imaging_order_types").select("order_id, imaging_types(name)").in("order_id", orderIds),
+    ]);
+    if (filesResult.error) throw filesResult.error;
+    if (typesResult.error) throw typesResult.error;
+
+    const imageCounts = new Map();
+    for (const file of filesResult.data ?? []) {
+      if (file.dicom_path) imageCounts.set(file.order_id, (imageCounts.get(file.order_id) ?? 0) + 1);
+    }
+
+    const studies = (orders ?? [])
+      .filter((order) => imageCounts.has(order.id))
+      .map((order) => ({
+        orderId: order.id,
+        accessionNumber: order.accession_number,
+        examDate: order.performed_at ?? order.requested_at,
+        examTypes: (typesResult.data ?? [])
+          .filter((row) => row.order_id === order.id)
+          .map((row) => row.imaging_types?.name)
+          .filter(Boolean),
+        imageCount: imageCounts.get(order.id),
+      }));
+
+    return response.json({ studies });
+  } catch (error) {
+    console.error("Error al listar estudios para DVD:", error);
+    return response.status(500).json({ error: "No fue posible obtener los estudios del paciente." });
+  }
+});
+
+app.post(
+  "/patients/:id/imaging-orders/:orderId/dvd-link",
+  requireRole(DVD_ROLES),
+  async (request, response) => {
+    try {
+      const patientId = Number(request.params.id);
+      const orderId = request.params.orderId;
+      const clinicId = request.staffProfile.clinic_id;
+
+      const context = await loadDvdContext({ patientId, orderId, clinicId });
+      if (!context) {
+        return response.status(404).json({ error: "Orden de imagenología no encontrada." });
+      }
+      if (context.dicomPaths.length === 0) {
+        return response.status(409).json({ error: DVD_NO_IMAGES_ERROR });
+      }
+
+      // La primera vez descarga y prepara el visor: la app muestra
+      // "Preparando descarga…" mientras tanto.
+      const { viewer } = await getWeasisViewer();
+
+      const token = signDvdLink({ userId: request.user.id, clinicId, patientId, orderId });
+      return response.json({
+        url: `/dvd-downloads/${token}`,
+        filename: context.filename,
+        viewerIncluded: Boolean(viewer),
+        viewerVersion: viewer?.version ?? null,
+      });
+    } catch (error) {
+      console.error("Error al preparar la descarga para DVD:", error);
+      return response.status(500).json({ error: "No fue posible preparar la descarga para DVD." });
+    }
+  },
+);
+
+app.get(
+  "/patients/:id/imaging-orders/:orderId/dvd",
+  requireRole(DVD_ROLES),
+  async (request, response) => {
+    try {
+      const context = await loadDvdContext({
+        patientId: Number(request.params.id),
+        orderId: request.params.orderId,
+        clinicId: request.staffProfile.clinic_id,
+      });
+      if (!context) {
+        return response.status(404).json({ error: "Orden de imagenología no encontrada." });
+      }
+      if (context.dicomPaths.length === 0) {
+        return response.status(409).json({ error: DVD_NO_IMAGES_ERROR });
+      }
+      await streamDvd(request, response, context);
+    } catch (error) {
+      console.error("Error al descargar para DVD:", error);
+      if (!response.headersSent) {
+        return response.status(500).json({ error: "No fue posible descargar el estudio para DVD." });
+      }
+      response.destroy();
+    }
+  },
+);
+
+// Fuera de /patients (sin requireAuth): la autorización es el token firmado.
+// Igual se vuelve a leer el perfil, por si a la persona le cambiaron el rol
+// o la clínica en los minutos que vive el enlace.
+app.get("/dvd-downloads/:token", async (request, response) => {
+  try {
+    const link = verifyDvdLink(request.params.token);
+    if (!link) {
+      return response.status(401).json({ error: "El enlace de descarga no es válido o ya venció." });
+    }
+
+    const { data: profile, error: profileError } = await supabase
+      .from("staff_profiles")
+      .select("role, clinic_id")
+      .eq("id", link.userId)
+      .maybeSingle();
+    if (profileError) throw profileError;
+    if (!profile || !DVD_ROLES.includes(profile.role)) {
+      return response.status(403).json({ error: "No tienes permiso para realizar esta acción." });
+    }
+    if (!profile.clinic_id || profile.clinic_id !== link.clinicId) {
+      return response.status(404).json({ error: "Orden de imagenología no encontrada." });
+    }
+
+    const context = await loadDvdContext({
+      patientId: link.patientId,
+      orderId: link.orderId,
+      clinicId: profile.clinic_id,
+    });
+    if (!context) {
+      return response.status(404).json({ error: "Orden de imagenología no encontrada." });
+    }
+    if (context.dicomPaths.length === 0) {
+      return response.status(409).json({ error: DVD_NO_IMAGES_ERROR });
+    }
+    await streamDvd(request, response, context);
+  } catch (error) {
+    console.error("Error al descargar para DVD:", error);
+    if (!response.headersSent) {
+      return response.status(500).json({ error: "No fue posible descargar el estudio para DVD." });
+    }
+    response.destroy();
+  }
+});
 
 // ============================================
 // IMAGENOLOGÍA — ETAPA 2.5: estudios de Orthanc sin vincular

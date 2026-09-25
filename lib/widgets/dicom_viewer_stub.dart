@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import 'dvd_download.dart';
+
 /// Implementación para plataformas no-web: el visor DICOM necesita el `<iframe>`
 /// con Cornerstone3D, así que fuera de web solo avisamos.
 Future<void> showDicomViewer(
@@ -7,6 +9,7 @@ Future<void> showDicomViewer(
   required List<String> dicomUrls,
   int initialIndex = 0,
   String? title,
+  DvdOrderRef? dvdOrder,
 }) {
   return showDialog<void>(
     context: context,

@@ -7,6 +7,7 @@ import 'package:pointer_interceptor/pointer_interceptor.dart';
 import 'package:web/web.dart' as web;
 
 import '../core/nexa_colors.dart';
+import 'dvd_download.dart';
 
 int _seq = 0;
 
@@ -15,6 +16,7 @@ Future<void> showDicomViewer(
   required List<String> dicomUrls,
   int initialIndex = 0,
   String? title,
+  DvdOrderRef? dvdOrder,
 }) {
   final urls = dicomUrls
       .where((u) => u.trim().isNotEmpty)
@@ -43,6 +45,7 @@ Future<void> showDicomViewer(
       dicomUrls: urls,
       initialIndex: safeInitialIndex,
       title: title ?? 'Visor DICOM',
+      dvdOrder: dvdOrder,
     ),
   );
 }
@@ -52,11 +55,13 @@ class _DicomViewerDialog extends StatefulWidget {
     required this.dicomUrls,
     required this.initialIndex,
     required this.title,
+    this.dvdOrder,
   });
 
   final List<String> dicomUrls;
   final int initialIndex;
   final String title;
+  final DvdOrderRef? dvdOrder;
 
   @override
   State<_DicomViewerDialog> createState() => _DicomViewerDialogState();
@@ -109,6 +114,30 @@ class _DicomViewerDialogState extends State<_DicomViewerDialog> {
     _iframe?.contentWindow?.postMessage(payload, '*'.toJS);
   }
 
+  // El <iframe> se queda con los clics que caen sobre él aunque Flutter
+  // dibuje encima (menú desplegable, diálogos). Mientras hay algo abierto
+  // sobre el visor se le desactivan los eventos.
+  void _setIframeInteractive(bool interactive) {
+    _iframe?.style.pointerEvents = interactive ? '' : 'none';
+  }
+
+  Future<void> _onMenuSelected(String value) async {
+    final order = widget.dvdOrder;
+    try {
+      if (value == 'dvd' && order != null) {
+        await downloadStudyForDvd(
+          context,
+          patientId: order.patientId,
+          orderId: order.orderId,
+        );
+      } else if (value == 'dvd-ayuda') {
+        await showDvdBurnHelp(context);
+      }
+    } finally {
+      _setIframeInteractive(true);
+    }
+  }
+
   @override
   void dispose() {
     final listener = _messageListener;
@@ -153,6 +182,32 @@ class _DicomViewerDialogState extends State<_DicomViewerDialog> {
                       ),
                     ),
                   ),
+                  if (widget.dvdOrder != null)
+                    PopupMenuButton<String>(
+                      tooltip: 'Más opciones',
+                      icon: const Icon(Icons.more_vert, color: Color(0xFF9AABAB)),
+                      onOpened: () => _setIframeInteractive(false),
+                      onCanceled: () => _setIframeInteractive(true),
+                      onSelected: _onMenuSelected,
+                      itemBuilder: (_) => const [
+                        PopupMenuItem(
+                          value: 'dvd',
+                          child: ListTile(
+                            contentPadding: EdgeInsets.zero,
+                            leading: Icon(Icons.album_outlined),
+                            title: Text('Descargar para DVD'),
+                          ),
+                        ),
+                        PopupMenuItem(
+                          value: 'dvd-ayuda',
+                          child: ListTile(
+                            contentPadding: EdgeInsets.zero,
+                            leading: Icon(Icons.help_outline),
+                            title: Text('Cómo grabar el DVD'),
+                          ),
+                        ),
+                      ],
+                    ),
                   IconButton(
                     icon: const Icon(Icons.close, color: Color(0xFF9AABAB)),
                     onPressed: () => Navigator.of(context).pop(),

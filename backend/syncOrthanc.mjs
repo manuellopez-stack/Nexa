@@ -61,6 +61,7 @@ import dotenv from "dotenv";
 import { createClient } from "@supabase/supabase-js";
 import { orthancGetJson } from "./orthancClient.mjs";
 import { linkOrthancStudyToOrder } from "./orthancStudies.mjs";
+import { DVD_TEMP_LABEL } from "./dvdExport.mjs";
 
 dotenv.config({ quiet: true });
 
@@ -171,6 +172,14 @@ async function processStudy(orthancStudyId, validClinicIds) {
   const study = await orthancGetJson(`/studies/${orthancStudyId}`);
   if (!study) {
     console.log(`  Ya no está en Orthanc (probablemente ya se procesó antes), se omite.`);
+    return;
+  }
+
+  // Estudio que el servidor subió solo para armar una descarga para DVD (ver
+  // dvdExport.mjs): ya está vinculado y el propio servidor lo borra al
+  // terminar la descarga. No se toca.
+  if ((study.Labels ?? []).includes(DVD_TEMP_LABEL)) {
+    console.log(`  Estudio temporal de una descarga para DVD, se omite.`);
     return;
   }
 

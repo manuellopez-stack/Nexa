@@ -7,6 +7,7 @@ import '../core/nexa_colors.dart';
 import '../services/api_service.dart';
 import 'correction_widgets.dart';
 import 'dicom_viewer.dart';
+import 'dvd_download.dart';
 
 class ImagingOrdersSection extends StatefulWidget {
   const ImagingOrdersSection({
@@ -529,6 +530,9 @@ class _ImagingOrderDetailDialogState extends State<_ImagingOrderDetailDialog> {
       dicomUrls: dicomUrls,
       initialIndex: initialIndex,
       title: 'Imagen del estudio',
+      dvdOrder: ApiService.canDownloadDvd
+          ? (patientId: widget.patientId, orderId: widget.orderId)
+          : null,
     );
   }
 
@@ -763,7 +767,7 @@ class _ImagingOrderDetailDialogState extends State<_ImagingOrderDetailDialog> {
                           .where((u) => u.isNotEmpty)
                           .toList(growable: false);
 
-                      return Wrap(
+                      final thumbnails = Wrap(
                         spacing: 10,
                         runSpacing: 10,
                         children: images.map((imageFile) {
@@ -798,6 +802,20 @@ class _ImagingOrderDetailDialogState extends State<_ImagingOrderDetailDialog> {
                             ),
                           );
                         }).toList(),
+                      );
+
+                      if (dicomUrls.isEmpty) return thumbnails;
+
+                      return Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          thumbnails,
+                          const SizedBox(height: 12),
+                          DvdDownloadButton(
+                            patientId: widget.patientId,
+                            orderId: widget.orderId,
+                          ),
+                        ],
                       );
                     },
                   ),

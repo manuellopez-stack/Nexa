@@ -8,6 +8,7 @@ import '../services/api_service.dart';
 import 'billing_section.dart';
 import 'correction_widgets.dart';
 import 'dental_section.dart';
+import 'dvd_download.dart';
 import 'imaging_section.dart';
 import 'lab_section.dart';
 import 'patient_form.dart';
@@ -259,9 +260,10 @@ class _TodayPatientsSectionState extends State<TodayPatientsSection> {
 }
 
 /// Diálogo reducido para el rol Recepción: identificación del paciente, la
-/// sección "Cobros" y los documentos del paciente (ver y preguntar a la IA).
-/// No carga la ficha clínica: sin laboratorio, odontología, imagenología,
-/// resumen de IA ni historial.
+/// sección "Cobros", los documentos del paciente (ver y preguntar a la IA) y
+/// sus estudios de imágenes solo para "Descargar para DVD". No carga la ficha
+/// clínica: sin laboratorio, odontología, detalle de imagenología, resumen de
+/// IA ni historial.
 class _PatientBillingDialog extends StatelessWidget {
   const _PatientBillingDialog({required this.preview});
 
@@ -274,7 +276,7 @@ class _PatientBillingDialog extends StatelessWidget {
     final patientId = preview['id'] is int ? preview['id'] as int : null;
 
     return DefaultTabController(
-      length: 2,
+      length: 3,
       child: AlertDialog(
         title: Row(
           children: [
@@ -298,6 +300,7 @@ class _PatientBillingDialog extends StatelessWidget {
                 tabs: [
                   Tab(icon: Icon(Icons.receipt_long_outlined), text: 'Cobros'),
                   Tab(icon: Icon(Icons.description_outlined), text: 'Documentos'),
+                  Tab(icon: Icon(Icons.album_outlined), text: 'Imágenes'),
                 ],
               ),
               const SizedBox(height: 14),
@@ -308,6 +311,7 @@ class _PatientBillingDialog extends StatelessWidget {
                       child: BillingSection(patientId: patientId),
                     ),
                     _ReceptionDocumentsTab(patientId: patientId),
+                    DvdStudiesList(patientId: patientId),
                   ],
                 ),
               ),

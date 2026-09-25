@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../core/nexa_colors.dart';
+import '../core/rut_formatter.dart';
 import '../services/api_service.dart';
 import 'patient_form.dart';
 
@@ -91,13 +92,24 @@ class _PatientPickerDialogState extends State<PatientPickerDialog> {
     }
   }
 
+  // Parece un RUT si no tiene letras salvo la K (dígitos, puntos, guion,
+  // espacios) y al menos un dígito: '12.345.678-5', '12345678-5', '123456785'.
+  static final _rutLikeQuery = RegExp(r'^[0-9kK.\-\s]+$');
+
   List<Map<String, dynamic>> get _filtered {
     final query = _searchController.text.trim().toLowerCase();
     if (query.isEmpty) return _all;
+    final rutQuery = _rutLikeQuery.hasMatch(query) && RegExp(r'\d').hasMatch(query)
+        ? normalizeRut(query)
+        : null;
     return _all.where((patient) {
       final name = patient['name']?.toString().toLowerCase() ?? '';
-      final rut = patient['rut']?.toString().toLowerCase() ?? '';
-      return name.contains(query) || rut.contains(query);
+      if (name.contains(query)) return true;
+      final rut = patient['rut']?.toString();
+      // Con un RUT se compara sin puntos ni guion, para encontrar la ficha
+      // escriba como se escriba (y aunque se haya guardado con puntos).
+      if (rutQuery != null) return normalizeRut(rut).contains(rutQuery);
+      return (rut ?? '').toLowerCase().contains(query);
     }).toList();
   }
 

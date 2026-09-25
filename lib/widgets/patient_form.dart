@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../core/rut_formatter.dart';
 import '../services/api_service.dart';
 
 /// Valida un RUT chileno completo (cuerpo + dígito verificador, módulo 11).
@@ -69,7 +70,9 @@ class _PatientFormDialogState extends State<PatientFormDialog> {
     final patient = widget.editPatient;
     if (patient != null) {
       _nameController.text = patient['name']?.toString() ?? '';
-      _rutController.text = patient['rut']?.toString() ?? '';
+      // Fichas antiguas pueden venir con puntos: se muestran ya en el formato
+      // único para que al guardar queden igual que las nuevas.
+      _rutController.text = formatRut(patient['rut']?.toString());
       _ageController.text = patient['age'] == null ? '' : '${patient['age']}';
       _phoneController.text = patient['phone']?.toString() ?? '';
       _observationsController.text = patient['observations']?.toString() ?? '';
@@ -182,9 +185,14 @@ class _PatientFormDialogState extends State<PatientFormDialog> {
                 const SizedBox(height: 14),
                 TextFormField(
                   controller: _rutController,
+                  keyboardType: TextInputType.text,
+                  textCapitalization: TextCapitalization.characters,
+                  autocorrect: false,
+                  inputFormatters: const [RutInputFormatter()],
                   decoration: const InputDecoration(
                     labelText: 'RUT *',
-                    hintText: '12.345.678-5',
+                    hintText: kRutHint,
+                    helperText: kRutHelper,
                     border: OutlineInputBorder(),
                   ),
                   validator: (value) {

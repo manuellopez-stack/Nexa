@@ -329,8 +329,10 @@
 
       <div class="field" id="field-rut">
         <label for="rut">RUT</label>
-        <input type="text" id="rut" autocomplete="off" placeholder="12.345.678-5" />
-        <div class="err">Ingresa un RUT válido, con dígito verificador.</div>
+        <input type="text" id="rut" autocomplete="off" inputmode="text" maxlength="10"
+          autocapitalize="characters" spellcheck="false" placeholder="12345678-5" />
+        <div class="hint">Sin puntos y con guion. Ej: 12345678-5</div>
+        <div class="err">El RUT no es válido: revisa el dígito verificador.</div>
       </div>
 
       <div class="field" id="field-telefono">
@@ -500,6 +502,43 @@
     return dv === expected;
   }
 
+  // Formato único de RUT mientras se escribe o se pega (mismo criterio que
+  // RutInputFormatter de la app): solo dígitos y K en mayúscula, máximo 9
+  // caracteres y guion antes del último. El cursor queda detrás del mismo
+  // carácter en que estaba, así que borrar en medio no lo hace saltar.
+  var RUT_MAX_CHARS = 9;
+  function formatRut(value) {
+    var clean = normalizeRut(value).slice(0, RUT_MAX_CHARS);
+    if (clean.length < 2) return clean;
+    return clean.slice(0, -1) + "-" + clean.slice(-1);
+  }
+  function attachRutFormatter(input) {
+    input.addEventListener("input", function () {
+      var raw = input.value;
+      var cursor = input.selectionEnd == null ? raw.length : input.selectionEnd;
+      var formatted = formatRut(raw);
+      var cleanLength = normalizeRut(formatted).length;
+      var validBefore = Math.min(normalizeRut(raw.slice(0, cursor)).length, cleanLength);
+      var offset = cleanLength >= 2 && validBefore === cleanLength ? formatted.length : validBefore;
+      if (formatted !== raw) input.value = formatted;
+      try { input.setSelectionRange(offset, offset); } catch (e) { /* input sin foco */ }
+    });
+    // Con maxlength=10 el navegador cortaría un pegado con puntos
+    // ("12.345.678-5" tiene 12 caracteres) antes de formatearlo: se limpia
+    // primero lo pegado y después se inserta.
+    input.addEventListener("paste", function (event) {
+      var data = event.clipboardData || window.clipboardData;
+      if (!data) return;
+      event.preventDefault();
+      var start = input.selectionStart == null ? input.value.length : input.selectionStart;
+      var end = input.selectionEnd == null ? input.value.length : input.selectionEnd;
+      var raw = input.value.slice(0, start) + normalizeRut(data.getData("text")) + input.value.slice(end);
+      input.value = raw.slice(0, 64);
+      input.setSelectionRange(Math.min(raw.length, 64), Math.min(raw.length, 64));
+      input.dispatchEvent(new Event("input"));
+    });
+  }
+
   // ---------------- Paso 1: tipo + fecha + horario ----------------
 
   var fechaInput = document.getElementById("fecha");
@@ -599,6 +638,7 @@
 
   var nombreInput = document.getElementById("nombre");
   var rutInput = document.getElementById("rut");
+  attachRutFormatter(rutInput);
   var telefonoInput = document.getElementById("telefono");
   var emailInput = document.getElementById("email");
 

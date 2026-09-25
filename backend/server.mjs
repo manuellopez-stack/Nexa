@@ -254,6 +254,16 @@ function isValidRut(value) {
   return dv === expected;
 }
 
+// Formato canónico con que se guarda todo RUT: sin puntos, con guion antes
+// del dígito verificador y K en mayúscula ("12345678-5", "9876543-K"). La
+// búsqueda por RUT sigue comparando con normalizeRut, así que las fichas
+// guardadas antes con puntos se siguen encontrando.
+function formatRutCanonical(value) {
+  const clean = normalizeRut(value);
+  if (clean.length < 2) return clean;
+  return `${clean.slice(0, -1)}-${clean.slice(-1)}`;
+}
+
 // Valida y normaliza los campos de IDENTIDAD de una ficha de paciente
 // (nombre, rut, edad, sexo, teléfono, observaciones). Compartida entre el alta
 // (POST /patients) y la edición (PATCH /patients/:id).
@@ -285,7 +295,7 @@ function parsePatientIdentityInput(body, { partial }) {
     if (!isValidRut(rut)) {
       return { error: "El RUT no es válido: revisa el dígito verificador." };
     }
-    values.rut = rut;
+    values.rut = formatRutCanonical(rut);
   }
 
   if (has("age")) {

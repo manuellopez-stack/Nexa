@@ -1428,6 +1428,23 @@ app.get("/patients/today", async (request, response) => {
 // CLINICAL_STAFF se admite 'recepcion' aquí. No se agrega a CLINICAL_STAFF
 // porque esa constante se usa en otras rutas (fichas de pacientes,
 // laboratorio, dental, imagenología) donde recepción sí debe seguir bloqueada.
+// Criterio único de "pendiente de validación" para imagenología, compartido
+// por /dashboard/summary y /validation-queue para que los números coincidan.
+// El informe de una orden de imagenología es un documento con
+// documents.imaging_order_id = imaging_orders.id (lo escribe
+// saveDocumentRecord al incorporar el informe, que además deja la orden en
+// 'informado'). Mientras la orden esté 'informado', ese documento pendiente
+// es la misma tarea que la orden: se cuenta y se lista una sola vez, como
+// imagenología, y no aparte como documento. Si la orden ya no está en
+// 'informado' (o el documento no tiene orden), el documento pendiente se
+// cuenta como documento, para que nunca se pierda.
+function isCoveredByInformedImagingOrder(documentRow, informedImagingOrderIds) {
+  return (
+    documentRow.imaging_order_id != null &&
+    informedImagingOrderIds.has(documentRow.imaging_order_id)
+  );
+}
+
 app.get("/dashboard/summary", requireRole([...CLINICAL_STAFF, "recepcion"]), async (request, response) => {
   try {
     // Alcance del resumen: la clínica de quien pregunta. Solo un admin de
@@ -1541,26 +1558,43 @@ app.get("/dashboard/summary", requireRole([...CLINICAL_STAFF, "recepcion"]), asy
     // que revisar/aprobar: documentos sin validar + órdenes clínicas ya
     // listas (con resultado/informe) pero aún no validadas.
     const countPending = async (table, column, value) => {
-      const base =
-        table === "documents"
-          ? documentsQuery()
-          : scoped(supabase.from(table).select("id", { count: "exact", head: true }));
+      const base = scoped(supabase.from(table).select("id", { count: "exact", head: true }));
       const { count, error } = await base.eq(column, value);
       if (error) throw error;
       return count ?? 0;
     };
 
+    // Documentos e imagenología se cargan como filas (no solo conteo) para
+    // aplicar isCoveredByInformedImagingOrder: el informe pendiente de una
+    // orden 'informado' cuenta solo como imagenología.
+    const pendingDocumentsQuery = scopeClinicId
+      ? supabase
+          .from("documents")
+          .select("imaging_order_id, patient:patients!inner(clinic_id)")
+          .eq("patient.clinic_id", scopeClinicId)
+      : supabase.from("documents").select("imaging_order_id");
+
     const [
-      pendingDocuments,
+      pendingDocumentsResult,
       pendingLabOrders,
-      pendingImagingOrders,
+      informedImagingResult,
       pendingDentalOrders,
     ] = await Promise.all([
-      countPending("documents", "validation_status", "pendiente"),
+      pendingDocumentsQuery.eq("validation_status", "pendiente"),
       countPending("lab_orders", "status", "completado"),
-      countPending("imaging_orders", "status", "informado"),
+      scoped(supabase.from("imaging_orders").select("id").eq("status", "informado")),
       countPending("dental_orders", "status", "realizado"),
     ]);
+    if (pendingDocumentsResult.error) throw pendingDocumentsResult.error;
+    if (informedImagingResult.error) throw informedImagingResult.error;
+
+    const informedImagingOrderIds = new Set(
+      (informedImagingResult.data ?? []).map((row) => row.id),
+    );
+    const pendingImagingOrders = informedImagingOrderIds.size;
+    const pendingDocuments = (pendingDocumentsResult.data ?? []).filter(
+      (row) => !isCoveredByInformedImagingOrder(row, informedImagingOrderIds),
+    ).length;
 
     const pendingValidation =
       pendingDocuments +
@@ -1611,10 +1645,11 @@ app.get("/dashboard/summary", requireRole([...CLINICAL_STAFF, "recepcion"]), asy
 // Si esa columna viniera vacía se usa requested_at de la orden. Orden: más
 // antiguo primero; sin fecha al final.
 //
-// Nota: una orden de imagenología 'informado' tiene además su informe en
-// documents con validation_status 'pendiente', así que aparece en los dos
-// grupos (igual que en el conteo de pendingValidation). Validar el documento
-// valida también la orden.
+// Imagenología sin duplicados: el informe pendiente de una orden 'informado'
+// no se lista aparte como documento (ver isCoveredByInformedImagingOrder,
+// mismo criterio que /dashboard/summary). El ítem de imagenología trae en
+// `archivo` el nombre de ese informe, porque la orden se valida aprobando su
+// informe (PATCH /patients/:id/documents/:filename/validate).
 app.get("/validation-queue", requireRole(VALIDATORS), async (request, response) => {
   try {
     const scopeClinicId = request.isPlatformAdmin ? null : request.staffProfile?.clinic_id ?? null;
@@ -1629,7 +1664,7 @@ app.get("/validation-queue", requireRole(VALIDATORS), async (request, response) 
     const documentsQuery = supabase
       .from("documents")
       .select(
-        "id, patient_id, filename, document_type, exam, incorporated_at, patient:patients!inner(name, rut, clinic_id)",
+        "id, patient_id, filename, document_type, exam, incorporated_at, imaging_order_id, patient:patients!inner(name, rut, clinic_id)",
       )
       .eq("validation_status", "pendiente");
 
@@ -1657,10 +1692,13 @@ app.get("/validation-queue", requireRole(VALIDATORS), async (request, response) 
     for (const result of [docsResult, labResult, imagingResult, dentalResult]) {
       if (result.error) throw result.error;
     }
-    const docs = docsResult.data ?? [];
     const labOrders = labResult.data ?? [];
     const imagingOrders = imagingResult.data ?? [];
     const dentalOrders = dentalResult.data ?? [];
+    const informedImagingOrderIds = new Set(imagingOrders.map((row) => row.id));
+    const docs = (docsResult.data ?? []).filter(
+      (row) => !isCoveredByInformedImagingOrder(row, informedImagingOrderIds),
+    );
 
     // Nombres de los exámenes de cada orden, y el médico del informe de
     // imagenología (el documento vinculado a la orden).
@@ -1683,15 +1721,28 @@ app.get("/validation-queue", requireRole(VALIDATORS), async (request, response) 
       namesByOrder("imaging_order_types", "order_id, imaging_types(name)", (r) => r.imaging_types?.name, imagingIds),
       namesByOrder("dental_order_procedures", "order_id, dental_procedures(name)", (r) => r.dental_procedures?.name, idsOf(dentalOrders)),
       imagingIds.length
-        ? supabase.from("documents").select("imaging_order_id, doctor").in("imaging_order_id", imagingIds)
+        ? supabase
+            .from("documents")
+            .select("imaging_order_id, filename, doctor, validation_status, incorporated_at")
+            .in("imaging_order_id", imagingIds)
         : Promise.resolve({ data: [], error: null }),
     ]);
     if (imagingReports.error) throw imagingReports.error;
-    const reportDoctorByOrder = new Map(
-      (imagingReports.data ?? [])
-        .filter((row) => typeof row.doctor === "string" && row.doctor.trim())
-        .map((row) => [row.imaging_order_id, row.doctor.trim()]),
-    );
+    // Informe de cada orden: el pendiente más reciente (si hubiera más de uno),
+    // o el más reciente de todos si ninguno está pendiente.
+    const reportByOrder = new Map();
+    const reportRank = (row) => [
+      row.validation_status === "pendiente" ? 1 : 0,
+      row.incorporated_at ? new Date(row.incorporated_at).getTime() : 0,
+    ];
+    for (const row of imagingReports.data ?? []) {
+      const current = reportByOrder.get(row.imaging_order_id);
+      const [pendingA, timeA] = reportRank(row);
+      const [pendingB, timeB] = current ? reportRank(current) : [-1, -1];
+      if (pendingA > pendingB || (pendingA === pendingB && timeA > timeB)) {
+        reportByOrder.set(row.imaging_order_id, row);
+      }
+    }
 
     const patientFields = (row) => ({
       patientId: row.patient_id,
@@ -1728,11 +1779,14 @@ app.get("/validation-queue", requireRole(VALIDATORS), async (request, response) 
         id: row.id,
         ...patientFields(row),
         titulo: joinNames(imagingNames, row.id, "Orden de imagenología"),
-        detalle: reportDoctorByOrder.has(row.id)
-          ? `Informado por ${reportDoctorByOrder.get(row.id)}`
+        detalle: reportByOrder.get(row.id)?.doctor?.trim()
+          ? `Informado por ${reportByOrder.get(row.id).doctor.trim()}`
           : "Informado",
         esIA: false,
         desde: row.informed_at ?? row.requested_at ?? null,
+        // Informe vinculado: es donde se valida la orden. null si la orden no
+        // tuviera informe guardado (la app abre entonces el detalle de la orden).
+        archivo: reportByOrder.get(row.id)?.filename ?? null,
       })),
       ...dentalOrders.map((row) => ({
         tipo: "dental",

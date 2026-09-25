@@ -11,7 +11,8 @@ import '../widgets/today_patients_section.dart';
 /// antiguo primero. Ver GET /validation-queue en server.mjs.
 ///
 /// "Revisar" abre la ficha del paciente en la sección correspondiente y el
-/// mismo diálogo donde ya se valida ese ítem; al volver, la lista se recarga.
+/// mismo diálogo donde ya se valida ese ítem (en imagenología, su informe);
+/// al volver, la lista se recarga.
 class ValidationQueuePage extends StatefulWidget {
   const ValidationQueuePage({super.key, @visibleForTesting this.loadQueue});
 
@@ -59,20 +60,30 @@ class _ValidationQueuePageState extends State<ValidationQueuePage> {
     }
 
     final tipo = item['tipo']?.toString();
-    final focus = switch (tipo) {
-      'documento' => PatientFileFocus.documents,
-      'laboratorio' => PatientFileFocus.lab,
-      'imagenologia' => PatientFileFocus.imaging,
-      'dental' => PatientFileFocus.dental,
-      _ => null,
-    };
+    // Una orden de imagenología se valida aprobando su informe (el documento
+    // vinculado, `archivo`), así que se abre ese documento. Sin informe
+    // guardado se abre el detalle de la orden.
+    final reportFilename = item['archivo']?.toString();
+    final opensDocument =
+        tipo == 'documento' ||
+        (tipo == 'imagenologia' &&
+            reportFilename != null &&
+            reportFilename.isNotEmpty);
+    final focus = opensDocument
+        ? PatientFileFocus.documents
+        : switch (tipo) {
+            'laboratorio' => PatientFileFocus.lab,
+            'imagenologia' => PatientFileFocus.imaging,
+            'dental' => PatientFileFocus.dental,
+            _ => null,
+          };
 
     await openPatientFile(
       context,
       patientId,
       focus: focus,
-      documentFilename: tipo == 'documento' ? item['archivo']?.toString() : null,
-      orderId: tipo == 'documento' ? null : item['id']?.toString(),
+      documentFilename: opensDocument ? reportFilename : null,
+      orderId: opensDocument ? null : item['id']?.toString(),
     );
     if (mounted) _reload();
   }

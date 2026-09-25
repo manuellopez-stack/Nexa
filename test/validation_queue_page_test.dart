@@ -43,6 +43,7 @@ Map<String, dynamic> _queue() {
         'detalle': 'Informado por Dr. Roberto Andrés González Valenzuela',
         'esIA': false,
         'desde': ago(const Duration(hours: 3)),
+        'archivo': 'rx-torax.pdf',
       },
       {
         'tipo': 'laboratorio',

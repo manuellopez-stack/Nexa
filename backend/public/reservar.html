@@ -20,6 +20,7 @@
     --error: #ef4444;
   }
   * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
   body {
     margin: 0;
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
@@ -43,7 +44,7 @@
     align-items: center;
     gap: 10px;
   }
-  header.top .dot {
+  .dot {
     width: 10px; height: 10px; border-radius: 999px;
     background: linear-gradient(135deg, var(--primary), var(--secondary));
   }
@@ -51,6 +52,24 @@
     font-size: 18px;
     margin: 0;
   }
+  header.top .clinic-logo {
+    display: block;
+    max-width: 180px;
+    max-height: 64px;
+    object-fit: contain;
+    margin-bottom: 12px;
+  }
+  footer.powered {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    padding: 18px 20px 28px;
+    font-size: 12px;
+    color: var(--text-secondary);
+  }
+  footer.powered .dot { width: 7px; height: 7px; }
+  footer.powered strong { color: var(--text-primary); font-weight: 600; }
   header.top p {
     margin: 6px 0 0;
     color: var(--text-secondary);
@@ -216,7 +235,8 @@
 <body>
 <div class="page">
   <header class="top">
-    <div class="brand"><span class="dot"></span><h1>Imagenda</h1></div>
+    <img class="clinic-logo" id="clinic-logo" alt="" hidden />
+    <h1 id="clinic-name">Reserva de horas</h1>
     <p>Reserva tu hora en línea</p>
   </header>
 
@@ -227,6 +247,12 @@
   </div>
 
   <main>
+
+    <!-- Centro no encontrado (slug inexistente o ausente) -->
+    <section class="step" data-step="0">
+      <div id="clinic-banner"></div>
+      <a class="btn btn-primary" id="centers-link" href="/reservar">Ver centros médicos</a>
+    </section>
 
     <!-- PASO 1: tipo de atención + fecha + horario -->
     <section class="step" data-step="1">
@@ -349,9 +375,13 @@
     </section>
 
   </main>
+
+  <footer class="powered">
+    <span class="dot"></span><span>Reservas con <strong>Imagenda</strong></span>
+  </footer>
 </div>
 
-<a class="whatsapp-fab" href="https://wa.me/56920121879?text=Hola%2C%20quiero%20agendar%20una%20hora%20en%20MILMED" target="_blank" rel="noopener" aria-label="Escríbenos por WhatsApp">
+<a class="whatsapp-fab" id="whatsapp-fab" hidden href="https://wa.me/56920121879?text=Hola%2C%20quiero%20agendar%20una%20hora%20en%20MILMED" target="_blank" rel="noopener" aria-label="Escríbenos por WhatsApp">
   <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12.01 2C6.49 2 2 6.48 2 12c0 1.85.5 3.58 1.44 5.11L2 22l5.05-1.4A9.94 9.94 0 0 0 12.01 22C17.52 22 22 17.52 22 12S17.52 2 12.01 2Zm5.83 14.16c-.25.7-1.45 1.34-2 1.42-.51.08-1.15.11-1.86-.12-.43-.14-.98-.32-1.69-.63-2.98-1.29-4.92-4.28-5.07-4.48-.15-.2-1.2-1.6-1.2-3.05 0-1.45.76-2.16 1.03-2.46.27-.3.59-.37.79-.37.2 0 .4 0 .57.01.18.01.43-.07.67.51.25.6.85 2.08.92 2.23.07.15.12.33.02.53-.1.2-.15.32-.3.49-.15.17-.31.38-.44.51-.15.15-.3.31-.13.6.17.29.77 1.27 1.65 2.06 1.14 1.02 2.1 1.33 2.4 1.48.3.15.47.13.65-.05.18-.18.75-.87.95-1.17.2-.3.4-.25.67-.15.27.1 1.73.82 2.03.97.3.15.5.22.57.35.07.13.07.72-.18 1.42Z"/></svg>
   <span>Escríbenos por WhatsApp</span>
 </a>
@@ -371,6 +401,18 @@
   };
 
   var MAX_DAYS_AHEAD = 30;
+
+  // Slug de la clínica: /reservar/<slug>, o /<slug> en reservar.imagenda.cl.
+  var BOOKING_HOST = "reservar.imagenda.cl";
+  var onBookingHost = location.hostname.toLowerCase() === BOOKING_HOST;
+  var pathParts = location.pathname.split("/").filter(Boolean);
+  var clinicSlug = "";
+  if (pathParts[0] === "reservar" && pathParts.length === 2) {
+    clinicSlug = decodeURIComponent(pathParts[1]).toLowerCase();
+  } else if (onBookingHost && pathParts.length === 1) {
+    clinicSlug = decodeURIComponent(pathParts[0]).toLowerCase();
+  }
+  document.getElementById("centers-link").href = onBookingHost ? "/" : "/reservar";
 
   function pad(n) { return String(n).padStart(2, "0"); }
 
@@ -392,6 +434,7 @@
     document.querySelectorAll("[data-step-bar]").forEach(function (el) {
       el.classList.toggle("done", Number(el.getAttribute("data-step-bar")) <= n);
     });
+    document.querySelector(".steps").style.display = n === 0 ? "none" : "";
     window.scrollTo(0, 0);
   }
 
@@ -458,7 +501,10 @@
     var requestId = ++availabilityRequestId;
     slotsContainer.innerHTML = '<div class="loading">Cargando horarios…</div>';
 
-    fetch("/public/booking/availability?fecha=" + encodeURIComponent(fecha))
+    fetch(
+      "/public/booking/availability?clinica=" + encodeURIComponent(clinicSlug) +
+        "&fecha=" + encodeURIComponent(fecha)
+    )
       .then(function (res) {
         return res.json().then(function (body) { return { ok: res.ok, body: body }; });
       })
@@ -597,6 +643,7 @@
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
+        clinica: clinicSlug,
         nombre: state.nombre,
         rut: state.rut,
         telefono: state.telefono || undefined,
@@ -655,7 +702,48 @@
     showStep(1);
   });
 
-  showStep(1);
+  // ---------------- Clínica ----------------
+
+  function showClinicError(message) {
+    banner("clinic-banner", message);
+    showStep(0);
+  }
+
+  function loadClinic() {
+    if (!clinicSlug) {
+      showClinicError("Elige el centro médico donde quieres reservar.");
+      return;
+    }
+    var base = "/public/booking/clinic/" + encodeURIComponent(clinicSlug);
+    fetch(base)
+      .then(function (res) {
+        return res.json().then(function (body) { return { ok: res.ok, body: body }; });
+      })
+      .then(function (result) {
+        if (!result.ok) {
+          showClinicError(result.body.error || "No fue posible cargar el centro médico.");
+          return;
+        }
+        var nombre = result.body.nombre;
+        document.getElementById("clinic-name").textContent = nombre;
+        document.title = "Reservar hora — " + nombre;
+        if (result.body.tieneLogo) {
+          var logo = document.getElementById("clinic-logo");
+          logo.alt = nombre;
+          logo.onerror = function () { logo.hidden = true; };
+          logo.src = base + "/logo";
+          logo.hidden = false;
+        }
+        // El botón de WhatsApp apunta al número de MILMED; solo se muestra ahí.
+        document.getElementById("whatsapp-fab").hidden = clinicSlug !== "milmed";
+        showStep(1);
+      })
+      .catch(function () {
+        showClinicError("No fue posible conectar con el servidor. Intenta de nuevo.");
+      });
+  }
+
+  loadClinic();
 })();
 </script>
 </body>

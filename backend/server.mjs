@@ -64,9 +64,28 @@ app.use(express.json({ limit: "50mb" }));
 // que el plan usa como ejemplo (claude/plan-autoagendamiento-web.md).
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 app.use(express.static(path.join(__dirname, "public")));
-app.get("/reservar", (request, response) => {
+// Reserva por clínica: /reservar/<slug> (o reservar.imagenda.cl/<slug>) sirve
+// el formulario, que lee el slug de la URL; /reservar (o la raíz de
+// reservar.imagenda.cl) muestra la lista de centros con reserva web. El slug
+// se resuelve contra clinics.booking_slug en /public/booking/*.
+const BOOKING_HOST = "reservar.imagenda.cl";
+const BOOKING_SLUG_RE = /^[a-z0-9-]{1,64}$/;
+const isBookingHost = (request) => request.hostname?.toLowerCase() === BOOKING_HOST;
+const sendBookingForm = (_request, response) =>
   response.sendFile(path.join(__dirname, "public", "reservar.html"));
-});
+const sendBookingCenters = (_request, response) =>
+  response.sendFile(path.join(__dirname, "public", "reservar-centros.html"));
+
+app.get("/reservar", sendBookingCenters);
+app.get("/reservar/:slug", sendBookingForm);
+app.get("/", (request, response, next) =>
+  isBookingHost(request) ? sendBookingCenters(request, response) : next(),
+);
+app.get("/:slug", (request, response, next) =>
+  isBookingHost(request) && BOOKING_SLUG_RE.test(request.params.slug)
+    ? sendBookingForm(request, response)
+    : next(),
+);
 
 if (!process.env.OPENAI_API_KEY) {
   console.error("");
@@ -678,9 +697,9 @@ async function patientBelongsToRequesterClinic(patientId, request) {
 }
 
 // Etapa 3 (paso 3a): clinicId es opcional -- cuando se pasa, la búsqueda de
-// RUT duplicado se limita a esa clínica. Los llamadores sin sesión (booking
-// público) o todavía no revisados (documentos) siguen sin pasarlo, sin
-// cambio de comportamiento ahí.
+// RUT duplicado se limita a esa clínica (el booking público pasa la clínica
+// resuelta por su slug). Los llamadores todavía no revisados (documentos)
+// siguen sin pasarlo, sin cambio de comportamiento ahí.
 async function findPatientsByRutDb(rut, excludeId = null, clinicId = null) {
   const normalized = normalizeRut(rut);
   if (!normalized) return [];
@@ -1923,23 +1942,43 @@ function chileDateLabelDaysFromNow(days) {
   );
 }
 
-async function getActiveRoomCount() {
+// Clínica activa con reserva web a partir del slug de la URL
+// (clinics.booking_slug, ver sql/booking_por_clinica.sql). null si el slug no
+// existe, no tiene formato válido o la clínica está inactiva.
+async function findBookingClinic(slug) {
+  const normalized = typeof slug === "string" ? slug.trim().toLowerCase() : "";
+  if (!BOOKING_SLUG_RE.test(normalized)) return null;
+  const { data, error } = await supabase
+    .from("clinics")
+    .select("id, name, logo_path")
+    .eq("booking_slug", normalized)
+    .eq("status", "activa")
+    .maybeSingle();
+  if (error) throw error;
+  return data ?? null;
+}
+
+const BOOKING_CLINIC_NOT_FOUND = "No encontramos ese centro médico.";
+
+async function getActiveRoomCount(clinicId) {
   const { count, error } = await supabase
     .from("rooms")
     .select("id", { count: "exact", head: true })
-    .eq("active", true);
+    .eq("active", true)
+    .eq("clinic_id", clinicId);
   if (error) throw error;
   return count ?? 0;
 }
 
 // Cuenta, para un día completo, cuántas citas activas hay en cada bloque de
 // BOOKING_SLOT_MINUTES (agrupando cada cita por el bloque en el que cae su
-// hora de inicio). Es un cupo global del centro, no por sala ni profesional.
-async function countAppointmentsPerBookingSlot(ymd) {
+// hora de inicio). Es un cupo global de la clínica, no por sala ni profesional.
+async function countAppointmentsPerBookingSlot(ymd, clinicId) {
   const { startUtc, endUtc } = clinicDayRangeUtc(ymd);
   const { data, error } = await supabase
     .from("appointments")
     .select("scheduled_at")
+    .eq("clinic_id", clinicId)
     .gte("scheduled_at", startUtc.toISOString())
     .lt("scheduled_at", endUtc.toISOString())
     .not("status", "in", "(cancelada,no_asistio)");
@@ -1960,7 +1999,51 @@ async function countAppointmentsPerBookingSlot(ymd) {
   return counts;
 }
 
-// GET /public/booking/availability?fecha=YYYY-MM-DD
+// GET /public/booking/clinics
+// Centros con reserva web, para la lista de /reservar.
+app.get("/public/booking/clinics", async (_request, response) => {
+  try {
+    const { data, error } = await supabase
+      .from("clinics")
+      .select("name, booking_slug")
+      .not("booking_slug", "is", null)
+      .eq("status", "activa")
+      .order("name");
+    if (error) throw error;
+    return response.json({
+      centros: (data ?? []).map((row) => ({ nombre: row.name, slug: row.booking_slug })),
+    });
+  } catch (error) {
+    console.error("Error al listar centros con reserva web:", error);
+    return response.status(500).json({ error: "No fue posible cargar los centros médicos." });
+  }
+});
+
+// GET /public/booking/clinic/:slug -> { nombre, tieneLogo }
+app.get("/public/booking/clinic/:slug", async (request, response) => {
+  try {
+    const clinic = await findBookingClinic(request.params.slug);
+    if (!clinic) return response.status(404).json({ error: BOOKING_CLINIC_NOT_FOUND });
+    return response.json({ nombre: clinic.name, tieneLogo: Boolean(clinic.logo_path) });
+  } catch (error) {
+    console.error("Error al obtener el centro de reserva web:", error);
+    return response.status(500).json({ error: "No fue posible cargar el centro médico." });
+  }
+});
+
+app.get("/public/booking/clinic/:slug/logo", async (request, response) => {
+  try {
+    const clinic = await findBookingClinic(request.params.slug);
+    if (!clinic) return response.status(404).json({ error: BOOKING_CLINIC_NOT_FOUND });
+    if (!clinic.logo_path) return response.status(404).json({ error: "La clínica no tiene logo." });
+    return await sendClinicLogo(response, clinic.logo_path);
+  } catch (error) {
+    console.error("Error al obtener el logo del centro de reserva web:", error);
+    return response.status(500).json({ error: "No fue posible obtener el logo." });
+  }
+});
+
+// GET /public/booking/availability?clinica=<slug>&fecha=YYYY-MM-DD
 // Devuelve los horarios del día y si cada uno tiene cupo disponible.
 app.get("/public/booking/availability", async (request, response) => {
   try {
@@ -1969,6 +2052,9 @@ app.get("/public/booking/availability", async (request, response) => {
         .status(429)
         .json({ error: "Demasiadas solicitudes, intenta de nuevo en unos minutos." });
     }
+
+    const clinic = await findBookingClinic(request.query.clinica);
+    if (!clinic) return response.status(404).json({ error: BOOKING_CLINIC_NOT_FOUND });
 
     const fecha = String(request.query.fecha ?? "");
     if (!/^\d{4}-\d{2}-\d{2}$/.test(fecha)) {
@@ -1986,8 +2072,8 @@ app.get("/public/booking/availability", async (request, response) => {
     }
 
     const [roomCount, perSlotCounts] = await Promise.all([
-      getActiveRoomCount(),
-      countAppointmentsPerBookingSlot(fecha),
+      getActiveRoomCount(clinic.id),
+      countAppointmentsPerBookingSlot(fecha, clinic.id),
     ]);
 
     const isToday = fecha === todayLabel;
@@ -2028,7 +2114,7 @@ function parseOptionalBookingEmail(value) {
 }
 
 // POST /public/booking
-// { nombre, rut, telefono?, tipo, fecha, hora }
+// { clinica, nombre, rut, telefono?, email?, tipo, fecha, hora }
 app.post("/public/booking", async (request, response) => {
   try {
     if (isRateLimited(request.ip, { max: 10, windowMs: 10 * 60 * 1000 })) {
@@ -2038,6 +2124,9 @@ app.post("/public/booking", async (request, response) => {
     }
 
     const body = request.body ?? {};
+
+    const clinic = await findBookingClinic(body.clinica);
+    if (!clinic) return response.status(404).json({ error: BOOKING_CLINIC_NOT_FOUND });
 
     const { values, error: identityError } = parsePatientIdentityInput(
       { name: body.nombre, rut: body.rut, phone: body.telefono },
@@ -2088,8 +2177,8 @@ app.post("/public/booking", async (request, response) => {
     // tomen el último cupo del mismo bloque al mismo tiempo; no es 100%
     // infalible sin un lock, pero reduce mucho el riesgo).
     const [roomCount, perSlotCounts] = await Promise.all([
-      getActiveRoomCount(),
-      countAppointmentsPerBookingSlot(fecha),
+      getActiveRoomCount(clinic.id),
+      countAppointmentsPerBookingSlot(fecha, clinic.id),
     ]);
     const used = perSlotCounts.get(hora) ?? 0;
     if (roomCount === 0 || used >= roomCount) {
@@ -2099,7 +2188,7 @@ app.post("/public/booking", async (request, response) => {
     // Encuentra al paciente por RUT o lo crea (a diferencia del alta interna,
     // acá SÍ se reutiliza la ficha existente en vez de rechazar por RUT
     // duplicado -- un paciente que ya existe debe poder reservar igual).
-    const existingPatients = await findPatientsByRutDb(values.rut);
+    const existingPatients = await findPatientsByRutDb(values.rut, null, clinic.id);
     let patientId;
     if (existingPatients.length > 0) {
       patientId = existingPatients[0].id;
@@ -2120,6 +2209,7 @@ app.post("/public/booking", async (request, response) => {
           phone: values.phone ?? null,
           email: patientEmail,
           observations: null,
+          clinic_id: clinic.id,
         })
         .select("id")
         .single();
@@ -2139,6 +2229,7 @@ app.post("/public/booking", async (request, response) => {
         reason: tipo,
         notes: "Reservado por el paciente vía web.",
         origin: "web",
+        clinic_id: clinic.id,
       })
       .select("id, scheduled_at")
       .single();

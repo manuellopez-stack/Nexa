@@ -432,7 +432,8 @@ class _InviteStaffDialog extends StatefulWidget {
 class _InviteStaffDialogState extends State<_InviteStaffDialog> {
   final TextEditingController _emailController = TextEditingController();
   final TextEditingController _fullNameController = TextEditingController();
-  String _role = _kStaffRoles.first;
+  // Sin rol preseleccionado: se elige a conciencia, igual que la clínica.
+  String? _role;
   // Admin de plataforma: sin valor inicial, para que elija la clínica a
   // conciencia (así se coló la invitación de APSA en MILMED). Admin de
   // clínica: fija en la suya, el selector queda deshabilitado.
@@ -457,8 +458,13 @@ class _InviteStaffDialogState extends State<_InviteStaffDialog> {
     final email = _emailController.text.trim();
     final fullName = _fullNameController.text.trim();
     final clinicId = _clinicId;
+    final role = _role;
 
-    if (email.isEmpty || fullName.isEmpty || clinicId == null || _isSubmitting) {
+    if (email.isEmpty ||
+        fullName.isEmpty ||
+        clinicId == null ||
+        role == null ||
+        _isSubmitting) {
       return;
     }
 
@@ -471,7 +477,7 @@ class _InviteStaffDialogState extends State<_InviteStaffDialog> {
       await ApiService.inviteStaff(
         email: email,
         fullName: fullName,
-        role: _role,
+        role: role,
         clinicId: clinicId,
       );
       if (mounted) Navigator.pop(context, true);
@@ -493,6 +499,7 @@ class _InviteStaffDialogState extends State<_InviteStaffDialog> {
     final canSubmit = email.isNotEmpty &&
         fullName.isNotEmpty &&
         _clinicId != null &&
+        _role != null &&
         !_isSubmitting;
 
     return AlertDialog(
@@ -550,6 +557,7 @@ class _InviteStaffDialogState extends State<_InviteStaffDialog> {
                 labelText: 'Rol',
                 border: OutlineInputBorder(),
               ),
+              hint: const Text('Elige el rol'),
               items: _kStaffRoles
                   .map(
                     (role) => DropdownMenuItem(

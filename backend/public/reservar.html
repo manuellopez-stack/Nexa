@@ -5,16 +5,18 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Reservar hora — Imagenda</title>
 <link rel="icon" href="data:," />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link href="https://fonts.googleapis.com/css2?family=Sora:wght@600&display=swap" rel="stylesheet" />
 <style>
   :root {
-    --primary: #2563eb;
-    --primary-dark: #1d4ed8;
-    --secondary: #06b6d4;
-    --background: #f8fafc;
+    --primary: #0F6D63;
+    --primary-dark: #0B4F48;
+    --secondary: #E3A23C;
+    --background: #F5F3EE;
     --surface: #ffffff;
-    --text-primary: #0f172a;
-    --text-secondary: #64748b;
-    --border: #e2e8f0;
+    --text-primary: #142420;
+    --text-secondary: #52625C;
+    --border: #E4E0D6;
     --success: #22c55e;
     --warning: #f59e0b;
     --error: #ef4444;
@@ -33,7 +35,7 @@
     margin: 0 auto;
     min-height: 100vh;
     background: var(--surface);
-    box-shadow: 0 0 24px rgba(15, 23, 42, 0.06);
+    box-shadow: 0 0 24px rgba(20, 36, 32, 0.06);
   }
   header.top {
     padding: 24px 20px 16px;
@@ -112,7 +114,7 @@
   .field input:focus, .field select:focus {
     outline: none;
     border-color: var(--primary);
-    box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
+    box-shadow: 0 0 0 3px rgba(15, 109, 99, 0.14);
   }
   .field .hint {
     font-size: 12px;
@@ -139,7 +141,7 @@
     text-align: center;
   }
   .btn-primary { background: var(--primary); color: #fff; }
-  .btn-primary:disabled { background: #93b4f3; cursor: not-allowed; }
+  .btn-primary:disabled { background: #8DBDB4; cursor: not-allowed; }
   .btn-primary:not(:disabled):active { background: var(--primary-dark); }
   .btn-secondary {
     background: var(--surface);
@@ -147,10 +149,10 @@
     border: 1px solid var(--primary);
     padding: 11px;
   }
-  .btn-secondary:active { background: #eff6ff; }
+  .btn-secondary:active { background: #E6F1EE; }
   .cancel-box {
-    background: #eff6ff;
-    border: 1px solid #bfdbfe;
+    background: #E6F1EE;
+    border: 1px solid #B9DAD1;
     border-radius: 12px;
     padding: 14px 16px;
     margin-bottom: 18px;
@@ -185,8 +187,8 @@
     cursor: pointer;
   }
   .slot.unavailable {
-    color: #cbd5e1;
-    background: #f8fafc;
+    color: #CFCABD;
+    background: #F5F3EE;
     cursor: not-allowed;
     text-decoration: line-through;
   }
@@ -209,7 +211,7 @@
     margin-bottom: 16px;
   }
   .banner.error { background: #fef2f2; color: #b91c1c; }
-  .banner.info { background: #eff6ff; color: #1d4ed8; }
+  .banner.info { background: #E6F1EE; color: #0B4F48; }
   .summary {
     background: var(--background);
     border: 1px solid var(--border);
@@ -248,10 +250,11 @@
     font-size: 14px;
     font-weight: 600;
     text-decoration: none;
-    box-shadow: 0 6px 18px rgba(15, 23, 42, 0.18);
+    box-shadow: 0 6px 18px rgba(20, 36, 32, 0.18);
   }
   .whatsapp-fab:active { background: var(--primary-dark); }
   .whatsapp-fab svg { width: 20px; height: 20px; flex-shrink: 0; }
+  h1, h2 { font-family: "Sora", -apple-system, "Segoe UI", Roboto, Arial, sans-serif; letter-spacing: -0.2px; }
 </style>
 </head>
 <body>

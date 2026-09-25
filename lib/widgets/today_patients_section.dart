@@ -13,6 +13,40 @@ import 'imaging_section.dart';
 import 'lab_section.dart';
 import 'patient_form.dart';
 
+/// Abre al paciente [patient] (al menos `{id, name, rut}`) según el rol de
+/// quien lo pide, igual que al hacer clic en "Pacientes de hoy".
+///
+/// El rol Recepción no tiene acceso a la ficha clínica completa
+/// (/patients/:id -> CLINICAL_STAFF), pero sí necesita ver y gestionar los
+/// cobros del paciente y consultar sus documentos. Se le abre un diálogo
+/// reducido con las pestañas "Cobros", "Documentos" e "Imágenes", sin el
+/// resto de la ficha clínica. Los demás roles ven [openPatientFile].
+Future<void> openPatientForCurrentRole(
+  BuildContext context,
+  Map<String, dynamic> patient,
+) async {
+  final id = patient['id'];
+
+  if (id is! int) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('El paciente no tiene un identificador válido.'),
+      ),
+    );
+    return;
+  }
+
+  if (ApiService.isReception) {
+    await showDialog<void>(
+      context: context,
+      builder: (_) => _PatientBillingDialog(preview: patient),
+    );
+    return;
+  }
+
+  await openPatientFile(context, id);
+}
+
 /// Sección de la ficha del paciente a la que se lleva al usuario al abrirla
 /// desde otra pantalla (ver [openPatientFile]).
 enum PatientFileFocus { documents, lab, imaging, dental }
@@ -103,34 +137,8 @@ class _TodayPatientsSectionState extends State<TodayPatientsSection> {
   }
 
   Future<void> _showPatientDialog(Map<String, dynamic> preview) async {
-    final id = preview['id'];
-
-    if (id is! int) {
-      _showError('El paciente no tiene un identificador válido.');
-      return;
-    }
-
-    // El rol Recepción no tiene acceso a la ficha clínica completa
-    // (/patients/:id -> CLINICAL_STAFF), pero sí necesita ver y gestionar
-    // los cobros del paciente y consultar sus documentos. Se le abre un
-    // diálogo reducido con las pestañas "Cobros" y "Documentos", sin el
-    // resto de la ficha clínica.
-    if (ApiService.isReception) {
-      await showDialog<void>(
-        context: context,
-        builder: (_) => _PatientBillingDialog(preview: preview),
-      );
-      return;
-    }
-
-    await openPatientFile(context, id);
-    if (mounted) _reloadPatients();
-  }
-
-  void _showError(String message) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(message)),
-    );
+    await openPatientForCurrentRole(context, preview);
+    if (mounted && !ApiService.isReception) _reloadPatients();
   }
 
   @override

@@ -6,6 +6,7 @@ import '../widgets/imagenda_shell.dart';
 import '../widgets/nexa_ai_section.dart';
 import '../widgets/operational_status_section.dart';
 import '../widgets/patient_form.dart';
+import '../widgets/patient_picker_dialog.dart';
 import '../widgets/today_patients_section.dart';
 
 const List<String> _kWeekdays = [
@@ -94,6 +95,17 @@ class _DashboardPageState extends State<DashboardPage> {
       context,
     ).showSnackBar(const SnackBar(content: Text('Paciente registrado.')));
     setState(() => _patientsKey = UniqueKey());
+  }
+
+  Future<void> _searchPatient() async {
+    final patient = await showDialog<Map<String, dynamic>>(
+      context: context,
+      builder: (_) => const PatientPickerDialog(),
+    );
+    if (patient == null || !mounted) return;
+    await openPatientForCurrentRole(context, patient);
+    // Desde el picker se puede registrar o editar un paciente.
+    if (mounted) setState(() => _patientsKey = UniqueKey());
   }
 
   void _newAppointment() => ImagendaShell.navigate(
@@ -269,6 +281,19 @@ class _DashboardPageState extends State<DashboardPage> {
                 onPressed: _registerPatient,
                 icon: const Icon(Icons.person_add_alt, size: 18),
                 label: const Text('Registrar paciente'),
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: NexaColors.primary,
+                  side: const BorderSide(color: NexaColors.border),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 16,
+                    vertical: 14,
+                  ),
+                ),
+              ),
+              OutlinedButton.icon(
+                onPressed: _searchPatient,
+                icon: const Icon(Icons.search, size: 18),
+                label: const Text('Buscar paciente'),
                 style: OutlinedButton.styleFrom(
                   foregroundColor: NexaColors.primary,
                   side: const BorderSide(color: NexaColors.border),

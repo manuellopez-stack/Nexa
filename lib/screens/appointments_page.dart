@@ -660,7 +660,10 @@ class _AppointmentTile extends StatelessWidget {
           Column(
             crossAxisAlignment: CrossAxisAlignment.end,
             children: [
-              _StatusBadge(status: status),
+              _StatusBadge(
+                status: status,
+                cancelledByPatient: appointment['cancelledBy'] == 'paciente',
+              ),
               const SizedBox(height: 4),
               if (isBusy)
                 const Padding(
@@ -789,9 +792,11 @@ class _MenuRow extends StatelessWidget {
 // ======================================================================
 
 class _StatusBadge extends StatelessWidget {
-  const _StatusBadge({required this.status});
+  const _StatusBadge({required this.status, this.cancelledByPatient = false});
 
   final String status;
+  // Cancelada por el propio paciente desde el enlace de su reserva web.
+  final bool cancelledByPatient;
 
   @override
   Widget build(BuildContext context) {
@@ -838,7 +843,9 @@ class _StatusBadge extends StatelessWidget {
           Icon(icon, size: 15, color: textColor),
           const SizedBox(width: 6),
           Text(
-            _kStatusLabels[status] ?? status,
+            status == 'cancelada' && cancelledByPatient
+                ? 'Cancelada por el paciente'
+                : _kStatusLabels[status] ?? status,
             style: TextStyle(
               color: textColor,
               fontWeight: FontWeight.w700,

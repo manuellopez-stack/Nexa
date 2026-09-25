@@ -1,0 +1,373 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="robots" content="noindex" />
+<meta name="referrer" content="no-referrer" />
+<title>Cancelar hora — Imagenda</title>
+<link rel="icon" href="data:," />
+<style>
+  :root {
+    --primary: #2563eb;
+    --primary-dark: #1d4ed8;
+    --secondary: #06b6d4;
+    --background: #f8fafc;
+    --surface: #ffffff;
+    --text-primary: #0f172a;
+    --text-secondary: #64748b;
+    --border: #e2e8f0;
+    --success: #22c55e;
+    --error: #ef4444;
+  }
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    background: var(--background);
+    color: var(--text-primary);
+    -webkit-font-smoothing: antialiased;
+  }
+  .page {
+    max-width: 480px;
+    margin: 0 auto;
+    min-height: 100vh;
+    background: var(--surface);
+    box-shadow: 0 0 24px rgba(15, 23, 42, 0.06);
+  }
+  header.top {
+    padding: 24px 20px 16px;
+    border-bottom: 1px solid var(--border);
+  }
+  header.top h1 {
+    font-size: 18px;
+    margin: 0;
+  }
+  header.top p {
+    margin: 6px 0 0;
+    color: var(--text-secondary);
+    font-size: 14px;
+  }
+  header.top .clinic-logo {
+    display: block;
+    max-width: 180px;
+    max-height: 64px;
+    object-fit: contain;
+    margin-bottom: 12px;
+  }
+  .dot {
+    width: 10px; height: 10px; border-radius: 999px;
+    background: linear-gradient(135deg, var(--primary), var(--secondary));
+  }
+  main {
+    padding: 20px;
+  }
+  .btn {
+    display: block;
+    width: 100%;
+    padding: 14px;
+    border: none;
+    border-radius: 10px;
+    font-size: 15px;
+    font-weight: 600;
+    cursor: pointer;
+    text-align: center;
+    text-decoration: none;
+    font-family: inherit;
+  }
+  .btn-primary { background: var(--primary); color: #fff; }
+  .btn-primary:active { background: var(--primary-dark); }
+  .btn-danger { background: var(--error); color: #fff; }
+  .btn-danger:disabled { background: #f5a3a3; cursor: not-allowed; }
+  .btn-danger:not(:disabled):active { background: #dc2626; }
+  .loading {
+    text-align: center;
+    color: var(--text-secondary);
+    font-size: 14px;
+    padding: 24px 0;
+  }
+  .banner {
+    padding: 12px 14px;
+    border-radius: 10px;
+    font-size: 13px;
+    margin-bottom: 16px;
+  }
+  .banner.error { background: #fef2f2; color: #b91c1c; }
+  .banner.info { background: #eff6ff; color: #1d4ed8; }
+  .summary {
+    background: var(--background);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 16px;
+    margin-bottom: 18px;
+  }
+  .summary dt { font-size: 12px; color: var(--text-secondary); margin-top: 10px; }
+  .summary dt:first-child { margin-top: 0; }
+  .summary dd { margin: 2px 0 0; font-size: 15px; font-weight: 600; }
+  .success-icon {
+    width: 56px; height: 56px; border-radius: 999px;
+    background: rgba(34, 197, 94, 0.12);
+    display: flex; align-items: center; justify-content: center;
+    margin: 8px auto 18px;
+  }
+  .success-icon span { font-size: 28px; color: var(--success); }
+  h2.title { font-size: 17px; margin: 0 0 4px; }
+  p.subtitle { font-size: 14px; color: var(--text-secondary); margin: 0 0 18px; }
+  .center { text-align: center; }
+  .step { display: none; }
+  .step.active { display: block; }
+  footer.powered {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    padding: 18px 20px 28px;
+    font-size: 12px;
+    color: var(--text-secondary);
+  }
+  footer.powered .dot { width: 7px; height: 7px; }
+  footer.powered strong { color: var(--text-primary); font-weight: 600; }
+</style>
+</head>
+<body>
+<div class="page">
+  <header class="top">
+    <img class="clinic-logo" id="clinic-logo" alt="" hidden />
+    <h1 id="clinic-name">Tu reserva</h1>
+    <p>Cancelar hora</p>
+  </header>
+
+  <main>
+
+    <section class="step active" data-step="loading">
+      <div class="loading">Cargando tu reserva…</div>
+    </section>
+
+    <!-- Reserva no encontrada o error de conexión -->
+    <section class="step" data-step="error">
+      <div id="error-banner"></div>
+    </section>
+
+    <!-- Datos de la cita + botón de cancelar (o el motivo por el que no se puede) -->
+    <section class="step" data-step="detail">
+      <h2 class="title" id="detail-title">Tu hora</h2>
+      <p class="subtitle" id="detail-subtitle">Revisa los datos de tu reserva.</p>
+
+      <div id="detail-banner"></div>
+
+      <dl class="summary">
+        <dt>Tipo de atención</dt><dd id="sum-tipo"></dd>
+        <dt>Fecha</dt><dd id="sum-fecha"></dd>
+        <dt>Hora</dt><dd id="sum-hora"></dd>
+        <dt>Estado</dt><dd id="sum-estado"></dd>
+      </dl>
+
+      <button class="btn btn-danger" id="btn-cancel" hidden>Cancelar mi hora</button>
+      <a class="btn btn-primary" id="rebook-link-detail" hidden>Reservar otra hora</a>
+    </section>
+
+    <!-- Cancelada -->
+    <section class="step" data-step="done">
+      <div class="success-icon"><span>&#10003;</span></div>
+      <h2 class="title center">Tu hora fue cancelada</h2>
+      <p class="subtitle center" id="done-subtitle"></p>
+      <a class="btn btn-primary" id="rebook-link-done" hidden>Reservar otra hora</a>
+    </section>
+
+  </main>
+
+  <footer class="powered">
+    <span class="dot"></span><span>Reservas con <strong>Imagenda</strong></span>
+  </footer>
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  var ESTADOS = {
+    programada: "Programada",
+    en_espera: "En espera",
+    en_atencion: "En atención",
+    atendida: "Atendida",
+    cancelada: "Cancelada",
+    no_asistio: "No asistió",
+  };
+  var CANCELABLES = ["programada", "en_espera"];
+  var TOO_LATE =
+    "Faltan menos de 2 horas para tu hora: para cancelar, comunícate directamente con el centro.";
+
+  // Token: /cancelar/<token> en reservar.imagenda.cl, o /reservar/cancelar/<token>.
+  var onBookingHost = location.hostname.toLowerCase() === "reservar.imagenda.cl";
+  var parts = location.pathname.split("/").filter(Boolean);
+  var token = "";
+  var i = parts.indexOf("cancelar");
+  if (i !== -1 && parts.length === i + 2) token = decodeURIComponent(parts[i + 1]);
+  var apiUrl = "/public/booking/cancel/" + encodeURIComponent(token);
+
+  var reserva = null;
+
+  function showStep(name) {
+    document.querySelectorAll(".step").forEach(function (el) {
+      el.classList.toggle("active", el.getAttribute("data-step") === name);
+    });
+    window.scrollTo(0, 0);
+  }
+
+  function banner(containerId, message, type) {
+    var el = document.getElementById(containerId);
+    el.innerHTML = "";
+    if (!message) return;
+    var div = document.createElement("div");
+    div.className = "banner " + (type || "error");
+    div.textContent = message;
+    el.appendChild(div);
+  }
+
+  function showError(message) {
+    banner("error-banner", message);
+    showStep("error");
+  }
+
+  function formatFechaLarga(ymd) {
+    var p = String(ymd || "").split("-").map(Number);
+    if (p.length !== 3 || p.some(isNaN)) return ymd || "";
+    var d = new Date(p[0], p[1] - 1, p[2]);
+    return d.toLocaleDateString("es-CL", { weekday: "long", day: "numeric", month: "long" });
+  }
+
+  function rebookHref(slug) {
+    return (onBookingHost ? "/" : "/reservar/") + encodeURIComponent(slug);
+  }
+
+  function setRebookLink(id) {
+    var a = document.getElementById(id);
+    if (reserva && reserva.clinicaSlug) {
+      a.href = rebookHref(reserva.clinicaSlug);
+      a.hidden = false;
+    } else {
+      a.hidden = true;
+    }
+  }
+
+  function showClinic(r) {
+    if (r.clinica) {
+      document.getElementById("clinic-name").textContent = r.clinica;
+      document.title = "Cancelar hora — " + r.clinica;
+    }
+    if (r.tieneLogo && r.clinicaSlug) {
+      var logo = document.getElementById("clinic-logo");
+      logo.alt = r.clinica || "";
+      logo.onerror = function () { logo.hidden = true; };
+      logo.src = "/public/booking/clinic/" + encodeURIComponent(r.clinicaSlug) + "/logo";
+      logo.hidden = false;
+    }
+  }
+
+  function showDone() {
+    document.getElementById("done-subtitle").textContent =
+      "Liberamos tu hora del " + formatFechaLarga(reserva.fecha) + " a las " + reserva.hora + ".";
+    setRebookLink("rebook-link-done");
+    showStep("done");
+  }
+
+  function renderDetail() {
+    var r = reserva;
+    document.getElementById("detail-title").textContent =
+      r.paciente ? "Hola, " + r.paciente : "Tu hora";
+    document.getElementById("sum-tipo").textContent = r.tipo || "—";
+    document.getElementById("sum-fecha").textContent = formatFechaLarga(r.fecha);
+    document.getElementById("sum-hora").textContent = r.hora || "";
+    document.getElementById("sum-estado").textContent = ESTADOS[r.estado] || r.estado;
+
+    var btnCancel = document.getElementById("btn-cancel");
+    banner("detail-banner", "");
+    document.getElementById("rebook-link-detail").hidden = true;
+
+    if (r.sePuedeCancelar) {
+      document.getElementById("detail-subtitle").textContent =
+        "Si ya no puedes asistir, cancela tu hora para que otra persona pueda usarla.";
+      btnCancel.hidden = false;
+    } else {
+      btnCancel.hidden = true;
+      document.getElementById("detail-subtitle").textContent = "Revisa los datos de tu reserva.";
+      if (r.estado === "cancelada") {
+        banner("detail-banner", "Esta hora ya fue cancelada.", "info");
+        setRebookLink("rebook-link-detail");
+      } else if (CANCELABLES.indexOf(r.estado) !== -1) {
+        banner("detail-banner", TOO_LATE);
+      } else {
+        banner(
+          "detail-banner",
+          "Esta hora ya no se puede cancelar: comunícate directamente con el centro."
+        );
+      }
+    }
+    showStep("detail");
+  }
+
+  function fetchJson(url, options) {
+    return fetch(url, options).then(function (res) {
+      return res.json().then(
+        function (body) { return { ok: res.ok, status: res.status, body: body }; },
+        function () { return { ok: false, status: res.status, body: {} }; }
+      );
+    });
+  }
+
+  var btnCancel = document.getElementById("btn-cancel");
+  btnCancel.addEventListener("click", function () {
+    var pregunta =
+      "¿Seguro que quieres cancelar tu hora del " + formatFechaLarga(reserva.fecha) +
+      " a las " + reserva.hora + "?";
+    if (!window.confirm(pregunta)) return;
+
+    btnCancel.disabled = true;
+    btnCancel.textContent = "Cancelando…";
+    banner("detail-banner", "");
+
+    fetchJson(apiUrl, { method: "POST" })
+      .then(function (result) {
+        btnCancel.disabled = false;
+        btnCancel.textContent = "Cancelar mi hora";
+        if (result.ok) {
+          showDone();
+          return;
+        }
+        if (result.status === 409) {
+          // Ya no se puede cancelar (por ej. pasó el plazo): muestra el motivo
+          // y deja de ofrecer el botón.
+          btnCancel.hidden = true;
+        }
+        banner("detail-banner", result.body.error || "No fue posible cancelar tu hora.");
+      })
+      .catch(function () {
+        btnCancel.disabled = false;
+        btnCancel.textContent = "Cancelar mi hora";
+        banner("detail-banner", "No fue posible conectar con el servidor. Intenta de nuevo.");
+      });
+  });
+
+  if (!token) {
+    showError("No encontramos esa reserva.");
+    return;
+  }
+
+  fetchJson(apiUrl)
+    .then(function (result) {
+      if (!result.ok) {
+        showError(result.body.error || "No fue posible cargar tu reserva.");
+        return;
+      }
+      reserva = result.body;
+      showClinic(reserva);
+      renderDetail();
+    })
+    .catch(function () {
+      showError("No fue posible conectar con el servidor. Intenta de nuevo.");
+    });
+})();
+</script>
+</body>
+</html>

@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import express from "express";
@@ -75,14 +76,29 @@ const sendBookingForm = (_request, response) =>
   response.sendFile(path.join(__dirname, "public", "reservar.html"));
 const sendBookingCenters = (_request, response) =>
   response.sendFile(path.join(__dirname, "public", "reservar-centros.html"));
+// Enlace de cancelación que recibe el paciente al reservar:
+// reservar.imagenda.cl/cancelar/<token>, o /reservar/cancelar/<token> en
+// cualquier otro host. La página lee el token de la URL.
+const sendBookingCancel = (_request, response) =>
+  response.sendFile(path.join(__dirname, "public", "cancelar.html"));
+// Primeros segmentos de ruta que nunca son el slug de una clínica.
+const BOOKING_RESERVED_PATHS = new Set(["cancelar", "reservar"]);
+const isBookingSlugPath = (slug) =>
+  BOOKING_SLUG_RE.test(slug) && !BOOKING_RESERVED_PATHS.has(slug);
 
 app.get("/reservar", sendBookingCenters);
-app.get("/reservar/:slug", sendBookingForm);
+app.get("/reservar/cancelar/:token", sendBookingCancel);
+app.get("/reservar/:slug", (request, response, next) =>
+  isBookingSlugPath(request.params.slug) ? sendBookingForm(request, response) : next(),
+);
 app.get("/", (request, response, next) =>
   isBookingHost(request) ? sendBookingCenters(request, response) : next(),
 );
+app.get("/cancelar/:token", (request, response, next) =>
+  isBookingHost(request) ? sendBookingCancel(request, response) : next(),
+);
 app.get("/:slug", (request, response, next) =>
-  isBookingHost(request) && BOOKING_SLUG_RE.test(request.params.slug)
+  isBookingHost(request) && isBookingSlugPath(request.params.slug)
     ? sendBookingForm(request, response)
     : next(),
 );
@@ -463,6 +479,9 @@ function shapeAppointmentRow(row) {
     // 'staff' (creada por el personal) o 'web' (reservada por el paciente,
     // sin sala/profesional asignado todavía). Ver sql/public_booking.sql.
     origin: row.origin ?? "staff",
+    // 'paciente' cuando la canceló el propio paciente con el enlace de su
+    // reserva web. Ver sql/booking_cancel_by_patient.sql.
+    cancelledBy: row.cancelled_by ?? null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -1826,6 +1845,14 @@ app.patch("/appointments/:id", requireRole(AGENDA_STAFF), async (request, respon
       return response.status(404).json({ error: "Cita no encontrada" });
     }
 
+    // Si el personal cambia el estado, la cancelación ya no es del paciente:
+    // así "Cancelada por el paciente" solo aparece cuando la canceló él con
+    // el enlace de su reserva (ver /public/booking/cancel/:token).
+    if (patch.status !== undefined && patch.status !== existing.status) {
+      patch.cancelled_by = null;
+      patch.cancelled_at = null;
+    }
+
     // Revalida el choque de agenda si cambió algo que afecta el solape (hora,
     // duración, sala o profesional). Los estados cancelada/no_asistio liberan
     // el bloque, así que en ese caso no se valida.
@@ -2217,6 +2244,10 @@ app.post("/public/booking", async (request, response) => {
       patientId = newPatient.id;
     }
 
+    // Secreto del enlace con el que el paciente puede cancelar su hora sin
+    // iniciar sesión (ver /public/booking/cancel/:token más abajo).
+    const cancelToken = crypto.randomBytes(24).toString("hex");
+
     const { data: appointment, error: insertAppointmentError } = await supabase
       .from("appointments")
       .insert({
@@ -2230,17 +2261,142 @@ app.post("/public/booking", async (request, response) => {
         notes: "Reservado por el paciente vía web.",
         origin: "web",
         clinic_id: clinic.id,
+        cancel_token: cancelToken,
       })
       .select("id, scheduled_at")
       .single();
     if (insertAppointmentError) throw insertAppointmentError;
 
     return response.status(201).json({
-      reserva: { id: appointment.id, fecha, hora, tipo },
+      reserva: {
+        id: appointment.id,
+        fecha,
+        hora,
+        tipo,
+        cancelUrl: `https://${BOOKING_HOST}/cancelar/${cancelToken}`,
+      },
     });
   } catch (error) {
     console.error("Error al crear la reserva web:", error);
     return response.status(500).json({ error: "No fue posible confirmar la reserva. Intenta de nuevo." });
+  }
+});
+
+// ---- Cancelación por el paciente ------------------------------------------
+// Con el cancel_token que recibió al reservar, el paciente puede ver y
+// cancelar su hora sin iniciar sesión. Como el enlace es lo único que se
+// necesita, la respuesta NO lleva RUT, teléfono ni correo: solo el nombre de
+// pila y los datos de la cita.
+
+const BOOKING_CANCEL_TOKEN_RE = /^[a-f0-9]{48}$/;
+const BOOKING_CANCELLABLE_STATUSES = ["programada", "en_espera"];
+const BOOKING_CANCEL_NOT_FOUND = "No encontramos esa reserva.";
+const BOOKING_CANCEL_TOO_LATE =
+  "Faltan menos de 2 horas para tu hora: para cancelar, comunícate directamente con el centro.";
+
+async function findAppointmentByCancelToken(token) {
+  const normalized = typeof token === "string" ? token.trim().toLowerCase() : "";
+  if (!BOOKING_CANCEL_TOKEN_RE.test(normalized)) return null;
+  const { data, error } = await supabase
+    .from("appointments")
+    .select(
+      "id, scheduled_at, status, reason, patient:patients(name), clinic:clinics(name, booking_slug, logo_path)",
+    )
+    .eq("cancel_token", normalized)
+    .maybeSingle();
+  if (error) throw error;
+  return data ?? null;
+}
+
+function meetsBookingLeadTime(scheduledAt) {
+  return new Date(scheduledAt).getTime() - Date.now() >= BOOKING_MIN_LEAD_MINUTES * 60000;
+}
+
+function canPatientCancel(appointment) {
+  return (
+    BOOKING_CANCELLABLE_STATUSES.includes(appointment.status) &&
+    meetsBookingLeadTime(appointment.scheduled_at)
+  );
+}
+
+// GET /public/booking/cancel/:token
+app.get("/public/booking/cancel/:token", async (request, response) => {
+  try {
+    if (isRateLimited(request.ip, { max: 60, windowMs: 10 * 60 * 1000 })) {
+      return response
+        .status(429)
+        .json({ error: "Demasiadas solicitudes, intenta de nuevo en unos minutos." });
+    }
+
+    const appointment = await findAppointmentByCancelToken(request.params.token);
+    if (!appointment) return response.status(404).json({ error: BOOKING_CANCEL_NOT_FOUND });
+
+    const fullName = appointment.patient?.name?.trim() ?? "";
+    return response.json({
+      clinica: appointment.clinic?.name ?? null,
+      clinicaSlug: appointment.clinic?.booking_slug ?? null,
+      tieneLogo: Boolean(appointment.clinic?.logo_path),
+      paciente: fullName.split(/\s+/)[0] || null,
+      tipo: appointment.reason,
+      fecha: formatClinicDate(appointment.scheduled_at),
+      hora: formatClinicClock(appointment.scheduled_at),
+      estado: appointment.status,
+      sePuedeCancelar: canPatientCancel(appointment),
+    });
+  } catch (error) {
+    console.error("Error al obtener la reserva a cancelar:", error);
+    return response.status(500).json({ error: "No fue posible cargar la reserva." });
+  }
+});
+
+// POST /public/booking/cancel/:token
+// Idempotente: si la cita ya estaba cancelada responde OK sin tocarla.
+app.post("/public/booking/cancel/:token", async (request, response) => {
+  try {
+    if (isRateLimited(request.ip, { max: 10, windowMs: 10 * 60 * 1000 })) {
+      return response
+        .status(429)
+        .json({ error: "Demasiados intentos, intenta de nuevo en unos minutos." });
+    }
+
+    const appointment = await findAppointmentByCancelToken(request.params.token);
+    if (!appointment) return response.status(404).json({ error: BOOKING_CANCEL_NOT_FOUND });
+
+    if (appointment.status === "cancelada") {
+      return response.json({ ok: true, estado: "cancelada" });
+    }
+    if (!BOOKING_CANCELLABLE_STATUSES.includes(appointment.status)) {
+      return response.status(409).json({
+        error: "Esta hora ya no se puede cancelar: comunícate directamente con el centro.",
+      });
+    }
+    if (!meetsBookingLeadTime(appointment.scheduled_at)) {
+      return response.status(409).json({ error: BOOKING_CANCEL_TOO_LATE });
+    }
+
+    // El filtro por estado evita pisar un cambio que el personal haya hecho
+    // entre la lectura y este update (ej. la pasó a 'en_atencion').
+    const { data: updated, error: updateError } = await supabase
+      .from("appointments")
+      .update({
+        status: "cancelada",
+        cancelled_by: "paciente",
+        cancelled_at: new Date().toISOString(),
+      })
+      .eq("id", appointment.id)
+      .in("status", BOOKING_CANCELLABLE_STATUSES)
+      .select("id");
+    if (updateError) throw updateError;
+    if (!updated?.length) {
+      return response.status(409).json({
+        error: "Esta hora ya no se puede cancelar: comunícate directamente con el centro.",
+      });
+    }
+
+    return response.json({ ok: true, estado: "cancelada" });
+  } catch (error) {
+    console.error("Error al cancelar la reserva web:", error);
+    return response.status(500).json({ error: "No fue posible cancelar la reserva. Intenta de nuevo." });
   }
 });
 

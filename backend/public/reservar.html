@@ -141,6 +141,28 @@
   .btn-primary { background: var(--primary); color: #fff; }
   .btn-primary:disabled { background: #93b4f3; cursor: not-allowed; }
   .btn-primary:not(:disabled):active { background: var(--primary-dark); }
+  .btn-secondary {
+    background: var(--surface);
+    color: var(--primary);
+    border: 1px solid var(--primary);
+    padding: 11px;
+  }
+  .btn-secondary:active { background: #eff6ff; }
+  .cancel-box {
+    background: #eff6ff;
+    border: 1px solid #bfdbfe;
+    border-radius: 12px;
+    padding: 14px 16px;
+    margin-bottom: 18px;
+  }
+  .cancel-box p { margin: 0 0 8px; font-size: 13px; color: var(--text-primary); }
+  .cancel-box a {
+    display: block;
+    font-size: 13px;
+    color: var(--primary-dark);
+    word-break: break-all;
+    margin-bottom: 12px;
+  }
   .btn-link {
     background: none;
     color: var(--text-secondary);
@@ -363,9 +385,11 @@
         <dt>Tipo de atención</dt><dd id="done-tipo"></dd>
       </dl>
 
-      <p class="hint" style="margin-bottom:16px;">
-        Guarda esta información. Si necesitas cambiar o cancelar tu hora, comunícate directamente con el centro.
-      </p>
+      <div class="cancel-box" id="cancel-box" hidden>
+        <p>Si necesitas cancelar, usa este enlace (guárdalo o sácale una captura):</p>
+        <a id="cancel-link" href="#" target="_blank" rel="noopener"></a>
+        <button class="btn btn-secondary" id="btn-copy-cancel" type="button">Copiar enlace</button>
+      </div>
 
       <p class="hint" id="email-confirmation-note" style="display:none; margin-bottom:16px;">
         También te enviamos esta confirmación a tu correo.
@@ -672,6 +696,12 @@
         document.getElementById("done-tipo").textContent = state.tipo;
         document.getElementById("email-confirmation-note").style.display =
           state.email ? "" : "none";
+        var cancelUrl = (result.body.reserva && result.body.reserva.cancelUrl) || "";
+        var cancelLink = document.getElementById("cancel-link");
+        cancelLink.href = cancelUrl || "#";
+        cancelLink.textContent = cancelUrl;
+        document.getElementById("btn-copy-cancel").textContent = "Copiar enlace";
+        document.getElementById("cancel-box").hidden = !cancelUrl;
         showStep(4);
       })
       .catch(function () {
@@ -681,7 +711,36 @@
       });
   });
 
-  // ---------------- Paso 4: reiniciar ----------------
+  // ---------------- Paso 4: copiar enlace de cancelación y reiniciar ----------------
+
+  var btnCopyCancel = document.getElementById("btn-copy-cancel");
+  btnCopyCancel.addEventListener("click", function () {
+    var url = document.getElementById("cancel-link").textContent;
+    function copied() { btnCopyCancel.textContent = "¡Enlace copiado!"; }
+    function fallback() {
+      // Sin Clipboard API (http o navegadores antiguos): copia vía textarea.
+      var ta = document.createElement("textarea");
+      ta.value = url;
+      ta.setAttribute("readonly", "");
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.select();
+      try {
+        if (document.execCommand("copy")) copied();
+        else btnCopyCancel.textContent = "Mantén presionado el enlace para copiarlo";
+      } catch (e) {
+        btnCopyCancel.textContent = "Mantén presionado el enlace para copiarlo";
+      }
+      document.body.removeChild(ta);
+    }
+    if (navigator.clipboard && window.isSecureContext) {
+      navigator.clipboard.writeText(url).then(copied, fallback);
+    } else {
+      fallback();
+    }
+  });
+
 
   document.getElementById("btn-restart").addEventListener("click", function () {
     state = { tipo: "", fecha: "", hora: "", nombre: "", rut: "", telefono: "", email: "" };

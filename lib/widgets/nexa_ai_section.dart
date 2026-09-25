@@ -121,7 +121,7 @@ class _NexaAiSectionState extends State<NexaAiSection> {
           ),
           const SizedBox(height: 24),
           const Text(
-            'Buenos días, Manuel.',
+            'Resumen de hoy',
             style: TextStyle(
               fontSize: 21,
               fontWeight: FontWeight.w800,

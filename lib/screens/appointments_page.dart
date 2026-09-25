@@ -524,11 +524,14 @@ class _AppointmentTile extends StatelessWidget {
 
     final canAdvance = _kAdvanceNext.containsKey(status);
     final isClosed = status == 'cancelada' || status == 'no_asistio';
-    // Reservada por el paciente desde /reservar y todavía sin sala asignada
-    // (ver sql/public_booking.sql): se destaca para que recepción la vea de
-    // inmediato y le asigne sala antes del día de la atención.
+    // Reservada por el paciente desde /reservar, todavía sin sala asignada
+    // (ver sql/public_booking.sql) y aún activa: se destaca para que
+    // recepción la vea de inmediato y le asigne sala antes del día de la
+    // atención. Si ya se canceló, no asistió o se atendió, la fila se ve normal.
     final isWebPending =
-        appointment['origin'] == 'web' && appointment['roomId'] == null;
+        appointment['origin'] == 'web' &&
+        appointment['roomId'] == null &&
+        (status == 'programada' || status == 'en_espera');
 
     return Container(
       margin: const EdgeInsets.only(bottom: 10),

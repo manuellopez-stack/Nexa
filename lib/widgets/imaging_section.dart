@@ -8,9 +8,18 @@ import '../services/api_service.dart';
 import 'dicom_viewer.dart';
 
 class ImagingOrdersSection extends StatefulWidget {
-  const ImagingOrdersSection({super.key, required this.patientId});
+  const ImagingOrdersSection({
+    super.key,
+    required this.patientId,
+    this.initialOrderId,
+  });
 
   final int? patientId;
+
+  /// Si viene, al cargar las órdenes la sección se desplaza a la vista y
+  /// abre el detalle de esa orden (lo usa "Revisar" en la pantalla Por
+  /// validar).
+  final String? initialOrderId;
 
   @override
   State<ImagingOrdersSection> createState() => _ImagingOrdersSectionState();
@@ -23,6 +32,24 @@ class _ImagingOrdersSectionState extends State<ImagingOrdersSection> {
   void initState() {
     super.initState();
     _ordersFuture = _load();
+    if (widget.initialOrderId != null) {
+      _ordersFuture.then<void>(
+        (_) => _focusInitialOrder(),
+        onError: (_) => _focusInitialOrder(),
+      );
+    }
+  }
+
+  void _focusInitialOrder() {
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      if (!mounted) return;
+      await Scrollable.ensureVisible(
+        context,
+        duration: const Duration(milliseconds: 300),
+        alignment: 0.05,
+      );
+      if (mounted) _openOrderDetail(widget.initialOrderId!);
+    });
   }
 
   Future<List<Map<String, dynamic>>> _load() {

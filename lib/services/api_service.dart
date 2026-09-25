@@ -86,6 +86,10 @@ class ApiService {
     _fullName = fullName;
   }
 
+  /// Solo para tests de widgets: fija el rol sin iniciar sesión.
+  @visibleForTesting
+  static void debugSetRole(String? role) => _role = role;
+
   static void logout() {
     _accessToken = null;
     _currentUser = null;
@@ -217,6 +221,24 @@ class ApiService {
     try {
       response = await http
           .get(Uri.parse('$_baseUrl/dashboard/summary'), headers: _headers())
+          .timeout(const Duration(seconds: 30));
+    } catch (_) {
+      throw const ApiException(
+        'No fue posible conectar con el backend de Imagenda.',
+      );
+    }
+
+    return _decodeMap(response);
+  }
+
+  /// Pantalla "Por validar": `{ items: [...], conteos: { total, documento,
+  /// laboratorio, imagenologia, dental } }`, lo más antiguo primero.
+  static Future<Map<String, dynamic>> getValidationQueue() async {
+    final http.Response response;
+
+    try {
+      response = await http
+          .get(Uri.parse('$_baseUrl/validation-queue'), headers: _headers())
           .timeout(const Duration(seconds: 30));
     } catch (_) {
       throw const ApiException(

@@ -104,6 +104,12 @@ class _DashboardPageState extends State<DashboardPage> {
 
   void _openAgenda() => ImagendaShell.navigate(context, ShellSection.agenda);
 
+  // "Informes por validar": quien puede validar va a la pantalla Por validar;
+  // el resto (ej. técnico) sigue bajando a la lista de pacientes de hoy.
+  void _openPendingReports() => ApiService.canValidate
+      ? ImagendaShell.navigate(context, ShellSection.validation)
+      : _scrollToPatients();
+
   void _scrollToPatients() {
     final target = _patientsSectionKey.currentContext;
     if (target == null) return;
@@ -149,7 +155,7 @@ class _DashboardPageState extends State<DashboardPage> {
 
                     final attention = _AttentionCard(
                       summaryFuture: _summaryFuture!,
-                      onPendingReports: _scrollToPatients,
+                      onPendingReports: _openPendingReports,
                       onUnlinkedStudies: () => ImagendaShell.navigate(
                         context,
                         ShellSection.unlinkedStudies,
@@ -361,7 +367,7 @@ class _DashboardPageState extends State<DashboardPage> {
                     : pending == 0
                     ? 'Al día'
                     : 'requieren revisión',
-                onTap: _scrollToPatients,
+                onTap: _openPendingReports,
               ),
             ];
 

@@ -9,10 +9,18 @@ import '../screens/clinics_page.dart';
 import '../screens/dashboard_page.dart';
 import '../screens/orthanc_studies_page.dart';
 import '../screens/staff_management_page.dart';
+import '../screens/validation_queue_page.dart';
 import '../services/api_service.dart';
 
 /// Secciones del menú lateral.
-enum ShellSection { dashboard, agenda, unlinkedStudies, team, clinics }
+enum ShellSection {
+  dashboard,
+  agenda,
+  unlinkedStudies,
+  validation,
+  team,
+  clinics,
+}
 
 /// Estructura común de las pantallas de Imagenda: menú lateral blanco a la
 /// izquierda y el contenido de la pantalla ([child]) sobre el fondo de la app.
@@ -46,6 +54,26 @@ class ImagendaShell extends StatefulWidget {
     }
   }
 
+  /// Total de informes por validar (globo del ítem "Por validar"). null
+  /// mientras no se conoce o si quien está conectado no puede validar.
+  static final ValueNotifier<int?> pendingValidationCount = ValueNotifier(null);
+
+  /// Vuelve a consultar los informes por validar. Nunca lanza.
+  static Future<void> refreshPendingValidationCount() async {
+    if (!ApiService.canValidate) {
+      pendingValidationCount.value = null;
+      return;
+    }
+    try {
+      final queue = await ApiService.getValidationQueue();
+      final counts = queue['conteos'];
+      final total = counts is Map ? counts['total'] : null;
+      if (total is num) pendingValidationCount.value = total.toInt();
+    } catch (_) {
+      // Se conserva el último valor conocido.
+    }
+  }
+
   /// Reemplaza la pantalla actual por la de [section] (sin apilar).
   static void navigate(
     BuildContext context,
@@ -58,6 +86,7 @@ class ImagendaShell extends StatefulWidget {
         openNewAppointment: openNewAppointment,
       ),
       ShellSection.unlinkedStudies => const OrthancStudiesPage(),
+      ShellSection.validation => const ValidationQueuePage(),
       ShellSection.team => const StaffManagementPage(),
       ShellSection.clinics => const ClinicsPage(),
     };
@@ -80,6 +109,7 @@ class _ImagendaShellState extends State<ImagendaShell> {
   void initState() {
     super.initState();
     ImagendaShell.refreshUnlinkedStudiesCount();
+    ImagendaShell.refreshPendingValidationCount();
   }
 
   @override
@@ -212,6 +242,7 @@ class _Sidebar extends StatelessWidget {
   void _logout(BuildContext context) {
     ApiService.logout();
     ImagendaShell.unlinkedStudiesCount.value = null;
+    ImagendaShell.pendingValidationCount.value = null;
     Navigator.pushAndRemoveUntil(
       context,
       MaterialPageRoute(builder: (_) => const LoginPage()),
@@ -275,6 +306,19 @@ class _Sidebar extends StatelessWidget {
                       'Estudios sin vincular',
                       trailing: ValueListenableBuilder<int?>(
                         valueListenable: ImagendaShell.unlinkedStudiesCount,
+                        builder: (context, count, _) =>
+                            count != null && count > 0
+                            ? _CountBubble(count: count)
+                            : const SizedBox.shrink(),
+                      ),
+                    ),
+                  if (ApiService.canValidate)
+                    item(
+                      ShellSection.validation,
+                      Icons.fact_check_outlined,
+                      'Por validar',
+                      trailing: ValueListenableBuilder<int?>(
+                        valueListenable: ImagendaShell.pendingValidationCount,
                         builder: (context, count, _) =>
                             count != null && count > 0
                             ? _CountBubble(count: count)

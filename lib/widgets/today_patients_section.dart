@@ -11,6 +11,69 @@ import 'imaging_section.dart';
 import 'lab_section.dart';
 import 'patient_form.dart';
 
+/// Sección de la ficha del paciente a la que se lleva al usuario al abrirla
+/// desde otra pantalla (ver [openPatientFile]).
+enum PatientFileFocus { documents, lab, imaging, dental }
+
+/// Abre la ficha clínica completa del paciente (el mismo diálogo que se abre
+/// desde "Pacientes de hoy") y, si se indica [focus], la desplaza a esa
+/// sección y abre el diálogo donde hoy se revisa el ítem: el documento
+/// [documentFilename] o la orden [orderId]. Se completa al cerrar la ficha.
+Future<void> openPatientFile(
+  BuildContext context,
+  int patientId, {
+  PatientFileFocus? focus,
+  String? documentFilename,
+  String? orderId,
+}) async {
+  final messenger = ScaffoldMessenger.of(context);
+  final rootNavigator = Navigator.of(context, rootNavigator: true);
+
+  showDialog<void>(
+    context: context,
+    barrierDismissible: false,
+    builder: (_) => const AlertDialog(
+      content: SizedBox(
+        width: 280,
+        child: Row(
+          children: [
+            CircularProgressIndicator(),
+            SizedBox(width: 18),
+            Expanded(child: Text('Cargando ficha del paciente...')),
+          ],
+        ),
+      ),
+    ),
+  );
+
+  Map<String, dynamic> patient;
+  try {
+    patient = await ApiService.getPatient(patientId);
+  } on ApiException catch (error) {
+    rootNavigator.pop();
+    messenger.showSnackBar(SnackBar(content: Text(error.message)));
+    return;
+  } catch (_) {
+    rootNavigator.pop();
+    messenger.showSnackBar(
+      const SnackBar(content: Text('Ocurrió un error inesperado al cargar la ficha.')),
+    );
+    return;
+  }
+
+  rootNavigator.pop();
+  if (!context.mounted) return;
+  await showDialog<void>(
+    context: context,
+    builder: (_) => _PatientDialog(
+      patient: patient,
+      focus: focus,
+      focusDocument: documentFilename,
+      focusOrderId: orderId,
+    ),
+  );
+}
+
 class TodayPatientsSection extends StatefulWidget {
   const TodayPatientsSection({super.key});
 
@@ -58,46 +121,8 @@ class _TodayPatientsSectionState extends State<TodayPatientsSection> {
       return;
     }
 
-    showDialog<void>(
-      context: context,
-      barrierDismissible: false,
-      builder: (_) => const AlertDialog(
-        content: SizedBox(
-          width: 280,
-          child: Row(
-            children: [
-              CircularProgressIndicator(),
-              SizedBox(width: 18),
-              Expanded(child: Text('Cargando ficha del paciente...')),
-            ],
-          ),
-        ),
-      ),
-    );
-
-    try {
-      final patient = await ApiService.getPatient(id);
-
-      if (!mounted) return;
-      Navigator.of(context, rootNavigator: true).pop();
-
-      await showDialog<void>(
-        context: context,
-        builder: (dialogContext) {
-          return _PatientDialog(patient: patient);
-        },
-      );
-
-      if (mounted) _reloadPatients();
-    } on ApiException catch (error) {
-      if (!mounted) return;
-      Navigator.of(context, rootNavigator: true).pop();
-      _showError(error.message);
-    } catch (_) {
-      if (!mounted) return;
-      Navigator.of(context, rootNavigator: true).pop();
-      _showError('Ocurrió un error inesperado al cargar la ficha.');
-    }
+    await openPatientFile(context, id);
+    if (mounted) _reloadPatients();
   }
 
   void _showError(String message) {
@@ -460,9 +485,17 @@ class _ReceptionDocumentsTabState extends State<_ReceptionDocumentsTab> {
 }
 
 class _PatientDialog extends StatefulWidget {
-  const _PatientDialog({required this.patient});
+  const _PatientDialog({
+    required this.patient,
+    this.focus,
+    this.focusDocument,
+    this.focusOrderId,
+  });
 
   final Map<String, dynamic> patient;
+  final PatientFileFocus? focus;
+  final String? focusDocument;
+  final String? focusOrderId;
 
   @override
   State<_PatientDialog> createState() => _PatientDialogState();
@@ -488,6 +521,33 @@ class _PatientDialogState extends State<_PatientDialog> {
   // entonces a ser solo para actualizar los datos del paciente, no para
   // que el documento aparezca.
   bool _documentSaved = false;
+
+  final GlobalKey _documentsKey = GlobalKey();
+
+  @override
+  void initState() {
+    super.initState();
+    // Las órdenes (laboratorio/imagenología/dental) se enfocan solas al
+    // cargar (initialOrderId); los documentos ya están en la ficha, así que
+    // se enfocan acá.
+    if (widget.focus == PatientFileFocus.documents) {
+      WidgetsBinding.instance.addPostFrameCallback((_) async {
+        final target = _documentsKey.currentContext;
+        if (target != null) {
+          await Scrollable.ensureVisible(
+            target,
+            duration: const Duration(milliseconds: 300),
+            alignment: 0.05,
+          );
+        }
+        final filename = widget.focusDocument;
+        if (mounted && filename != null) _showSavedDocument(filename);
+      });
+    }
+  }
+
+  String? _orderFocus(PatientFileFocus section) =>
+      widget.focus == section ? widget.focusOrderId : null;
 
   @override
   void dispose() {
@@ -1101,9 +1161,10 @@ $documentsText
               const SizedBox(height: 20),
               const Divider(),
               const SizedBox(height: 12),
-              const Text(
+              Text(
                 'Documentos disponibles',
-                style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800),
+                key: _documentsKey,
+                style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w800),
               ),
               const SizedBox(height: 10),
               if (documents.isEmpty)
@@ -1204,18 +1265,21 @@ $documentsText
                 const SizedBox(height: 12),
                 LabOrdersSection(
                   patientId: patient['id'] is int ? patient['id'] as int : null,
+                  initialOrderId: _orderFocus(PatientFileFocus.lab),
                 ),
                 const SizedBox(height: 20),
                 const Divider(),
                 const SizedBox(height: 12),
                 ImagingOrdersSection(
                   patientId: patient['id'] is int ? patient['id'] as int : null,
+                  initialOrderId: _orderFocus(PatientFileFocus.imaging),
                 ),
                 const SizedBox(height: 20),
                 const Divider(),
                 const SizedBox(height: 12),
                 DentalOrdersSection(
                   patientId: patient['id'] is int ? patient['id'] as int : null,
+                  initialOrderId: _orderFocus(PatientFileFocus.dental),
                 ),
               ],
               // Sección "Cobros": solo administrador y recepción. Recepción la

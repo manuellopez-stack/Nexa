@@ -1097,6 +1097,7 @@ app.post("/staff/accept-invite", async (request, response) => {
 // tener un rol asignado. Algunas rutas además exigen un rol específico.
 app.use("/patients", requireAuth, requireClinic);
 app.use("/dashboard", requireAuth);
+app.use("/validation-queue", requireAuth);
 app.use("/rooms", requireAuth, requireClinic);
 app.use("/appointments", requireAuth, requireClinic);
 app.use("/chat", requireAuth, requireRole(AI_STAFF));
@@ -1592,6 +1593,174 @@ app.get("/dashboard/summary", requireRole([...CLINICAL_STAFF, "recepcion"]), asy
   } catch (error) {
     console.error("Error al calcular el resumen del dashboard:", error);
     return response.status(500).json({ error: "No fue posible calcular el resumen." });
+  }
+});
+
+// GET /validation-queue
+// Pantalla "Por validar": lista unificada de lo que un profesional todavía
+// tiene que revisar, con los mismos cuatro grupos que suma pendingValidation
+// en /dashboard/summary y el mismo alcance por clínica (solo un admin de
+// plataforma ve todas).
+//
+// `desde` = cuándo quedó listo para validar, según la tabla:
+//   - documento:    documents.incorporated_at (se reescribe en cada guardado,
+//                   que es justo cuando la validación vuelve a 'pendiente')
+//   - laboratorio:  lab_orders.completed_at (cuando se cargó el último resultado)
+//   - imagenologia: imaging_orders.informed_at (cuando se vinculó el informe)
+//   - dental:       dental_orders.performed_at (cuando se registró el resultado)
+// Si esa columna viniera vacía se usa requested_at de la orden. Orden: más
+// antiguo primero; sin fecha al final.
+//
+// Nota: una orden de imagenología 'informado' tiene además su informe en
+// documents con validation_status 'pendiente', así que aparece en los dos
+// grupos (igual que en el conteo de pendingValidation). Validar el documento
+// valida también la orden.
+app.get("/validation-queue", requireRole(VALIDATORS), async (request, response) => {
+  try {
+    const scopeClinicId = request.isPlatformAdmin ? null : request.staffProfile?.clinic_id ?? null;
+    if (!request.isPlatformAdmin && !scopeClinicId) {
+      return response.status(403).json({ error: "Tu cuenta no tiene una clínica asignada." });
+    }
+    const scoped = (query, column = "clinic_id") =>
+      scopeClinicId ? query.eq(column, scopeClinicId) : query;
+
+    // documents se filtra por la clínica del paciente, igual que en
+    // /dashboard/summary.
+    const documentsQuery = supabase
+      .from("documents")
+      .select(
+        "id, patient_id, filename, document_type, exam, incorporated_at, patient:patients!inner(name, rut, clinic_id)",
+      )
+      .eq("validation_status", "pendiente");
+
+    const [docsResult, labResult, imagingResult, dentalResult] = await Promise.all([
+      scopeClinicId ? documentsQuery.eq("patient.clinic_id", scopeClinicId) : documentsQuery,
+      scoped(
+        supabase
+          .from("lab_orders")
+          .select("id, patient_id, requested_at, completed_at, patient:patients(name, rut)")
+          .eq("status", "completado"),
+      ),
+      scoped(
+        supabase
+          .from("imaging_orders")
+          .select("id, patient_id, requested_at, informed_at, patient:patients(name, rut)")
+          .eq("status", "informado"),
+      ),
+      scoped(
+        supabase
+          .from("dental_orders")
+          .select("id, patient_id, requested_at, performed_at, patient:patients(name, rut)")
+          .eq("status", "realizado"),
+      ),
+    ]);
+    for (const result of [docsResult, labResult, imagingResult, dentalResult]) {
+      if (result.error) throw result.error;
+    }
+    const docs = docsResult.data ?? [];
+    const labOrders = labResult.data ?? [];
+    const imagingOrders = imagingResult.data ?? [];
+    const dentalOrders = dentalResult.data ?? [];
+
+    // Nombres de los exámenes de cada orden, y el médico del informe de
+    // imagenología (el documento vinculado a la orden).
+    const idsOf = (rows) => rows.map((row) => row.id);
+    const namesByOrder = async (table, select, pickName, orderIds) => {
+      if (orderIds.length === 0) return new Map();
+      const { data, error } = await supabase.from(table).select(select).in("order_id", orderIds);
+      if (error) throw error;
+      const map = new Map();
+      for (const row of data ?? []) {
+        const name = pickName(row);
+        if (!name) continue;
+        map.set(row.order_id, [...(map.get(row.order_id) ?? []), name]);
+      }
+      return map;
+    };
+    const imagingIds = idsOf(imagingOrders);
+    const [labNames, imagingNames, dentalNames, imagingReports] = await Promise.all([
+      namesByOrder("lab_order_panels", "order_id, lab_panels(name)", (r) => r.lab_panels?.name, idsOf(labOrders)),
+      namesByOrder("imaging_order_types", "order_id, imaging_types(name)", (r) => r.imaging_types?.name, imagingIds),
+      namesByOrder("dental_order_procedures", "order_id, dental_procedures(name)", (r) => r.dental_procedures?.name, idsOf(dentalOrders)),
+      imagingIds.length
+        ? supabase.from("documents").select("imaging_order_id, doctor").in("imaging_order_id", imagingIds)
+        : Promise.resolve({ data: [], error: null }),
+    ]);
+    if (imagingReports.error) throw imagingReports.error;
+    const reportDoctorByOrder = new Map(
+      (imagingReports.data ?? [])
+        .filter((row) => typeof row.doctor === "string" && row.doctor.trim())
+        .map((row) => [row.imaging_order_id, row.doctor.trim()]),
+    );
+
+    const patientFields = (row) => ({
+      patientId: row.patient_id,
+      patientName: row.patient?.name ?? null,
+      patientRut: row.patient?.rut ?? null,
+    });
+    const joinNames = (map, id, fallback) => (map.get(id) ?? []).join(", ") || fallback;
+
+    const items = [
+      ...docs.map((row) => ({
+        tipo: "documento",
+        id: row.id,
+        ...patientFields(row),
+        titulo: row.exam || row.document_type || row.filename,
+        detalle: "Leído y resumido por IA",
+        // Todo documento en `documents` nace de un análisis de IA
+        // (saveDocumentRecord); es lo que un profesional debe confirmar.
+        esIA: true,
+        desde: row.incorporated_at ?? null,
+        // Nombre del archivo: la ficha abre y valida el documento por nombre.
+        archivo: row.filename,
+      })),
+      ...labOrders.map((row) => ({
+        tipo: "laboratorio",
+        id: row.id,
+        ...patientFields(row),
+        titulo: joinNames(labNames, row.id, "Orden de laboratorio"),
+        detalle: "Resultados cargados",
+        esIA: false,
+        desde: row.completed_at ?? row.requested_at ?? null,
+      })),
+      ...imagingOrders.map((row) => ({
+        tipo: "imagenologia",
+        id: row.id,
+        ...patientFields(row),
+        titulo: joinNames(imagingNames, row.id, "Orden de imagenología"),
+        detalle: reportDoctorByOrder.has(row.id)
+          ? `Informado por ${reportDoctorByOrder.get(row.id)}`
+          : "Informado",
+        esIA: false,
+        desde: row.informed_at ?? row.requested_at ?? null,
+      })),
+      ...dentalOrders.map((row) => ({
+        tipo: "dental",
+        id: row.id,
+        ...patientFields(row),
+        titulo: joinNames(dentalNames, row.id, "Orden dental"),
+        detalle: "Realizado",
+        esIA: false,
+        desde: row.performed_at ?? row.requested_at ?? null,
+      })),
+    ];
+
+    const timeOf = (item) => (item.desde ? new Date(item.desde).getTime() : Number.POSITIVE_INFINITY);
+    items.sort((a, b) => timeOf(a) - timeOf(b));
+
+    return response.json({
+      items,
+      conteos: {
+        total: items.length,
+        documento: docs.length,
+        laboratorio: labOrders.length,
+        imagenologia: imagingOrders.length,
+        dental: dentalOrders.length,
+      },
+    });
+  } catch (error) {
+    console.error("Error al obtener la lista de informes por validar:", error);
+    return response.status(500).json({ error: "No fue posible cargar los informes por validar." });
   }
 });
 

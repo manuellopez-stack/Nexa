@@ -474,10 +474,13 @@ class ApiService {
     };
   }
 
+  /// [status] 'rechazado' es "Pedir corrección" y exige [reason]
+  /// (mínimo 5 caracteres; lo vuelve a validar el backend).
   static Future<Map<String, dynamic>> validateDocument({
     required int patientId,
     required String filename,
     required String status,
+    String? reason,
   }) async {
     final encodedFilename = Uri.encodeComponent(filename);
     final http.Response response;
@@ -489,7 +492,7 @@ class ApiService {
               '$_baseUrl/patients/$patientId/documents/$encodedFilename/validate',
             ),
             headers: _headers(extra: const {'Content-Type': 'application/json'}),
-            body: jsonEncode({'status': status}),
+            body: jsonEncode({'status': status, 'reason': ?reason}),
           )
           .timeout(const Duration(seconds: 30));
     } catch (_) {
@@ -745,6 +748,38 @@ class ApiService {
     return Map<String, dynamic>.from(order);
   }
 
+  /// "Pedir corrección" de una orden de laboratorio, con motivo obligatorio.
+  static Future<Map<String, dynamic>> requestLabCorrection({
+    required int patientId,
+    required String orderId,
+    required String reason,
+  }) async {
+    final http.Response response;
+
+    try {
+      response = await http
+          .patch(
+            Uri.parse(
+              '$_baseUrl/patients/$patientId/lab-orders/$orderId/request-correction',
+            ),
+            headers: _headers(extra: const {'Content-Type': 'application/json'}),
+            body: jsonEncode({'reason': reason}),
+          )
+          .timeout(const Duration(seconds: 30));
+    } catch (_) {
+      throw const ApiException('No fue posible pedir la corrección.');
+    }
+
+    final decodedBody = await _decodeMap(response);
+    final order = decodedBody['order'];
+
+    if (order is! Map) {
+      throw const ApiException('El backend no entregó la orden actualizada.');
+    }
+
+    return Map<String, dynamic>.from(order);
+  }
+
   static Future<Map<String, dynamic>> validateLabOrder({
     required int patientId,
     required String orderId,
@@ -945,6 +980,38 @@ class ApiService {
       throw const ApiException(
         'No fue posible guardar los resultados dentales.',
       );
+    }
+
+    final decodedBody = await _decodeMap(response);
+    final order = decodedBody['order'];
+
+    if (order is! Map) {
+      throw const ApiException('El backend no entregó la orden actualizada.');
+    }
+
+    return Map<String, dynamic>.from(order);
+  }
+
+  /// "Pedir corrección" de una orden de dental, con motivo obligatorio.
+  static Future<Map<String, dynamic>> requestDentalCorrection({
+    required int patientId,
+    required String orderId,
+    required String reason,
+  }) async {
+    final http.Response response;
+
+    try {
+      response = await http
+          .patch(
+            Uri.parse(
+              '$_baseUrl/patients/$patientId/dental-orders/$orderId/request-correction',
+            ),
+            headers: _headers(extra: const {'Content-Type': 'application/json'}),
+            body: jsonEncode({'reason': reason}),
+          )
+          .timeout(const Duration(seconds: 30));
+    } catch (_) {
+      throw const ApiException('No fue posible pedir la corrección.');
     }
 
     final decodedBody = await _decodeMap(response);

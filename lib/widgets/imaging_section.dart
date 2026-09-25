@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 
 import '../core/nexa_colors.dart';
 import '../services/api_service.dart';
+import 'correction_widgets.dart';
 import 'dicom_viewer.dart';
 
 class ImagingOrdersSection extends StatefulWidget {
@@ -195,6 +196,12 @@ class _ImagingOrdersSectionState extends State<ImagingOrdersSection> {
                                 ],
                               ),
                             ),
+                            // Devuelta: su informe se pidió corregir (el
+                            // backend lo deriva del documento vinculado).
+                            if (hasPendingCorrection(order)) ...[
+                              const ReturnedChip(),
+                              const SizedBox(width: 6),
+                            ],
                             _ImagingStatusBadge(status: status),
                           ],
                         ),
@@ -648,12 +655,18 @@ class _ImagingOrderDetailDialogState extends State<_ImagingOrderDetailDialog> {
                 .toList();
 
             final status = order['status']?.toString() ?? 'ordenado';
+            // La orden no guarda la corrección: está en el informe devuelto.
+            // Solo cuenta mientras la orden espera un informe corregido.
+            final returnedReport = status == 'realizado'
+                ? documents.where(hasPendingCorrection).firstOrNull
+                : null;
 
             return SingleChildScrollView(
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
+                  CorrectionNotice(item: returnedReport),
                   Row(
                     children: [
                       const Text(
@@ -842,6 +855,10 @@ class _ImagingOrderDetailDialogState extends State<_ImagingOrderDetailDialog> {
                               Expanded(
                                 child: Text(doc['filename']?.toString() ?? ''),
                               ),
+                              if (hasPendingCorrection(doc)) ...[
+                                const ReturnedChip(),
+                                const SizedBox(width: 6),
+                              ],
                               Text(
                                 doc['validationStatus']?.toString() ??
                                     'pendiente',

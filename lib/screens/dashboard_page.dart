@@ -156,6 +156,7 @@ class _DashboardPageState extends State<DashboardPage> {
                     final attention = _AttentionCard(
                       summaryFuture: _summaryFuture!,
                       onPendingReports: _openPendingReports,
+                      onReturnedReports: _scrollToPatients,
                       onUnlinkedStudies: () => ImagendaShell.navigate(
                         context,
                         ShellSection.unlinkedStudies,
@@ -796,12 +797,18 @@ class _AttentionCard extends StatelessWidget {
   const _AttentionCard({
     required this.summaryFuture,
     required this.onPendingReports,
+    required this.onReturnedReports,
     required this.onUnlinkedStudies,
   });
 
   final Future<Map<String, dynamic>> summaryFuture;
   final VoidCallback onPendingReports;
+  final VoidCallback onReturnedReports;
   final VoidCallback onUnlinkedStudies;
+
+  // Los informes devueltos los corrigen técnicos y administradores.
+  static bool get _showsReturned =>
+      ApiService.role == 'tecnico' || ApiService.role == 'administrador';
 
   @override
   Widget build(BuildContext context) {
@@ -829,8 +836,13 @@ class _AttentionCard extends StatelessWidget {
                   final pending = snapshot.hasData
                       ? _asInt(snapshot.data!['pendingValidation'])
                       : null;
+                  final returned = snapshot.hasData
+                      ? _asInt(snapshot.data!['returnedForCorrection'])
+                      : null;
 
-                  if (pending == 0 && (unlinked ?? 0) == 0) {
+                  if (pending == 0 &&
+                      (unlinked ?? 0) == 0 &&
+                      (!_showsReturned || (returned ?? 0) == 0)) {
                     return const Padding(
                       padding: EdgeInsets.symmetric(
                         horizontal: 20,
@@ -864,6 +876,15 @@ class _AttentionCard extends StatelessWidget {
                         count: pending,
                         onTap: onPendingReports,
                       ),
+                      if (_showsReturned) ...[
+                        const Divider(height: 1, color: NexaColors.border),
+                        _AttentionRow(
+                          icon: Icons.undo_rounded,
+                          label: 'Informes devueltos para corrección',
+                          count: returned,
+                          onTap: onReturnedReports,
+                        ),
+                      ],
                       const Divider(height: 1, color: NexaColors.border),
                       _AttentionRow(
                         icon: Icons.link_off,

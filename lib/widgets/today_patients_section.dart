@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import '../core/nexa_colors.dart';
 import '../services/api_service.dart';
 import 'billing_section.dart';
+import 'correction_widgets.dart';
 import 'dental_section.dart';
 import 'imaging_section.dart';
 import 'lab_section.dart';
@@ -1181,6 +1182,7 @@ $documentsText
                       documentType: record?['documentType']?.toString(),
                       date: record?['date']?.toString(),
                       validationStatus: record?['validationStatus']?.toString(),
+                      returned: hasPendingCorrection(record),
                       onTap: () => _showSavedDocument(document),
                       onDelete: (ApiService.role == 'administrador' || ApiService.role == 'medico')
                           ? () => _deleteDocument(document)
@@ -1805,6 +1807,7 @@ class _DocumentChip extends StatelessWidget {
     this.documentType,
     this.date,
     this.validationStatus,
+    this.returned = false,
     this.onTap,
     this.onDelete,
     this.isDeleting = false,
@@ -1814,6 +1817,9 @@ class _DocumentChip extends StatelessWidget {
   final String? documentType;
   final String? date;
   final String? validationStatus;
+  // Devuelto para corrección: en vez del estado de validación muestra el
+  // chip rojo 'Devuelto'.
+  final bool returned;
   final VoidCallback? onTap;
   final VoidCallback? onDelete;
   final bool isDeleting;
@@ -1864,7 +1870,10 @@ class _DocumentChip extends StatelessWidget {
                           color: NexaColors.textSecondary,
                         ),
                       ),
-                    if (validationStatus != null) ...[
+                    if (returned) ...[
+                      const SizedBox(height: 4),
+                      const ReturnedChip(),
+                    ] else if (validationStatus != null) ...[
                       const SizedBox(height: 4),
                       _ValidationBadge(status: validationStatus!),
                     ],
@@ -2105,7 +2114,13 @@ class _SavedDocumentDialogState extends State<_SavedDocumentDialog> {
     return text.isEmpty ? 'Sin información' : text;
   }
 
-  Future<void> _setValidation(String status) async {
+  Future<void> _requestCorrection() async {
+    final reason = await showCorrectionReasonDialog(context);
+    if (reason == null || !mounted) return;
+    await _setValidation('rechazado', reason: reason);
+  }
+
+  Future<void> _setValidation(String status, {String? reason}) async {
     if (_validating) return;
     setState(() {
       _validating = true;
@@ -2117,6 +2132,7 @@ class _SavedDocumentDialogState extends State<_SavedDocumentDialog> {
         patientId: widget.patientId,
         filename: widget.filename,
         status: status,
+        reason: reason,
       );
       final updatedDocument = result['document'];
       if (updatedDocument is Map) {
@@ -2172,6 +2188,7 @@ class _SavedDocumentDialogState extends State<_SavedDocumentDialog> {
         width: 680,
         child: SingleChildScrollView(
           child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            CorrectionNotice(item: _document),
             Row(
               children: [
                 const Text(
@@ -2200,13 +2217,13 @@ class _SavedDocumentDialogState extends State<_SavedDocumentDialog> {
                 OutlinedButton.icon(
                   onPressed: (_validating || status == 'rechazado')
                       ? null
-                      : () => _setValidation('rechazado'),
+                      : _requestCorrection,
                   style: OutlinedButton.styleFrom(
                     foregroundColor: const Color(0xFFB91C1C),
                     side: const BorderSide(color: Color(0xFFB91C1C)),
                   ),
-                  icon: const Icon(Icons.close, size: 18),
-                  label: const Text('Rechazar'),
+                  icon: const Icon(Icons.undo_rounded, size: 18),
+                  label: const Text('Pedir corrección'),
                 ),
                 if (status != 'pendiente')
                   TextButton(

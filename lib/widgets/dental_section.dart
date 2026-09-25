@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../core/nexa_colors.dart';
 import '../services/api_service.dart';
+import 'correction_widgets.dart';
 
 class DentalOrdersSection extends StatefulWidget {
   const DentalOrdersSection({
@@ -173,6 +174,10 @@ class _DentalOrdersSectionState extends State<DentalOrdersSection> {
                                     const TextStyle(fontWeight: FontWeight.w600),
                               ),
                             ),
+                            if (hasPendingCorrection(order)) ...[
+                              const ReturnedChip(),
+                              const SizedBox(width: 6),
+                            ],
                             _DentalStatusBadge(status: status),
                           ],
                         ),
@@ -353,6 +358,7 @@ class _DentalOrderDetailDialogState extends State<_DentalOrderDetailDialog> {
   bool _isSavingResults = false;
   bool _isMarkingPerformed = false;
   bool _isValidating = false;
+  bool _isRequestingCorrection = false;
   String? _error;
 
   @override
@@ -481,6 +487,32 @@ class _DentalOrderDetailDialogState extends State<_DentalOrderDetailDialog> {
     }
   }
 
+  Future<void> _requestCorrection() async {
+    if (_isRequestingCorrection) return;
+    final reason = await showCorrectionReasonDialog(context);
+    if (reason == null || !mounted) return;
+    setState(() {
+      _isRequestingCorrection = true;
+      _error = null;
+    });
+    try {
+      await ApiService.requestDentalCorrection(
+        patientId: widget.patientId,
+        orderId: widget.orderId,
+        reason: reason,
+      );
+      _reload();
+    } on ApiException catch (error) {
+      if (mounted) setState(() => _error = error.message);
+    } catch (_) {
+      if (mounted) {
+        setState(() => _error = 'No fue posible pedir la corrección.');
+      }
+    } finally {
+      if (mounted) setState(() => _isRequestingCorrection = false);
+    }
+  }
+
   Future<void> _validate() async {
     if (_isValidating) return;
     setState(() {
@@ -540,6 +572,7 @@ class _DentalOrderDetailDialogState extends State<_DentalOrderDetailDialog> {
                 mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
+                  CorrectionNotice(item: order),
                   Row(
                     children: [
                       const Text(
@@ -560,9 +593,15 @@ class _DentalOrderDetailDialogState extends State<_DentalOrderDetailDialog> {
                               child: CircularProgressIndicator(strokeWidth: 2),
                             )
                           : const Icon(Icons.check_circle_outline, size: 18),
-                      label: const Text('Marcar realizado'),
+                      label: Text(
+                        hasPendingCorrection(order)
+                            ? 'Corrección lista: marcar realizado'
+                            : 'Marcar realizado',
+                      ),
                     ),
-                  if (status != 'ordenado') ...[
+                  // Con una corrección pendiente la orden vuelve a 'ordenado' y
+                  // el resultado se puede editar antes de marcarla realizada.
+                  if (status != 'ordenado' || hasPendingCorrection(order)) ...[
                     const Text(
                       'Resultados',
                       style:
@@ -668,22 +707,43 @@ class _DentalOrderDetailDialogState extends State<_DentalOrderDetailDialog> {
                         (ApiService.role == 'administrador' ||
                             ApiService.role == 'medico')) ...[
                       const SizedBox(height: 10),
-                      FilledButton.icon(
-                        onPressed: _isValidating ? null : _validate,
-                        style: FilledButton.styleFrom(
-                          backgroundColor: const Color(0xFF15803D),
-                        ),
-                        icon: _isValidating
-                            ? const SizedBox(
-                                width: 16,
-                                height: 16,
-                                child: CircularProgressIndicator(
-                                  strokeWidth: 2,
-                                  color: Colors.white,
-                                ),
-                              )
-                            : const Icon(Icons.check_circle_outline, size: 18),
-                        label: const Text('Validar orden'),
+                      Wrap(
+                        spacing: 8,
+                        runSpacing: 8,
+                        children: [
+                          FilledButton.icon(
+                            onPressed: _isValidating ? null : _validate,
+                            style: FilledButton.styleFrom(
+                              backgroundColor: const Color(0xFF15803D),
+                            ),
+                            icon: _isValidating
+                                ? const SizedBox(
+                                    width: 16,
+                                    height: 16,
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 2,
+                                      color: Colors.white,
+                                    ),
+                                  )
+                                : const Icon(Icons.check_circle_outline, size: 18),
+                            label: const Text('Validar orden'),
+                          ),
+                          OutlinedButton.icon(
+                            onPressed: _isRequestingCorrection ? null : _requestCorrection,
+                            style: OutlinedButton.styleFrom(
+                              foregroundColor: const Color(0xFFB91C1C),
+                              side: const BorderSide(color: Color(0xFFB91C1C)),
+                            ),
+                            icon: _isRequestingCorrection
+                                ? const SizedBox(
+                                    width: 16,
+                                    height: 16,
+                                    child: CircularProgressIndicator(strokeWidth: 2),
+                                  )
+                                : const Icon(Icons.undo_rounded, size: 18),
+                            label: const Text('Pedir corrección'),
+                          ),
+                        ],
                       ),
                     ],
                   ],

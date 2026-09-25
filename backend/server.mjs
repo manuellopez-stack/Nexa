@@ -406,6 +406,44 @@ function shapePatientRowBasic(row) {
   };
 }
 
+// ---- Pedir corrección (ver sql/correction_requests.sql) -------------------
+// Un validador devuelve un informe con un motivo obligatorio. Mientras
+// correction_reason no sea nulo, el ítem está "devuelto para corrección".
+
+const CORRECTION_REASON_MIN_LENGTH = 5;
+
+function parseCorrectionReason(value) {
+  const reason = typeof value === "string" ? value.trim() : "";
+  if (reason.length < CORRECTION_REASON_MIN_LENGTH) {
+    return {
+      error: `Indica el motivo de la corrección (mínimo ${CORRECTION_REASON_MIN_LENGTH} caracteres).`,
+    };
+  }
+  return { reason: reason.slice(0, 1000) };
+}
+
+function correctionFields(reason, request) {
+  return {
+    correction_reason: reason,
+    correction_requested_at: new Date().toISOString(),
+    correction_requested_by: request.user?.email ?? null,
+  };
+}
+
+const CLEARED_CORRECTION_FIELDS = {
+  correction_reason: null,
+  correction_requested_at: null,
+  correction_requested_by: null,
+};
+
+function shapeCorrection(row) {
+  return {
+    correctionReason: row?.correction_reason ?? null,
+    correctionRequestedAt: row?.correction_requested_at ?? null,
+    correctionRequestedBy: row?.correction_requested_by ?? null,
+  };
+}
+
 function shapeDocumentRecord(row) {
   return {
     id: row.id,
@@ -425,6 +463,7 @@ function shapeDocumentRecord(row) {
     validationStatus: row.validation_status,
     validatedAt: row.validated_at,
     incorporatedAt: row.incorporated_at,
+    ...shapeCorrection(row),
   };
 }
 
@@ -830,6 +869,8 @@ async function saveDocumentRecord({ targetPatientId, documentData, filename, ima
     validation_status: "pendiente",
     validated_at: null,
     incorporated_at: new Date().toISOString(),
+    // Guardado de nuevo = corrección entregada: vuelve a Por validar sin aviso.
+    ...CLEARED_CORRECTION_FIELDS,
   };
 
   let savedDocId;
@@ -893,6 +934,17 @@ async function saveDocumentRecord({ targetPatientId, documentData, filename, ima
       .eq("id", imagingOrderId)
       .eq("patient_id", targetPatientId);
     if (orderUpdateError) throw orderUpdateError;
+
+    // Si la orden tenía un informe devuelto con otro nombre de archivo, este
+    // nuevo informe es la corrección: el anterior queda 'rechazado' (historia)
+    // pero ya sin corrección pendiente.
+    const { error: siblingsError } = await supabase
+      .from("documents")
+      .update(CLEARED_CORRECTION_FIELDS)
+      .eq("imaging_order_id", imagingOrderId)
+      .neq("id", savedDocId)
+      .not("correction_reason", "is", null);
+    if (siblingsError) throw siblingsError;
   }
 
   return savedDocId;
@@ -1596,6 +1648,25 @@ app.get("/dashboard/summary", requireRole([...CLINICAL_STAFF, "recepcion"]), asy
       (row) => !isCoveredByInformedImagingOrder(row, informedImagingOrderIds),
     ).length;
 
+    // Devueltos para corrección (los corrigen técnicos y administradores).
+    const returnedDocumentsQuery = scopeClinicId
+      ? supabase
+          .from("documents")
+          .select("id, patient:patients!inner(clinic_id)", { count: "exact", head: true })
+          .eq("patient.clinic_id", scopeClinicId)
+      : supabase.from("documents").select("id", { count: "exact", head: true });
+    const countReturned = async (query) => {
+      const { count, error } = await query.not("correction_reason", "is", null);
+      if (error) throw error;
+      return count ?? 0;
+    };
+    const [returnedDocuments, returnedLabOrders, returnedDentalOrders] = await Promise.all([
+      countReturned(returnedDocumentsQuery.eq("validation_status", "rechazado")),
+      countReturned(scoped(supabase.from("lab_orders").select("id", { count: "exact", head: true }))),
+      countReturned(scoped(supabase.from("dental_orders").select("id", { count: "exact", head: true }))),
+    ]);
+    const returnedForCorrection = returnedDocuments + returnedLabOrders + returnedDentalOrders;
+
     const pendingValidation =
       pendingDocuments +
       pendingLabOrders +
@@ -1609,6 +1680,7 @@ app.get("/dashboard/summary", requireRole([...CLINICAL_STAFF, "recepcion"]), asy
       inAttention,
       scheduled,
       pendingValidation,
+      returnedForCorrection,
       pendingValidationBreakdown: {
         documents: pendingDocuments,
         labOrders: pendingLabOrders,
@@ -2970,6 +3042,14 @@ app.patch("/patients/:id/documents/:filename/validate", requireRole(VALIDATORS),
       });
     }
 
+    // 'rechazado' = "Pedir corrección": el motivo es obligatorio.
+    let correctionReason = null;
+    if (status === "rechazado") {
+      const parsed = parseCorrectionReason(request.body?.reason);
+      if (parsed.error) return response.status(400).json({ error: parsed.error });
+      correctionReason = parsed.reason;
+    }
+
     // Etapa 3 (paso 3b): mismo criterio que las rutas de ficha del paciente.
     if (!(await patientBelongsToRequesterClinic(patientId, request))) {
       return response.status(404).json({ error: "Paciente no encontrado" });
@@ -2998,18 +3078,34 @@ app.patch("/patients/:id/documents/:filename/validate", requireRole(VALIDATORS),
 
     const { data: updatedDoc, error: updateError } = await supabase
       .from("documents")
-      .update({ validation_status: status, validated_at: validatedAt })
+      .update({
+        validation_status: status,
+        validated_at: validatedAt,
+        // Pedir corrección guarda motivo/quién/cuándo; aprobar o volver a
+        // 'pendiente' deja el documento sin corrección pendiente.
+        ...(status === "rechazado"
+          ? correctionFields(correctionReason, request)
+          : CLEARED_CORRECTION_FIELDS),
+      })
       .eq("id", match.id)
       .select()
       .single();
     if (updateError) throw updateError;
 
-        if (updatedDoc.imaging_order_id) {
+    if (updatedDoc.imaging_order_id) {
       if (status === "aprobado") {
         await supabase
           .from("imaging_orders")
           .update({ status: "validado", validated_at: new Date().toISOString() })
           .eq("id", updatedDoc.imaging_order_id);
+      } else if (status === "rechazado") {
+        // Informe devuelto: la orden vuelve a 'realizado' para que el
+        // tecnólogo vincule un informe corregido (y sale de Por validar).
+        await supabase
+          .from("imaging_orders")
+          .update({ status: "realizado", informed_at: null, validated_at: null })
+          .eq("id", updatedDoc.imaging_order_id)
+          .in("status", ["informado", "validado"]);
       } else {
         await supabase
           .from("imaging_orders")
@@ -3393,6 +3489,7 @@ function shapeLabOrderRow(row) {
     completedAt: row.completed_at,
     validatedAt: row.validated_at,
     validatedBy: row.validated_by,
+    ...shapeCorrection(row),
   };
 }
 
@@ -3720,6 +3817,9 @@ app.patch("/patients/:id/lab-orders/:orderId/results", requireRole(CLINICAL_STAF
       .update({
         status: newStatus,
         completed_at: newStatus === "completado" ? new Date().toISOString() : null,
+        // De vuelta en 'completado' = corrección entregada: vuelve a Por
+        // validar sin aviso. Mientras siga en 'en_proceso' el aviso se mantiene.
+        ...(newStatus === "completado" ? CLEARED_CORRECTION_FIELDS : {}),
       })
       .eq("id", orderId)
       .select()
@@ -3758,6 +3858,51 @@ app.patch("/patients/:id/lab-orders/:orderId/validate", requireRole(VALIDATORS),
     return response.status(500).json({ error: "No fue posible validar la orden de laboratorio." });
   }
 });
+// "Pedir corrección" de laboratorio: solo con la orden en 'completado'. Vuelve
+// a 'en_proceso', el estado en que se pueden volver a cargar resultados; al
+// guardarlos completos vuelve a 'completado' y la corrección se limpia.
+app.patch("/patients/:id/lab-orders/:orderId/request-correction", requireRole(VALIDATORS), async (request, response) => {
+  try {
+    const patientId = Number(request.params.id);
+    const orderId = request.params.orderId;
+
+    const { reason, error: reasonError } = parseCorrectionReason(request.body?.reason);
+    if (reasonError) return response.status(400).json({ error: reasonError });
+
+    const { data: orderRow, error: orderError } = await supabase
+      .from("lab_orders")
+      .select("id, status")
+      .eq("id", orderId)
+      .eq("patient_id", patientId)
+      .eq("clinic_id", request.staffProfile.clinic_id)
+      .maybeSingle();
+    if (orderError) throw orderError;
+    if (!orderRow) return response.status(404).json({ error: "Orden de laboratorio no encontrada." });
+    if (orderRow.status !== "completado") {
+      return response.status(409).json({
+        error: "Solo se puede pedir corrección de una orden con resultados completos, antes de validarla.",
+      });
+    }
+
+    const { data: updatedOrder, error } = await supabase
+      .from("lab_orders")
+      .update({ status: "en_proceso", completed_at: null, ...correctionFields(reason, request) })
+      .eq("id", orderId)
+      .eq("status", "completado")
+      .select()
+      .maybeSingle();
+    if (error) throw error;
+    if (!updatedOrder) {
+      return response.status(409).json({ error: "La orden cambió de estado. Vuelve a abrirla." });
+    }
+
+    return response.json({ order: shapeLabOrderRow(updatedOrder) });
+  } catch (error) {
+    console.error("Error al pedir corrección de la orden de laboratorio:", error);
+    return response.status(500).json({ error: "No fue posible pedir la corrección." });
+  }
+});
+
 // ============================================
 // MÓDULO DENTAL
 // ============================================
@@ -3775,6 +3920,7 @@ function shapeDentalOrderRow(row) {
     performedAt: row.performed_at,
     validatedAt: row.validated_at,
     validatedBy: row.validated_by,
+    ...shapeCorrection(row),
   };
 }
 
@@ -3950,7 +4096,13 @@ app.patch(
 
       let performedQuery = supabase
         .from("dental_orders")
-        .update({ status: "realizado", performed_at: new Date().toISOString() })
+        // De vuelta en 'realizado' = corrección entregada: vuelve a Por
+        // validar sin aviso.
+        .update({
+          status: "realizado",
+          performed_at: new Date().toISOString(),
+          ...CLEARED_CORRECTION_FIELDS,
+        })
         .eq("id", orderId)
         .eq("patient_id", patientId);
       performedQuery = performedQuery.eq("clinic_id", request.staffProfile.clinic_id);
@@ -4058,6 +4210,51 @@ app.patch("/patients/:id/dental-orders/:orderId/validate", requireRole(VALIDATOR
     return response.status(500).json({ error: "No fue posible validar la orden dental." });
   }
 });
+// "Pedir corrección" dental: solo con la orden en 'realizado'. Vuelve a
+// 'ordenado'; con la corrección pendiente la app deja editar el resultado en
+// ese estado, y al marcarla realizada de nuevo la corrección se limpia.
+app.patch("/patients/:id/dental-orders/:orderId/request-correction", requireRole(VALIDATORS), async (request, response) => {
+  try {
+    const patientId = Number(request.params.id);
+    const orderId = request.params.orderId;
+
+    const { reason, error: reasonError } = parseCorrectionReason(request.body?.reason);
+    if (reasonError) return response.status(400).json({ error: reasonError });
+
+    const { data: orderRow, error: orderError } = await supabase
+      .from("dental_orders")
+      .select("id, status")
+      .eq("id", orderId)
+      .eq("patient_id", patientId)
+      .eq("clinic_id", request.staffProfile.clinic_id)
+      .maybeSingle();
+    if (orderError) throw orderError;
+    if (!orderRow) return response.status(404).json({ error: "Orden dental no encontrada." });
+    if (orderRow.status !== "realizado") {
+      return response.status(409).json({
+        error: "Solo se puede pedir corrección de una orden realizada, antes de validarla.",
+      });
+    }
+
+    const { data: updatedOrder, error } = await supabase
+      .from("dental_orders")
+      .update({ status: "ordenado", ...correctionFields(reason, request) })
+      .eq("id", orderId)
+      .eq("status", "realizado")
+      .select()
+      .maybeSingle();
+    if (error) throw error;
+    if (!updatedOrder) {
+      return response.status(409).json({ error: "La orden cambió de estado. Vuelve a abrirla." });
+    }
+
+    return response.json({ order: shapeDentalOrderRow(updatedOrder) });
+  } catch (error) {
+    console.error("Error al pedir corrección de la orden dental:", error);
+    return response.status(500).json({ error: "No fue posible pedir la corrección." });
+  }
+});
+
 // ============================================
 // MÓDULO DE IMAGENOLOGÍA
 // ============================================
@@ -4200,8 +4397,24 @@ app.get("/patients/:id/imaging-orders", requireRole(CLINICAL_STAFF), async (requ
       : { data: [], error: null };
     if (orderTypesError) throw orderTypesError;
 
+    // Una orden de imagen no tiene columnas de corrección: está devuelta si
+    // está en 'realizado' y su informe quedó 'rechazado' con motivo.
+    const { data: returnedReports, error: returnedError } = orderIds.length
+      ? await supabase
+          .from("documents")
+          .select("imaging_order_id, correction_reason, correction_requested_at, correction_requested_by")
+          .in("imaging_order_id", orderIds)
+          .eq("validation_status", "rechazado")
+          .not("correction_reason", "is", null)
+      : { data: [], error: null };
+    if (returnedError) throw returnedError;
+    const returnedByOrder = new Map(
+      (returnedReports ?? []).map((row) => [row.imaging_order_id, row]),
+    );
+
     const orders = (orderRows ?? []).map((order) => ({
       ...shapeImagingOrderRow(order),
+      ...shapeCorrection(order.status === "realizado" ? returnedByOrder.get(order.id) : null),
       types: (orderTypeRows ?? [])
         .filter((ot) => ot.order_id === order.id)
         .map((ot) => ({

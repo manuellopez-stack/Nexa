@@ -6,6 +6,7 @@
   "type": "module",
   "scripts": {
     "start": "node server.mjs",
+    "test": "node --import ./test/support/register-mocks.mjs --test \"test/*.test.mjs\"",
     "sync-orthanc": "node syncOrthanc.mjs"
   },
   "keywords": [],

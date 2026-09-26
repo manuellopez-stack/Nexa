@@ -446,6 +446,31 @@ class ApiService {
     return answer.trim();
   }
 
+  /// PDF original guardado de un documento
+  /// (GET /patients/:id/documents/:filename/pdf). Recepción solo recibe el de
+  /// documentos aprobados; si no, el backend responde 403 con el motivo.
+  static Future<Uint8List> getDocumentPdf({
+    required int patientId,
+    required String filename,
+  }) async {
+    final encodedFilename = Uri.encodeComponent(filename);
+    final http.Response response;
+    try {
+      response = await http
+          .get(
+            Uri.parse('$_baseUrl/patients/$patientId/documents/$encodedFilename/pdf'),
+            headers: _headers(),
+          )
+          .timeout(const Duration(seconds: 60));
+    } catch (_) {
+      throw const ApiException('No fue posible obtener el PDF del documento.');
+    }
+    if (response.statusCode == 200) return response.bodyBytes;
+    // Los errores vienen en JSON, como en el resto de la API.
+    await _decodeMap(response);
+    throw const ApiException('No fue posible obtener el PDF del documento.');
+  }
+
   static Future<Map<String, dynamic>> analyzePatientPdf({
     required int patientId,
     required String filename,
@@ -499,6 +524,9 @@ class ApiService {
       // clínico sin conflicto de RUT). En ese caso `patient` trae la ficha
       // ya actualizada, lista para refrescar "Documentos disponibles".
       'documentSaved': decodedBody['documentSaved'] == true,
+      // true si además quedó guardado el PDF original; si no, hay que
+      // reenviarlo al incorporar (incorporateDocumentData, pdfBase64).
+      'pdfSaved': decodedBody['pdfSaved'] == true,
       'patient': savedPatient is Map ? Map<String, dynamic>.from(savedPatient) : null,
     };
   }
@@ -576,6 +604,9 @@ class ApiService {
     required String filename,
     int? targetPatientId,
     String? imagingOrderId,
+    // PDF original en base64, para guardarlo junto al documento cuando el
+    // análisis no lo guardó (analyzePatientPdf devolvió pdfSaved = false).
+    String? pdfBase64,
   }) async {
     final http.Response response;
     try {
@@ -587,8 +618,9 @@ class ApiService {
           'filename': filename,
           if (targetPatientId != null) 'targetPatientId': targetPatientId,
           if (imagingOrderId != null) 'imagingOrderId': imagingOrderId,
+          'base64Data': ?pdfBase64,
         }),
-      ).timeout(const Duration(seconds: 30));
+      ).timeout(Duration(seconds: pdfBase64 == null ? 30 : 90));
     } catch (_) { throw const ApiException('No fue posible actualizar la ficha del paciente.'); }
     final decodedBody = await _decodeMap(response);
     final patient = decodedBody['patient'];

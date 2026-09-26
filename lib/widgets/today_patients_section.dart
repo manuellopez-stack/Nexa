@@ -8,6 +8,7 @@ import '../services/api_service.dart';
 import 'billing_section.dart';
 import 'correction_widgets.dart';
 import 'dental_section.dart';
+import 'document_pdf.dart';
 import 'dvd_download.dart';
 import 'imaging_section.dart';
 import 'lab_section.dart';
@@ -534,6 +535,10 @@ class _PatientDialogState extends State<_PatientDialog> {
   // entonces a ser solo para actualizar los datos del paciente, no para
   // que el documento aparezca.
   bool _documentSaved = false;
+  // PDF analizado (base64) y si el backend ya guardó el original. Si no lo
+  // guardó al analizar, se reenvía al incorporar.
+  String? _documentPdfBase64;
+  bool _pdfSaved = false;
 
   final GlobalKey _documentsKey = GlobalKey();
 
@@ -876,13 +881,16 @@ $documentsText
       _existingPatientMatch = null;
       _documentFilename = null;
       _documentSaved = false;
+      _documentPdfBase64 = null;
+      _pdfSaved = false;
     });
 
+    final pdfBase64 = base64Encode(bytes);
     try {
       final result = await ApiService.analyzePatientPdf(
         patientId: patientId,
         filename: file.name,
-        base64Data: base64Encode(bytes),
+        base64Data: pdfBase64,
       );
 
       if (!mounted) return;
@@ -899,6 +907,8 @@ $documentsText
                 ? result['filename'].toString().trim()
                 : file.name;
         _documentSaved = result['documentSaved'] == true;
+        _documentPdfBase64 = pdfBase64;
+        _pdfSaved = result['pdfSaved'] == true;
         final updatedPatient = result['patient'];
         if (_documentSaved && updatedPatient is Map<String, dynamic>) {
           widget.patient
@@ -965,9 +975,14 @@ $documentsText
         documentData: _documentData!,
         filename: filename,
         targetPatientId: targetPatientId,
+        pdfBase64: _pdfSaved ? null : _documentPdfBase64,
       );
       if (!mounted) return;
       final updatedPatient = result['patient']; final routed = result['routedToExistingPatient'] == true; final message = result['message']?.toString();
+      if (result['pdfSaved'] == true) _pdfSaved = true;
+      final pdfWarning = result['pdfSaved'] == false
+          ? ' No fue posible guardar el PDF original; vuelve a incorporar el documento para reintentarlo.'
+          : '';
       final wasAlreadySaved = _documentSaved;
       setState(() {
         if (!routed && updatedPatient is Map<String, dynamic>) { widget.patient..clear()..addAll(updatedPatient); }
@@ -979,6 +994,7 @@ $documentsText
                 : (wasAlreadySaved
                     ? 'Datos del paciente actualizados con la información del documento.'
                     : 'Información incorporada y guardada correctamente en la ficha.'));
+        _incorporationMessage = '$_incorporationMessage$pdfWarning';
       });
     } on ApiException catch (error) { if (mounted) setState(() => _documentError = error.message); }
     catch (_) { if (mounted) setState(() => _documentError = 'Ocurrió un error al incorporar la información a la ficha.'); }
@@ -2328,6 +2344,19 @@ class _SavedDocumentDialogState extends State<_SavedDocumentDialog> {
         ),
       ),
       actions: [
+        // PDF original guardado, para ver o imprimir. Recepción solo lo
+        // recibe si el documento está aprobado (lo vuelve a exigir el backend).
+        if (_document['hasPdf'] == true &&
+            (ApiService.canAccessClinical || status == 'aprobado'))
+          OutlinedButton.icon(
+            onPressed: () => openDocumentPdf(
+              context,
+              patientId: widget.patientId,
+              filename: widget.filename,
+            ),
+            icon: const Icon(Icons.picture_as_pdf_outlined, size: 18),
+            label: const Text('Ver PDF'),
+          ),
         FilledButton(onPressed: () => Navigator.pop(context), child: const Text('Cerrar')),
       ],
     );

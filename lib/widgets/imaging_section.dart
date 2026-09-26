@@ -7,6 +7,7 @@ import '../core/nexa_colors.dart';
 import '../services/api_service.dart';
 import 'correction_widgets.dart';
 import 'dicom_viewer.dart';
+import 'document_pdf.dart';
 import 'dvd_download.dart';
 
 class ImagingOrdersSection extends StatefulWidget {
@@ -411,6 +412,10 @@ class _ImagingOrderDetailDialogState extends State<_ImagingOrderDetailDialog> {
   String? _analysis;
   Map<String, dynamic>? _documentData;
   String? _documentFilename;
+  // PDF del informe analizado (base64) y si el backend ya guardó el
+  // original al analizar; si no, se reenvía al incorporar.
+  String? _documentPdfBase64;
+  bool _pdfSaved = false;
 
   @override
   void initState() {
@@ -440,6 +445,8 @@ class _ImagingOrderDetailDialogState extends State<_ImagingOrderDetailDialog> {
       _analysis = null;
       _documentData = null;
       _documentFilename = null;
+      _documentPdfBase64 = null;
+      _pdfSaved = false;
     });
   }
 
@@ -566,13 +573,16 @@ class _ImagingOrderDetailDialogState extends State<_ImagingOrderDetailDialog> {
       _analysis = null;
       _documentData = null;
       _documentFilename = null;
+      _documentPdfBase64 = null;
+      _pdfSaved = false;
     });
 
+    final pdfBase64 = base64Encode(bytes);
     try {
       final result = await ApiService.analyzePatientPdf(
         patientId: widget.patientId,
         filename: file.name,
-        base64Data: base64Encode(bytes),
+        base64Data: pdfBase64,
       );
 
       if (!mounted) return;
@@ -582,6 +592,8 @@ class _ImagingOrderDetailDialogState extends State<_ImagingOrderDetailDialog> {
         final data = result['documentData'];
         _documentData = data is Map<String, dynamic> ? data : null;
         _documentFilename = file.name;
+        _documentPdfBase64 = pdfBase64;
+        _pdfSaved = result['pdfSaved'] == true;
       });
     } on ApiException catch (error) {
       if (mounted) setState(() => _error = error.message);
@@ -603,13 +615,20 @@ class _ImagingOrderDetailDialogState extends State<_ImagingOrderDetailDialog> {
     });
 
     try {
-      await ApiService.incorporateDocumentData(
+      final result = await ApiService.incorporateDocumentData(
         patientId: widget.patientId,
         documentData: _documentData!,
         filename: _documentFilename!,
         imagingOrderId: widget.orderId,
+        pdfBase64: _pdfSaved ? null : _documentPdfBase64,
       );
       _reload();
+      if (result['pdfSaved'] == false && mounted) {
+        setState(
+          () => _error = 'El informe se incorporó, pero no fue posible guardar '
+              'el PDF original. Vuelve a subirlo para reintentarlo.',
+        );
+      }
     } on ApiException catch (error) {
       if (mounted) setState(() => _error = error.message);
     } catch (_) {
@@ -877,6 +896,21 @@ class _ImagingOrderDetailDialogState extends State<_ImagingOrderDetailDialog> {
                                 const ReturnedChip(),
                                 const SizedBox(width: 6),
                               ],
+                              if (doc['hasPdf'] == true &&
+                                  (doc['filename']?.toString() ?? '')
+                                      .isNotEmpty)
+                                TextButton.icon(
+                                  onPressed: () => openDocumentPdf(
+                                    context,
+                                    patientId: widget.patientId,
+                                    filename: doc['filename'].toString(),
+                                  ),
+                                  icon: const Icon(
+                                    Icons.open_in_new,
+                                    size: 16,
+                                  ),
+                                  label: const Text('Ver PDF'),
+                                ),
                               Text(
                                 doc['validationStatus']?.toString() ??
                                     'pendiente',

@@ -10,8 +10,9 @@ import { convertDicomToPng } from "./dicomPreview.mjs";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { linkOrthancStudyToOrder } from "./orthancStudies.mjs";
-import { orthancStream } from "./orthancClient.mjs";
+import { orthancGetJson, orthancStream } from "./orthancClient.mjs";
 import { signImageToken, verifyImageToken } from "./imageTokens.mjs";
+import { signViewerToken, viewerPublicKeyInfo } from "./viewerTokens.mjs";
 import { buildLeame, dvdFilename, openOrderMedia, reportPdfName, writeDvdZip } from "./dvdExport.mjs";
 import { getWeasisViewer } from "./weasisPortable.mjs";
 import { sendMail } from "./mailer.mjs";
@@ -1217,6 +1218,8 @@ app.post("/auth/login", async (request, response) => {
         clinicId: profileRow?.clinic_id ?? null,
         clinicName,
         isPlatformAdmin: profileRow?.is_platform_admin === true,
+        // Fase 3: botón "Ver en OHIF" (OHIF_VIEWER_ENABLED, apagado por defecto).
+        ohifViewerEnabled: isOhifViewerEnabled(),
       },
     });
   } catch (error) {
@@ -5035,6 +5038,97 @@ app.get(
       return response
         .status(500)
         .json({ error: "No fue posible obtener las imágenes de la orden." });
+    }
+  },
+);
+
+// ============================================
+// IMAGENOLOGÍA — VISOR OHIF (Fase 3)
+// ============================================
+// El visor OHIF lo sirve el plugin de Orthanc en https://pacs.imagenda.cl/ohif/.
+// Este backend solo entrega el enlace: un token Ed25519 de 2 h con los
+// StudyInstanceUID de los estudios vinculados a la orden (viewerTokens.mjs).
+// OHIF lo manda como "Authorization: Bearer" en cada petición DICOMweb y el
+// portero del droplet (pacs-gate) lo valida con la clave pública antes de que
+// Caddy reenvíe a Orthanc con el Basic de admin. Mismos roles y chequeo de
+// clínica que GET .../images (recepción incluida).
+//
+// Apagado por defecto: sin OHIF_VIEWER_ENABLED=true la ruta responde 404 y la
+// app no muestra el botón. La clave pública sí se publica siempre (la lee
+// pacs-gate; no es secreta).
+function isOhifViewerEnabled() {
+  return process.env.OHIF_VIEWER_ENABLED === "true";
+}
+
+// Origen público del PACS: PACS_PUBLIC_URL (opcional) o el de ORTHANC_URL.
+function pacsPublicOrigin() {
+  const configured = (process.env.PACS_PUBLIC_URL || "").trim().replace(/\/+$/, "");
+  return configured || new URL(process.env.ORTHANC_URL).origin;
+}
+
+app.get("/viewer-tokens/public-key", (_request, response) => {
+  try {
+    response.setHeader("Cache-Control", "public, max-age=300");
+    return response.json(viewerPublicKeyInfo());
+  } catch (error) {
+    console.error("Error al publicar la clave del visor:", error);
+    return response.status(500).json({ error: "Clave del visor no disponible." });
+  }
+});
+
+app.post(
+  "/patients/:id/imaging-orders/:orderId/viewer-link",
+  requireRole(IMAGE_VIEW_ROLES),
+  async (request, response) => {
+    try {
+      if (!isOhifViewerEnabled()) {
+        return response.status(404).json({ error: "El visor OHIF no está habilitado." });
+      }
+      const patientId = Number(request.params.id);
+      const orderId = request.params.orderId;
+      const clinicId = request.staffProfile.clinic_id;
+
+      const { data: orderRow, error: orderError } = await supabase
+        .from("imaging_orders")
+        .select("id, clinic_id")
+        .eq("id", orderId)
+        .eq("patient_id", patientId)
+        .maybeSingle();
+      if (orderError) throw orderError;
+      if (!orderRow || orderRow.clinic_id !== clinicId) {
+        return response.status(404).json({ error: "Orden de imagenología no encontrada." });
+      }
+
+      const { data: linkedStudies, error: linkedError } = await supabase
+        .from("orthanc_studies")
+        .select("orthanc_study_id")
+        .eq("linked_order_id", orderId)
+        .eq("status", "linked");
+      if (linkedError) throw linkedError;
+
+      const studyUids = [];
+      for (const { orthanc_study_id: orthancStudyId } of linkedStudies ?? []) {
+        const study = await orthancGetJson(`/studies/${orthancStudyId}`);
+        const uid = study?.MainDicomTags?.StudyInstanceUID;
+        if (uid) studyUids.push(uid);
+      }
+      if (studyUids.length === 0) {
+        return response.status(409).json({ error: "Esta orden no tiene estudios en el PACS para abrir en OHIF." });
+      }
+
+      const { token, expiresAt } = signViewerToken({
+        studies: studyUids,
+        sub: request.user.id,
+        clinic: clinicId,
+        order: orderId,
+      });
+      const url =
+        `${pacsPublicOrigin()}/ohif/viewer?StudyInstanceUIDs=${studyUids.map(encodeURIComponent).join(",")}` +
+        `&token=${encodeURIComponent(token)}`;
+      return response.json({ url, expiresAt, studies: studyUids.length });
+    } catch (error) {
+      console.error("Error al preparar el enlace del visor OHIF:", error);
+      return response.status(500).json({ error: "No fue posible preparar el visor OHIF." });
     }
   },
 );

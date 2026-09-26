@@ -6,6 +6,7 @@ import '../services/api_service.dart';
 import '../services/browser_download.dart';
 import 'dicom_viewer.dart';
 import 'document_pdf.dart';
+import 'ohif_viewer_button.dart';
 
 /// "Descargar para DVD": ZIP del estudio con DICOMDIR, visor Weasis para
 /// Windows, autorun.inf y LEAME.txt, listo para grabar. Lo arma el backend
@@ -388,6 +389,8 @@ class _DvdStudiesListState extends State<DvdStudiesList> {
                             : const Icon(Icons.image_outlined, size: 18),
                         label: const Text('Ver imágenes'),
                       ),
+                      if (ApiService.ohifViewerEnabled)
+                        OhifViewerButton(patientId: patientId, orderId: orderId),
                       ?_reportAction(patientId, study['report']),
                     ],
                   ),

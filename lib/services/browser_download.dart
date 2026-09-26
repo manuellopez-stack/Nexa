@@ -22,6 +22,10 @@ abstract class PendingBrowserTab {
   /// del navegador).
   void showBytes(Uint8List bytes, String mimeType);
 
+  /// Lleva la pestaña a otra página (por ejemplo el visor OHIF del PACS),
+  /// sin que esa página pueda manipular la pestaña de Imagenda.
+  void navigate(String url);
+
   /// Cierra la pestaña (si algo falló antes de tener el contenido).
   void close();
 }

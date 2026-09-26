@@ -77,6 +77,11 @@ class ApiService {
   //     y el personal de todas ellas (invitar a cualquier clínica, etc.).
   static bool get isPlatformAdmin => _currentUser?['isPlatformAdmin'] == true;
   static String? get clinicId => _currentUser?['clinicId'] as String?;
+  //   - ohifViewerEnabled -> OHIF_VIEWER_ENABLED del backend (Fase 3,
+  //     apagado por defecto): muestra "Ver en OHIF". Mismos roles que ver
+  //     imágenes (CLINICAL_STAFF + recepcion).
+  static bool get ohifViewerEnabled =>
+      _currentUser?['ohifViewerEnabled'] == true;
   static String? get clinicName => _currentUser?['clinicName'] as String?;
   //   - canAccessAgenda -> AGENDA_STAFF = administrador, medico, tecnico, recepcion
   //     (gestión de citas: pantalla nueva en el AppBar del dashboard)
@@ -1395,6 +1400,38 @@ class ApiService {
     }
 
     return {...decodedBody, 'url': '$_baseUrl$url'};
+  }
+
+  /// Enlace al visor OHIF del PACS para una orden (POST .../viewer-link):
+  /// URL absoluta de https://pacs.imagenda.cl/ohif/ con un token que vence en
+  /// 2 horas y solo abre los estudios de esa orden.
+  static Future<String> getOhifViewerUrl({
+    required int patientId,
+    required String orderId,
+  }) async {
+    final http.Response response;
+
+    try {
+      response = await http
+          .post(
+            Uri.parse(
+              '$_baseUrl/patients/$patientId/imaging-orders/$orderId/viewer-link',
+            ),
+            headers: _headers(),
+          )
+          .timeout(const Duration(seconds: 30));
+    } catch (_) {
+      throw const ApiException(
+        'No fue posible conectar con el backend de Imagenda.',
+      );
+    }
+
+    final decodedBody = await _decodeMap(response);
+    final url = decodedBody['url'];
+    if (url is! String || url.isEmpty) {
+      throw const ApiException('El backend no entregó el enlace del visor.');
+    }
+    return url;
   }
 
   /// Estudios recibidos en Orthanc que todavía no se pudieron casar

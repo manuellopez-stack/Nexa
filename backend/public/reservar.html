@@ -737,8 +737,9 @@
         document.getElementById("done-fecha").textContent = formatFechaLarga(state.fecha);
         document.getElementById("done-hora").textContent = state.hora;
         document.getElementById("done-tipo").textContent = state.tipo;
+        var correoEnviado = Boolean(result.body.reserva && result.body.reserva.correoEnviado === true);
         document.getElementById("email-confirmation-note").style.display =
-          state.email ? "" : "none";
+          correoEnviado ? "" : "none";
         var cancelUrl = (result.body.reserva && result.body.reserva.cancelUrl) || "";
         var cancelLink = document.getElementById("cancel-link");
         cancelLink.href = cancelUrl || "#";

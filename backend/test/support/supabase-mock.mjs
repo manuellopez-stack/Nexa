@@ -340,6 +340,20 @@ export function createClient() {
           storageFiles[`${bucket}/${filePath}`] = Buffer.from(body);
           return { data: { path: filePath }, error: null };
         },
+        // Como Storage: un nivel por llamada; las carpetas vienen con id null.
+        list: async (prefix = "", { limit = 100, offset = 0 } = {}) => {
+          const base = `${bucket}/${prefix ? `${prefix}/` : ""}`;
+          const entries = new Map();
+          for (const [key, value] of Object.entries(storageFiles)) {
+            if (!key.startsWith(base)) continue;
+            const rest = key.slice(base.length);
+            const [name, ...deeper] = rest.split("/");
+            if (deeper.length) entries.set(name, { name, id: null, metadata: null });
+            else entries.set(name, { name, id: `obj-${rest}`, metadata: { size: value.length } });
+          }
+          const sorted = [...entries.values()].sort((a, b) => a.name.localeCompare(b.name));
+          return { data: sorted.slice(offset, offset + limit), error: null };
+        },
         remove: async (paths) => {
           for (const filePath of paths) delete storageFiles[`${bucket}/${filePath}`];
           return { data: null, error: null };

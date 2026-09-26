@@ -32,7 +32,7 @@ async function getAlreadyLinkedInstanceIds(supabase, orderId) {
 }
 
 // SeriesNumber / InstanceNumber vienen como texto (y a veces vacíos).
-function dicomInteger(value) {
+export function dicomInteger(value) {
   const number = Number.parseInt(String(value ?? "").trim(), 10);
   return Number.isFinite(number) ? number : null;
 }

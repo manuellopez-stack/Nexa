@@ -5405,6 +5405,7 @@ app.post(
           amount,
           reference,
           registered_by: request.user?.id ?? null,
+          clinic_id: orderRow.clinic_id,
         })
         .select()
         .single();

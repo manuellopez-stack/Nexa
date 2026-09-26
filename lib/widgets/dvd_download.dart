@@ -4,6 +4,8 @@ import 'package:pointer_interceptor/pointer_interceptor.dart';
 import '../core/nexa_colors.dart';
 import '../services/api_service.dart';
 import '../services/browser_download.dart';
+import 'dicom_viewer.dart';
+import 'document_pdf.dart';
 
 /// "Descargar para DVD": ZIP del estudio con DICOMDIR, visor Weasis para
 /// Windows, autorun.inf y LEAME.txt, listo para grabar. Lo arma el backend
@@ -181,9 +183,12 @@ class DvdDownloadButton extends StatelessWidget {
 /// Orden de imagenología a bajar para DVD (paciente + orden).
 typedef DvdOrderRef = ({int patientId, String orderId});
 
-/// Estudios del paciente que se pueden bajar para DVD, cada uno con su
-/// botón. Es la pestaña "Imágenes" de recepción, que no ve la ficha clínica
-/// (GET /patients/:id/dvd-studies: solo fecha, tipo de examen y N° de acceso).
+/// Estudios del paciente con imágenes. Es la pestaña "Imágenes" de
+/// recepción, que no ve la ficha clínica (GET /patients/:id/dvd-studies: solo
+/// fecha, tipo de examen, N° de acceso y el estado del informe). Por estudio:
+/// "Ver imágenes" (el visor DICOM de la ficha clínica, solo lectura),
+/// "Imprimir informe" si hay un informe aprobado con PDF, y "Descargar para
+/// DVD".
 class DvdStudiesList extends StatefulWidget {
   const DvdStudiesList({super.key, required this.patientId});
 
@@ -195,6 +200,79 @@ class DvdStudiesList extends StatefulWidget {
 
 class _DvdStudiesListState extends State<DvdStudiesList> {
   late Future<List<Map<String, dynamic>>> _studiesFuture = _load();
+  // Orden cuyas imágenes se están pidiendo para abrir el visor.
+  String? _openingImagesFor;
+
+  Future<void> _openImages(int patientId, String orderId) async {
+    if (_openingImagesFor != null) return;
+    final messenger = ScaffoldMessenger.maybeOf(context);
+    setState(() => _openingImagesFor = orderId);
+
+    List<String> dicomUrls;
+    try {
+      final files = await ApiService.getImagingImages(
+        patientId: patientId,
+        orderId: orderId,
+      );
+      dicomUrls = files
+          .map((file) => file['dicomUrl']?.toString())
+          .whereType<String>()
+          .where((url) => url.isNotEmpty)
+          .toList(growable: false);
+    } on ApiException catch (error) {
+      messenger?.showSnackBar(SnackBar(content: Text(error.message)));
+      return;
+    } catch (_) {
+      messenger?.showSnackBar(
+        const SnackBar(
+          content: Text('No fue posible cargar las imágenes del estudio.'),
+        ),
+      );
+      return;
+    } finally {
+      if (mounted) setState(() => _openingImagesFor = null);
+    }
+
+    if (!mounted) return;
+    await showDicomViewer(
+      context,
+      dicomUrls: dicomUrls,
+      title: 'Imágenes del estudio',
+      dvdOrder: ApiService.canDownloadDvd
+          ? (patientId: patientId, orderId: orderId)
+          : null,
+    );
+  }
+
+  /// "Imprimir informe" (informe aprobado con PDF) o el aviso de que el
+  /// informe todavía no está aprobado. Nada si el estudio no tiene informe.
+  Widget? _reportAction(int patientId, Object? rawReport) {
+    if (rawReport is! Map) return null;
+    final status = rawReport['status']?.toString();
+    final filename = rawReport['filename']?.toString() ?? '';
+
+    if (status == 'aprobado' && filename.isNotEmpty) {
+      return OutlinedButton.icon(
+        onPressed: () => openDocumentPdf(
+          context,
+          patientId: patientId,
+          filename: filename,
+        ),
+        icon: const Icon(Icons.print_outlined, size: 18),
+        label: const Text('Imprimir informe'),
+      );
+    }
+    if (status == 'aprobado') {
+      return const Text(
+        'El PDF de este informe no está guardado en Imagenda.',
+        style: TextStyle(fontSize: 12, color: NexaColors.textSecondary),
+      );
+    }
+    return const Text(
+      'Informe pendiente de aprobación médica',
+      style: TextStyle(fontSize: 12, color: NexaColors.textSecondary),
+    );
+  }
 
   Future<List<Map<String, dynamic>>> _load() {
     final patientId = widget.patientId;
@@ -262,6 +340,7 @@ class _DvdStudiesListState extends State<DvdStudiesList> {
             final types = (study['examTypes'] as List? ?? []).join(', ');
             final accession = study['accessionNumber']?.toString() ?? '';
             final imageCount = study['imageCount'];
+            final orderId = study['orderId'].toString();
 
             return Container(
               padding: const EdgeInsets.all(12),
@@ -291,10 +370,29 @@ class _DvdStudiesListState extends State<DvdStudiesList> {
                     ),
                   ),
                   const SizedBox(height: 8),
-                  DvdDownloadButton(
-                    patientId: patientId,
-                    orderId: study['orderId'].toString(),
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    crossAxisAlignment: WrapCrossAlignment.center,
+                    children: [
+                      OutlinedButton.icon(
+                        onPressed: _openingImagesFor == null
+                            ? () => _openImages(patientId, orderId)
+                            : null,
+                        icon: _openingImagesFor == orderId
+                            ? const SizedBox(
+                                width: 16,
+                                height: 16,
+                                child: CircularProgressIndicator(strokeWidth: 2),
+                              )
+                            : const Icon(Icons.image_outlined, size: 18),
+                        label: const Text('Ver imágenes'),
+                      ),
+                      ?_reportAction(patientId, study['report']),
+                    ],
                   ),
+                  const SizedBox(height: 4),
+                  DvdDownloadButton(patientId: patientId, orderId: orderId),
                 ],
               ),
             );

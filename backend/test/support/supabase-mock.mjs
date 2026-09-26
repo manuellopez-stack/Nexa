@@ -3,7 +3,7 @@
 // usa server.mjs: select con embebidos (alias:tabla!inner(cols)), filtros
 // eq/neq/in/not/is/gte/gt/lt/lte (también sobre columnas embebidas, como
 // "patient.clinic_id"), order, limit, count/head, single/maybeSingle,
-// insert/update/delete. No toca ninguna base real.
+// insert/update/delete/upsert (onConflict de una columna). No toca ninguna base real.
 
 import { randomUUID } from "node:crypto";
 
@@ -139,6 +139,13 @@ class QueryBuilder {
     return this;
   }
 
+  upsert(payload, { onConflict = "id" } = {}) {
+    this.op = "upsert";
+    this.payload = Array.isArray(payload) ? payload : [payload];
+    this.conflictColumn = onConflict;
+    return this;
+  }
+
   update(payload) {
     this.op = "update";
     this.payload = payload;
@@ -269,6 +276,17 @@ class QueryBuilder {
       const result = this.finish(rows);
       if (this.countMode) result.count = rows.length;
       return result;
+    }
+
+    if (this.op === "upsert") {
+      for (const row of this.payload) {
+        const existing = table(this.tableName).find(
+          (candidate) => candidate[this.conflictColumn] === row[this.conflictColumn],
+        );
+        if (existing) Object.assign(existing, row);
+        else table(this.tableName).push({ id: randomUUID(), created_at: new Date().toISOString(), ...row });
+      }
+      return { data: null, error: null };
     }
 
     if (this.op === "insert") {

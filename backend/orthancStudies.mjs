@@ -1,18 +1,27 @@
-// Lógica compartida de "copiar un estudio de Orthanc a Storage + imaging_files
-// y borrarlo de Orthanc". La usan:
+// Lógica compartida de "vincular un estudio de Orthanc a una orden". La usan:
 //   - syncOrthanc.mjs: cuando el cron encuentra un match automático por
 //     accession_number.
 //   - server.mjs (POST /orthanc-studies/:id/link): cuando alguien del staff
 //     vincula un estudio "unlinked" a mano, eligiendo la orden (no depende
 //     del accession number).
 //
+// Fase 2A: el estudio se queda en Orthanc. Vincular solo registra en
+// imaging_files una fila por instancia (orthanc_instance_id + su serie), sin
+// dicom_path ni png_path: no se descarga nada, no se sube nada a Storage y NO
+// se borra el estudio de Orthanc. Las imágenes se sirven después desde
+// Orthanc a través del backend (URLs firmadas, ver imageTokens.mjs).
+//
+// PENDIENTE: hoy ningún flujo de Imagenda borra filas de imaging_files,
+// archivos del bucket "imaging" ni órdenes de imagenología. Si se agrega uno,
+// para las filas de Orthanc (dicom_path null) no debe intentar borrar
+// Storage, y borrar el estudio en Orthanc queda por definir (retención).
+//
 // El caller pasa su propio cliente de Supabase (server.mjs y syncOrthanc.mjs
 // ya tienen cada uno el suyo con la service role key) para no crear una
 // segunda conexión.
-import { orthancGetJson, orthancGetBinary, orthancDelete } from "./orthancClient.mjs";
-import { convertDicomToPng } from "./dicomPreview.mjs";
+import { orthancGetJson } from "./orthancClient.mjs";
 
-async function getAlreadyCopiedInstanceIds(supabase, orderId) {
+async function getAlreadyLinkedInstanceIds(supabase, orderId) {
   const { data, error } = await supabase
     .from("imaging_files")
     .select("orthanc_instance_id")
@@ -22,64 +31,58 @@ async function getAlreadyCopiedInstanceIds(supabase, orderId) {
   return new Set((data ?? []).map((row) => row.orthanc_instance_id));
 }
 
-// Copia a Storage + imaging_files cada instancia del estudio que todavía no
-// se haya copiado en un intento anterior, igual que la subida manual de un
-// archivo DICOM (POST /patients/:id/imaging-orders/:orderId/image en
-// server.mjs): un archivo DICOM + un preview PNG (si se puede convertir) por
-// fila. Si una instancia falla, lanza el error y deja las anteriores ya
-// insertadas tal cual (un reintento las detecta por orthanc_instance_id y no
-// las vuelve a subir).
-async function copyStudyInstances(supabase, orthancStudyId, orderId) {
-  const instances = (await orthancGetJson(`/studies/${orthancStudyId}/instances`)) ?? [];
-  const alreadyCopied = await getAlreadyCopiedInstanceIds(supabase, orderId);
-
-  let copiedNow = 0;
-
-  for (const instance of instances) {
-    if (alreadyCopied.has(instance.ID)) continue;
-
-    const dicomBuffer = await orthancGetBinary(`/instances/${instance.ID}/file`);
-    if (!dicomBuffer) continue;
-
-    const timestamp = Date.now();
-    const dicomPath = `orders/${orderId}/${timestamp}-${instance.ID}.dcm`;
-
-    const { error: dicomUploadError } = await supabase.storage
-      .from("imaging")
-      .upload(dicomPath, dicomBuffer, { contentType: "application/dicom" });
-    if (dicomUploadError) throw dicomUploadError;
-
-    let pngPath = null;
-    try {
-      const pngBuffer = await convertDicomToPng(dicomBuffer);
-      pngPath = `orders/${orderId}/${timestamp}-preview.png`;
-      const { error: pngUploadError } = await supabase.storage
-        .from("imaging")
-        .upload(pngPath, pngBuffer, { contentType: "image/png" });
-      if (pngUploadError) throw pngUploadError;
-    } catch (error) {
-      pngPath = null;
-    }
-
-    const { error: fileInsertError } = await supabase.from("imaging_files").insert({
-      order_id: orderId,
-      dicom_path: dicomPath,
-      png_path: pngPath,
-      orthanc_instance_id: instance.ID,
-    });
-    if (fileInsertError) throw fileInsertError;
-
-    copiedNow += 1;
-  }
-
-  return { totalInstances: instances.length, copiedNow };
+// SeriesNumber / InstanceNumber vienen como texto (y a veces vacíos).
+function dicomInteger(value) {
+  const number = Number.parseInt(String(value ?? "").trim(), 10);
+  return Number.isFinite(number) ? number : null;
 }
 
-// Copia todas las instancias pendientes de un estudio a una orden, marca
-// orthanc_studies como 'linked' y borra el estudio en Orthanc. Si
-// copyStudyInstances lanza (una instancia falló), NO se marca 'linked' ni se
-// borra de Orthanc -- las instancias que sí se copiaron quedan registradas
-// con su orthanc_instance_id, así un reintento no las duplica.
+// Inserta en imaging_files las instancias del estudio que todavía no estén
+// registradas para esa orden (idempotente por orthanc_instance_id: un
+// reintento o un segundo vínculo no duplica filas).
+async function registerStudyInstances(supabase, orthancStudyId, orderId) {
+  const [instances, series] = await Promise.all([
+    orthancGetJson(`/studies/${orthancStudyId}/instances`),
+    orthancGetJson(`/studies/${orthancStudyId}/series`),
+  ]);
+  if (!instances) throw new Error(`El estudio ${orthancStudyId} no está en Orthanc.`);
+
+  // instancia -> serie, desde la lista de series (Instances de cada una); si
+  // una instancia no aparece ahí, se usa su ParentSeries.
+  const seriesByInstance = new Map();
+  const seriesNumbers = new Map();
+  for (const serie of series ?? []) {
+    seriesNumbers.set(serie.ID, dicomInteger(serie.MainDicomTags?.SeriesNumber));
+    for (const instanceId of serie.Instances ?? []) seriesByInstance.set(instanceId, serie.ID);
+  }
+
+  const alreadyLinked = await getAlreadyLinkedInstanceIds(supabase, orderId);
+  const rows = instances
+    .filter((instance) => !alreadyLinked.has(instance.ID))
+    .map((instance) => {
+      const seriesId = seriesByInstance.get(instance.ID) ?? instance.ParentSeries ?? null;
+      return {
+        order_id: orderId,
+        orthanc_instance_id: instance.ID,
+        orthanc_series_id: seriesId,
+        orthanc_series_number: seriesId ? seriesNumbers.get(seriesId) ?? null : null,
+        orthanc_instance_number: dicomInteger(instance.MainDicomTags?.InstanceNumber),
+        dicom_path: null,
+        png_path: null,
+      };
+    });
+
+  if (rows.length > 0) {
+    const { error } = await supabase.from("imaging_files").insert(rows);
+    if (error) throw error;
+  }
+
+  return { totalInstances: instances.length, linkedNow: rows.length };
+}
+
+// Registra las instancias del estudio en la orden y marca orthanc_studies
+// como 'linked'. Si el registro falla, NO se marca 'linked' (un reintento
+// completa lo que falte sin duplicar).
 //
 // studyMeta es opcional: en el match automático del cron ya se tienen los
 // datos recién leídos de Orthanc (accession_number_received, etc.) y se
@@ -87,7 +90,7 @@ async function copyStudyInstances(supabase, orthancStudyId, orderId) {
 // manual la fila ya existe (viene de la lista de "unlinked"), así que se
 // puede omitir y esos campos quedan tal cual estaban.
 export async function linkOrthancStudyToOrder(supabase, { orthancStudyId, orderId, studyMeta = {} }) {
-  const { totalInstances, copiedNow } = await copyStudyInstances(supabase, orthancStudyId, orderId);
+  const { totalInstances, linkedNow } = await registerStudyInstances(supabase, orthancStudyId, orderId);
 
   const { error: upsertError } = await supabase
     .from("orthanc_studies")
@@ -112,7 +115,5 @@ export async function linkOrthancStudyToOrder(supabase, { orthancStudyId, orderI
     .eq("status", "ordenado");
   if (orderError) throw orderError;
 
-  await orthancDelete(`/studies/${orthancStudyId}`);
-
-  return { totalInstances, copiedNow };
+  return { totalInstances, linkedNow };
 }

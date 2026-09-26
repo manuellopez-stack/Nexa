@@ -12,14 +12,15 @@
 //      "StableStudy" -- evita procesar un estudio a medio subir).
 //   2. Para cada estudio: lee su AccessionNumber (MainDicomTags) y busca una
 //      fila en imaging_orders con ese mismo accession_number.
-//        - Si hay match: descarga cada instancia DICOM del estudio que
-//          todavía no se haya copiado antes (ver idempotencia más abajo), la
-//          sube a Supabase Storage (bucket "imaging", mismo patrón
-//          orders/{orderId}/{timestamp}-... que usa la subida manual desde
-//          imaging_section.dart) e inserta una fila en imaging_files por
-//          instancia. Solo si TODAS las instancias del estudio quedan
-//          copiadas sin error, el estudio se marca "linked" en
-//          orthanc_studies y se borra en Orthanc.
+//        - Si hay match: registra en imaging_files una fila por instancia
+//          del estudio (orthanc_instance_id + serie, sin dicom_path ni
+//          png_path) y marca el estudio "linked" en orthanc_studies (Fase 2A,
+//          ver orthancStudies.mjs). El estudio se QUEDA en Orthanc: no se
+//          copia a Storage ni se borra; las imágenes se sirven desde Orthanc
+//          a través del backend.
+//        - Si el estudio ya estaba "linked" (vuelve a aparecer en /changes
+//          porque le llegaron instancias nuevas), se registran las instancias
+//          que falten en la misma orden a la que ya estaba vinculado.
 //        - Si no hay match: registra el estudio en orthanc_studies con
 //          status "unlinked" (accession_number_received / patient_name_received
 //          / patient_id_received / study_date, para que una futura pantalla
@@ -31,16 +32,10 @@
 //      del lote falló. Si algo falló, el cursor no se mueve: la próxima
 //      corrida vuelve a traer el mismo lote de /changes y reintenta.
 //
-// Idempotencia ante reintentos (dos niveles):
-//   - Por estudio: un estudio ya copiado y borrado de Orthanc simplemente ya
-//     no está ahí en el reintento (GET /studies/{id} devuelve 404) y se
-//     omite. Uno "unlinked" se vuelve a upsertear sobre la misma fila.
-//   - Por instancia dentro de un estudio: antes de subir una instancia se
-//     chequea si ya existe una fila en imaging_files con ese mismo
-//     (order_id, orthanc_instance_id). Si ya existe, se omite. Así, si el
-//     estudio A falla subiendo la instancia 3 de 5 (las 2 primeras ya
-//     quedaron copiadas), el reintento solo sube la 3, 4 y 5 -- no duplica
-//     las 2 que ya estaban.
+// Idempotencia ante reintentos: antes de registrar una instancia se chequea
+// si ya existe una fila en imaging_files con ese mismo (order_id,
+// orthanc_instance_id). Si ya existe, se omite. Un estudio "unlinked" se
+// vuelve a upsertear sobre la misma fila.
 //
 // Variables de entorno requeridas (además de las que ya usa server.mjs):
 //   ORTHANC_URL       ej. http://137.184.27.186:8042
@@ -49,9 +44,10 @@
 //                      en las variables de entorno del Render Cron Job -- NO
 //                      va en el código ni en ningún archivo versionado)
 //
-// Requiere haber corrido backend/sql/dicom_pacs_stage1.sql y
-// dicom_pacs_stage1b.sql en Supabase (accession_number, orthanc_studies,
-// orthanc_sync_state, imaging_files.orthanc_instance_id).
+// Requiere haber corrido backend/sql/dicom_pacs_stage1.sql,
+// dicom_pacs_stage1b.sql y fase2_orthanc_directo.sql en Supabase
+// (accession_number, orthanc_studies, orthanc_sync_state,
+// imaging_files.orthanc_instance_id / orthanc_series_*, dicom_path nullable).
 //
 // Cómo correrlo a mano para probar:
 //   cd backend && node syncOrthanc.mjs
@@ -171,7 +167,7 @@ function resolveClinicIdFromLabels(labels, validClinicIds) {
 async function processStudy(orthancStudyId, validClinicIds) {
   const study = await orthancGetJson(`/studies/${orthancStudyId}`);
   if (!study) {
-    console.log(`  Ya no está en Orthanc (probablemente ya se procesó antes), se omite.`);
+    console.log(`  Ya no está en Orthanc, se omite.`);
     return;
   }
 
@@ -192,8 +188,17 @@ async function processStudy(orthancStudyId, validClinicIds) {
   const studyDate = studyTags.StudyDate ?? null;
   const clinicId = resolveClinicIdFromLabels(study.Labels, validClinicIds);
 
-  let matchedOrderId = null;
-  if (accessionNumber) {
+  // Ya vinculado (a mano o por una corrida anterior): se completa en esa
+  // misma orden, sin volver a buscar por accession_number.
+  const { data: existing, error: existingError } = await supabase
+    .from("orthanc_studies")
+    .select("status, linked_order_id")
+    .eq("orthanc_study_id", orthancStudyId)
+    .maybeSingle();
+  if (existingError) throw existingError;
+
+  let matchedOrderId = existing?.status === "linked" ? existing.linked_order_id : null;
+  if (!matchedOrderId && accessionNumber) {
     const { data, error } = await supabase
       .from("imaging_orders")
       .select("id")
@@ -219,12 +224,11 @@ async function processStudy(orthancStudyId, validClinicIds) {
     return;
   }
 
-  console.log(`  Match: accession_number ${accessionNumber} -> orden ${matchedOrderId}. Copiando estudio...`);
+  console.log(`  Match: accession_number ${accessionNumber ?? "(vacío)"} -> orden ${matchedOrderId}. Vinculando estudio...`);
 
-  // Si esto lanza (una instancia falló), NO se marca 'linked' ni se borra de
-  // Orthanc -- las instancias que sí se alcanzaron a copiar quedan en
-  // imaging_files con su orthanc_instance_id, así el reintento no las duplica.
-  const { totalInstances, copiedNow } = await linkOrthancStudyToOrder(supabase, {
+  // Si esto lanza, NO se marca 'linked'; el reintento registra lo que falte
+  // sin duplicar (idempotente por orthanc_instance_id).
+  const { totalInstances, linkedNow } = await linkOrthancStudyToOrder(supabase, {
     orthancStudyId,
     orderId: matchedOrderId,
     studyMeta: {
@@ -237,7 +241,7 @@ async function processStudy(orthancStudyId, validClinicIds) {
   });
 
   console.log(
-    `  ${copiedNow}/${totalInstances} instancia(s) copiada(s) recién (el resto ya estaba de un intento previo). Estudio borrado de Orthanc.`,
+    `  ${linkedNow}/${totalInstances} instancia(s) registrada(s) recién (el resto ya estaba). El estudio queda en Orthanc.`,
   );
 }
 

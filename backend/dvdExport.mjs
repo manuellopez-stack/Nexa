@@ -3,12 +3,17 @@
 // Windows (weasisPortable.mjs), un autorun.inf, un lanzador "Abrir_imagenes"
 // y un LEAME.txt. La ruta HTTP vive en server.mjs.
 //
-// Los estudios vinculados a una orden ya NO están en Orthanc: al vincularlos
-// se copian a Storage (imaging_files) y se borran de Orthanc (ver
-// orthancStudies.mjs). Para pedir /studies/{id}/media, openOrderMedia sube de
-// nuevo a Orthanc, de a una, las instancias DICOM de la orden, les pone la
-// label DVD_TEMP_LABEL (syncOrthanc.mjs ignora esos estudios) y, al terminar
-// la descarga, borra de Orthanc los estudios que subió ella misma.
+// De dónde salen las imágenes (openOrderMedia):
+//   - Estudios vinculados desde la Fase 2A: siguen en Orthanc (ver
+//     orthancStudies.mjs), así que se pide /studies/{id}/media directo. Nunca
+//     se borran.
+//   - Filas antiguas (DICOM copiado a Storage, estudio ya borrado de
+//     Orthanc): openOrderMedia sube de nuevo a Orthanc, de a una, esas
+//     instancias, les pone la label DVD_TEMP_LABEL (syncOrthanc.mjs ignora
+//     esos estudios) y, al terminar la descarga, borra de Orthanc los
+//     estudios que subió ella misma.
+//   - Una orden con ambas: un solo paquete (/tools/create-media) con los
+//     estudios vinculados más los rehidratados; solo se borran estos últimos.
 import { finished, pipeline } from "node:stream/promises";
 import { Readable } from "node:stream";
 import path from "node:path";
@@ -16,6 +21,7 @@ import { ZipArchive } from "archiver";
 import unzipper from "unzipper";
 import {
   orthancDelete,
+  orthancGetJson,
   orthancPut,
   orthancStream,
   orthancUploadInstance,
@@ -319,17 +325,31 @@ async function releaseStudies(ownedStudyIds) {
 }
 
 /**
- * Sube a Orthanc las instancias DICOM de la orden (desde Storage) y abre el
- * ZIP de medios. Devuelve { body: Readable, release } -- release() debe
- * llamarse siempre al terminar (borra lo que se subió solo para esto).
+ * Abre el ZIP de medios de la orden. Devuelve { body: Readable, release } --
+ * release() debe llamarse siempre al terminar (borra solo lo que se subió
+ * para esto; nunca un estudio vinculado).
  *
- * dicomPaths: rutas en el bucket "imaging" (imaging_files.dicom_path).
+ * orthancStudyIds: estudios vinculados a la orden que viven en Orthanc
+ *   (orthanc_studies.linked_order_id). Los que ya no estén en Orthanc (p. ej.
+ *   copiados y borrados antes de la Fase 2A) se omiten: sus imágenes salen
+ *   de dicomPaths.
+ * dicomPaths: rutas en el bucket "imaging" (imaging_files.dicom_path) de las
+ *   filas antiguas, que se rehidratan en Orthanc.
  */
-export async function openOrderMedia({ supabase, dicomPaths, signal }) {
+export async function openOrderMedia({ supabase, dicomPaths = [], orthancStudyIds = [], signal }) {
   const studies = new Set();
   const owned = new Set();
 
   try {
+    for (const studyId of orthancStudyIds) {
+      signal?.throwIfAborted();
+      if (temporaryStudies.has(studyId)) continue; // rehidratación en curso de otra descarga
+      if (!(await orthancGetJson(`/studies/${studyId}`))) continue;
+      // Ya en `studies`: si una instancia rehidratada cae en este mismo
+      // estudio, se salta abajo y nunca queda como propio (no se borra).
+      studies.add(studyId);
+    }
+
     for (const dicomPath of dicomPaths) {
       signal?.throwIfAborted();
       const { data, error } = await supabase.storage.from("imaging").download(dicomPath);

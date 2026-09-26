@@ -7,7 +7,11 @@ import dotenv from "dotenv";
 import OpenAI from "openai";
 import { createClient } from "@supabase/supabase-js";
 import { convertDicomToPng } from "./dicomPreview.mjs";
+import { Readable } from "node:stream";
+import { pipeline } from "node:stream/promises";
 import { linkOrthancStudyToOrder } from "./orthancStudies.mjs";
+import { orthancStream } from "./orthancClient.mjs";
+import { signImageToken, verifyImageToken } from "./imageTokens.mjs";
 import { buildLeame, dvdFilename, openOrderMedia, reportPdfName, writeDvdZip } from "./dvdExport.mjs";
 import { getWeasisViewer } from "./weasisPortable.mjs";
 import { sendMail } from "./mailer.mjs";
@@ -4799,6 +4803,43 @@ function shapeImagingFileRow(row) {
   };
 }
 
+// Fase 2A: fila cuya imagen vive en Orthanc (vinculada sin copiar). Las
+// filas antiguas tienen dicom_path (Storage), aunque también tengan
+// orthanc_instance_id (las que el vínculo anterior copió desde Orthanc).
+function isOrthancImagingFile(row) {
+  return !row.dicom_path && Boolean(row.orthanc_instance_id);
+}
+
+// Por serie (SeriesNumber, luego ID de serie) y número de instancia; lo que
+// no tiene número va al final de su grupo.
+function compareOrthancFiles(a, b) {
+  const byNumber = (x, y) => (x ?? Number.MAX_SAFE_INTEGER) - (y ?? Number.MAX_SAFE_INTEGER);
+  return (
+    byNumber(a.orthanc_series_number, b.orthanc_series_number) ||
+    String(a.orthanc_series_id ?? "").localeCompare(String(b.orthanc_series_id ?? "")) ||
+    byNumber(a.orthanc_instance_number, b.orthanc_instance_number) ||
+    String(a.orthanc_instance_id).localeCompare(String(b.orthanc_instance_id))
+  );
+}
+
+// Origen público del backend para armar URLs absolutas (el visor y las
+// miniaturas las cargan desde el navegador): PUBLIC_BACKEND_URL si está
+// definida; si no, el host por el que llegó la petición (Render pone
+// x-forwarded-proto / x-forwarded-host delante).
+function publicBackendOrigin(request) {
+  const configured = (process.env.PUBLIC_BACKEND_URL || "").trim().replace(/\/+$/, "");
+  if (configured) return configured;
+  const first = (value) => String(value ?? "").split(",")[0].trim();
+  const proto = first(request.headers["x-forwarded-proto"]) || request.protocol || "http";
+  const host = first(request.headers["x-forwarded-host"]) || request.headers.host;
+  return `${proto}://${host}`;
+}
+
+function signedImageUrl(request, fileId, kind) {
+  const token = signImageToken({ fileId, kind });
+  return `${publicBackendOrigin(request)}/imaging-files/${encodeURIComponent(fileId)}/${kind}?t=${encodeURIComponent(token)}`;
+}
+
 app.post(
   "/patients/:id/imaging-orders/:orderId/image",
   requireRole(CLINICAL_STAFF),
@@ -4940,8 +4981,28 @@ app.get(
         .order("uploaded_at", { ascending: false });
       if (filesError) throw filesError;
 
-      const files = await Promise.all(
-        (fileRows ?? []).map(async (row) => {
+      // Filas de Orthanc (Fase 2A): URLs firmadas del proxy de este backend,
+      // ordenadas por serie e instancia. Solo la primera instancia de cada
+      // serie lleva vista previa (la miniatura de la serie); el visor recibe
+      // igual todas las dicomUrl, en este orden.
+      const orthancRows = (fileRows ?? []).filter(isOrthancImagingFile).sort(compareOrthancFiles);
+      const seenSeries = new Set();
+      const orthancFiles = orthancRows.map((row) => {
+        const seriesKey = row.orthanc_series_id ?? `instancia:${row.orthanc_instance_id}`;
+        const firstOfSeries = !seenSeries.has(seriesKey);
+        seenSeries.add(seriesKey);
+        return {
+          ...shapeImagingFileRow(row),
+          source: "orthanc",
+          seriesId: row.orthanc_series_id ?? null,
+          pngUrl: firstOfSeries ? signedImageUrl(request, row.id, "preview") : null,
+          dicomUrl: signedImageUrl(request, row.id, "dicom"),
+        };
+      });
+
+      // Filas antiguas (DICOM en Storage): igual que antes.
+      const storageFiles = await Promise.all(
+        (fileRows ?? []).filter((row) => !isOrthancImagingFile(row)).map(async (row) => {
           let pngUrl = null;
           let dicomUrl = null;
 
@@ -4961,13 +5022,14 @@ app.get(
 
           return {
             ...shapeImagingFileRow(row),
+            source: "storage",
             pngUrl,
             dicomUrl,
           };
         }),
       );
 
-      return response.json({ files });
+      return response.json({ files: [...orthancFiles, ...storageFiles] });
     } catch (error) {
       console.error("Error al obtener imágenes de la orden:", error);
       return response
@@ -4976,6 +5038,62 @@ app.get(
     }
   },
 );
+
+// Imágenes de Orthanc por URL firmada (Fase 2A). Fuera de /patients y sin
+// requireAuth: el visor DICOM y las miniaturas las cargan desde el navegador
+// sin header Authorization. La autorización es el token (?t=), que solo
+// entrega GET .../images después de sus chequeos de rol y clínica, atado a
+// esta fila y a este tipo, y que vence en 1 hora (ver imageTokens.mjs).
+// Token inválido o vencido: 403. Fila inexistente o que no es de Orthanc: 404.
+const IMAGE_PROXY_KINDS = {
+  dicom: { orthancPath: (id) => `/instances/${id}/file`, contentType: "application/dicom" },
+  preview: { orthancPath: (id) => `/instances/${id}/preview`, contentType: "image/png" },
+};
+
+app.get("/imaging-files/:fileId/:kind", async (request, response, next) => {
+  const kind = IMAGE_PROXY_KINDS[request.params.kind];
+  if (!kind) return next();
+  const { fileId } = request.params;
+
+  try {
+    if (!verifyImageToken(request.query.t, { fileId, kind: request.params.kind })) {
+      return response.status(403).json({ error: "El enlace de la imagen no es válido o ya venció." });
+    }
+
+    const { data: row, error } = await supabase
+      .from("imaging_files")
+      .select("id, dicom_path, orthanc_instance_id")
+      .eq("id", fileId)
+      .maybeSingle();
+    if (error) throw error;
+    if (!row || !isOrthancImagingFile(row)) {
+      return response.status(404).json({ error: "Imagen no encontrada." });
+    }
+
+    const abort = new AbortController();
+    response.on("close", () => {
+      if (!response.writableFinished) abort.abort();
+    });
+    const upstream = await orthancStream(kind.orthancPath(row.orthanc_instance_id), { signal: abort.signal });
+    if (!upstream?.body) {
+      return response.status(404).json({ error: "Imagen no encontrada en el PACS." });
+    }
+
+    response.setHeader("Content-Type", kind.contentType);
+    const length = upstream.headers.get("content-length");
+    if (length) response.setHeader("Content-Length", length);
+    // Privado (datos clínicos): solo la caché del navegador de quien pidió.
+    response.setHeader("Cache-Control", "private, max-age=3600");
+    await pipeline(Readable.fromWeb(upstream.body), response);
+  } catch (error) {
+    if (error?.name === "AbortError" || error?.code === "ERR_STREAM_PREMATURE_CLOSE") return;
+    console.error(`Error al servir la imagen ${fileId} desde Orthanc:`, error);
+    if (!response.headersSent) {
+      return response.status(502).json({ error: "No fue posible obtener la imagen desde el PACS." });
+    }
+    response.destroy();
+  }
+});
 
 // ============================================
 // IMAGENOLOGÍA — DESCARGAR PARA DVD
@@ -5081,7 +5199,7 @@ async function loadDvdContext({ patientId, orderId, clinicId }) {
     supabase.from("imaging_order_types").select("imaging_types(name)").eq("order_id", orderId),
     supabase
       .from("imaging_files")
-      .select("dicom_path, uploaded_at")
+      .select("dicom_path, orthanc_instance_id, uploaded_at")
       .eq("order_id", orderId)
       .order("uploaded_at", { ascending: true }),
   ]);
@@ -5089,13 +5207,28 @@ async function loadDvdContext({ patientId, orderId, clinicId }) {
     if (result.error) throw result.error;
   }
 
+  // Filas antiguas: DICOM en Storage, se rehidratan en Orthanc. Filas de
+  // Orthanc (Fase 2A): el DVD sale directo de los estudios vinculados a la
+  // orden, que siguen en Orthanc (ver openOrderMedia en dvdExport.mjs).
   const dicomPaths = (filesResult.data ?? []).map((row) => row.dicom_path).filter(Boolean);
+  let orthancStudyIds = [];
+  if ((filesResult.data ?? []).some(isOrthancImagingFile)) {
+    const { data: linkedStudies, error: linkedError } = await supabase
+      .from("orthanc_studies")
+      .select("orthanc_study_id")
+      .eq("linked_order_id", orderId)
+      .eq("status", "linked");
+    if (linkedError) throw linkedError;
+    orthancStudyIds = (linkedStudies ?? []).map((row) => row.orthanc_study_id);
+  }
   const patientName = patientResult.data?.name ?? "";
   const examDate = order.performed_at ?? order.requested_at;
 
   return {
     order,
     dicomPaths,
+    orthancStudyIds,
+    hasImages: dicomPaths.length > 0 || orthancStudyIds.length > 0,
     filename: dvdFilename({ patientName, examDate, accessionNumber: order.accession_number }),
     readme: {
       clinicName: clinicResult.data?.name ?? "",
@@ -5132,7 +5265,12 @@ async function streamDvd(request, response, context) {
 
   let media;
   try {
-    media = await openOrderMedia({ supabase, dicomPaths: context.dicomPaths, signal: abort.signal });
+    media = await openOrderMedia({
+      supabase,
+      dicomPaths: context.dicomPaths,
+      orthancStudyIds: context.orthancStudyIds,
+      signal: abort.signal,
+    });
   } catch (error) {
     console.error(`[DVD] Orden ${context.order.id}: no se pudo obtener el paquete de Orthanc:`, error);
     if (!response.headersSent && !abort.signal.aborted) {
@@ -5184,7 +5322,7 @@ app.get("/patients/:id/dvd-studies", requireRole(DVD_ROLES), async (request, res
     if (orderIds.length === 0) return response.json({ studies: [] });
 
     const [filesResult, typesResult, reports] = await Promise.all([
-      supabase.from("imaging_files").select("order_id, dicom_path").in("order_id", orderIds),
+      supabase.from("imaging_files").select("order_id, dicom_path, orthanc_instance_id").in("order_id", orderIds),
       supabase.from("imaging_order_types").select("order_id, imaging_types(name)").in("order_id", orderIds),
       loadOrderReports(orderIds),
     ]);
@@ -5193,7 +5331,7 @@ app.get("/patients/:id/dvd-studies", requireRole(DVD_ROLES), async (request, res
 
     const imageCounts = new Map();
     for (const file of filesResult.data ?? []) {
-      if (file.dicom_path) imageCounts.set(file.order_id, (imageCounts.get(file.order_id) ?? 0) + 1);
+      if (file.dicom_path || isOrthancImagingFile(file)) imageCounts.set(file.order_id, (imageCounts.get(file.order_id) ?? 0) + 1);
     }
 
     const studies = (orders ?? [])
@@ -5238,7 +5376,7 @@ app.post(
       if (!context) {
         return response.status(404).json({ error: "Orden de imagenología no encontrada." });
       }
-      if (context.dicomPaths.length === 0) {
+      if (!context.hasImages) {
         return response.status(409).json({ error: DVD_NO_IMAGES_ERROR });
       }
 
@@ -5273,7 +5411,7 @@ app.get(
       if (!context) {
         return response.status(404).json({ error: "Orden de imagenología no encontrada." });
       }
-      if (context.dicomPaths.length === 0) {
+      if (!context.hasImages) {
         return response.status(409).json({ error: DVD_NO_IMAGES_ERROR });
       }
       await streamDvd(request, response, context);
@@ -5318,7 +5456,7 @@ app.get("/dvd-downloads/:token", async (request, response) => {
     if (!context) {
       return response.status(404).json({ error: "Orden de imagenología no encontrada." });
     }
-    if (context.dicomPaths.length === 0) {
+    if (!context.hasImages) {
       return response.status(409).json({ error: DVD_NO_IMAGES_ERROR });
     }
     await streamDvd(request, response, context);
@@ -5434,12 +5572,12 @@ app.post(
           .json({ error: "Orden de imagenología no encontrada." });
       }
 
-      const { totalInstances, copiedNow } = await linkOrthancStudyToOrder(supabase, {
+      const { totalInstances, linkedNow } = await linkOrthancStudyToOrder(supabase, {
         orthancStudyId,
         orderId: orderRow.id,
       });
 
-      return response.json({ linked: true, orderId: orderRow.id, totalInstances, copiedNow });
+      return response.json({ linked: true, orderId: orderRow.id, totalInstances, linkedNow });
     } catch (error) {
       console.error("Error al vincular estudio de Orthanc:", error);
       return response.status(500).json({

@@ -786,10 +786,27 @@ class _ImagingOrderDetailDialogState extends State<_ImagingOrderDetailDialog> {
                           .where((u) => u.isNotEmpty)
                           .toList(growable: false);
 
+                      // Imágenes de Orthanc: el backend las manda ordenadas por
+                      // serie e instancia, y solo la primera de cada serie trae
+                      // pngUrl. Se muestra una miniatura por serie (con cuántas
+                      // imágenes tiene); el visor igual recibe todas.
+                      bool isOrthanc(Map<String, dynamic> f) =>
+                          f['source']?.toString() == 'orthanc';
+                      final seriesCounts = <String, int>{};
+                      for (final f in images.where(isOrthanc)) {
+                        final key = f['seriesId']?.toString() ?? '';
+                        seriesCounts[key] = (seriesCounts[key] ?? 0) + 1;
+                      }
+                      final thumbnailFiles = images.where((f) {
+                        if (!isOrthanc(f)) return true;
+                        final png = f['pngUrl']?.toString();
+                        return png != null && png.isNotEmpty;
+                      });
+
                       final thumbnails = Wrap(
                         spacing: 10,
                         runSpacing: 10,
-                        children: images.map((imageFile) {
+                        children: thumbnailFiles.map((imageFile) {
                           final pngUrl = imageFile['pngUrl']?.toString();
                           final dicomUrl = imageFile['dicomUrl']?.toString();
                           final hasPng = pngUrl != null && pngUrl.isNotEmpty;
@@ -815,6 +832,10 @@ class _ImagingOrderDetailDialogState extends State<_ImagingOrderDetailDialog> {
 
                           return _ImageThumb(
                             pngUrl: hasPng ? pngUrl : null,
+                            seriesCount: isOrthanc(imageFile)
+                                ? seriesCounts[
+                                    imageFile['seriesId']?.toString() ?? '']
+                                : null,
                             onOpen: () => _openDicomViewer(
                               dicomUrls,
                               dicomUrls.indexOf(dicomUrl),
@@ -1051,14 +1072,21 @@ class _ImagingStatusBadge extends StatelessWidget {
   }
 }
 
-/// Miniatura de una imagen del estudio. Muestra el PNG de vista previa si el
+/// Miniatura de una imagen del estudio (o de una serie de Orthanc, con su
+/// cantidad de imágenes). Muestra el PNG de vista previa si el
 /// backend lo generó; si no (DICOM comprimido), muestra un tile neutro. En
 /// ambos casos, al tocarla se abre el visor DICOM real con el archivo original.
 class _ImageThumb extends StatelessWidget {
-  const _ImageThumb({required this.pngUrl, required this.onOpen});
+  const _ImageThumb({
+    required this.pngUrl,
+    required this.onOpen,
+    this.seriesCount,
+  });
 
   final String? pngUrl;
   final VoidCallback onOpen;
+  // Imágenes de la serie (solo miniaturas de Orthanc, una por serie).
+  final int? seriesCount;
 
   @override
   Widget build(BuildContext context) {
@@ -1092,6 +1120,23 @@ class _ImageThumb extends StatelessWidget {
         child: Stack(
           children: [
             content,
+            if ((seriesCount ?? 0) > 1)
+              Positioned(
+                left: 6,
+                bottom: 6,
+                child: Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
+                  decoration: BoxDecoration(
+                    color: Colors.black.withValues(alpha: 0.55),
+                    borderRadius: BorderRadius.circular(6),
+                  ),
+                  child: Text(
+                    '$seriesCount imágenes',
+                    style: const TextStyle(fontSize: 10, color: Colors.white),
+                  ),
+                ),
+              ),
             Positioned(
               right: 6,
               bottom: 6,

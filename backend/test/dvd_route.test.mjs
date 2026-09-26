@@ -16,7 +16,7 @@ import { after, before, test } from "node:test";
 import { ZipArchive } from "archiver";
 import unzipper from "unzipper";
 
-import { resetDb, storageFiles, users } from "./support/supabase-mock.mjs";
+import { db, resetDb, storageFiles, users } from "./support/supabase-mock.mjs";
 
 const BASE = "http://localhost:3000";
 const CLINIC = "11111111-1111-1111-1111-111111111111";
@@ -292,4 +292,23 @@ test("listado para DVD: solo órdenes con imágenes y de la propia clínica", as
   const other = await (await get("/patients/1/dvd-studies", "otraClinica")).json();
   assert.deepEqual(other.studies, []);
   assert.equal((await get("/patients/1/dvd-studies")).status, 401);
+});
+
+test("el ZIP incluye el informe aprobado con PDF; sin aprobar no va", async () => {
+  storageFiles["clinical-documents/c/1/informe.pdf"] = Buffer.from("%PDF-1.4 informe io-1");
+  db.documents = [
+    {
+      id: "d-io1", patient_id: 1, filename: "informe-rx.pdf", imaging_order_id: "io-1",
+      validation_status: "pendiente", incorporated_at: "2026-09-24T16:00:00Z", pdf_path: "c/1/informe.pdf",
+    },
+  ];
+  const pending = await zipEntries(await get("/patients/1/imaging-orders/io-1/dvd", "recepcion"));
+  assert.ok(!pending.has("INFORME_IMD000777.pdf"));
+  assert.ok(pending.get("LEAME.txt").toString("utf8").includes("El informe se entrega por separado."));
+
+  db.documents[0].validation_status = "aprobado";
+  const approved = await zipEntries(await get("/patients/1/imaging-orders/io-1/dvd", "recepcion"));
+  assert.equal(approved.get("INFORME_IMD000777.pdf").toString(), "%PDF-1.4 informe io-1");
+  assert.ok(approved.get("LEAME.txt").toString("utf8").includes("INFORME_IMD000777.pdf"));
+  db.documents = [];
 });

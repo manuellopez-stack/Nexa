@@ -14,6 +14,7 @@ import unzipper from "unzipper";
 import {
   buildLeame,
   dvdFilename,
+  reportPdfName,
   surnameFromFullName,
   writeDvdZip,
 } from "../dvdExport.mjs";
@@ -164,6 +165,50 @@ test("sin visor: van las imágenes y el LEAME lo avisa; sin autorun ni lanzador"
   const leame = files.get("LEAME.txt").toString("utf8");
   assert.match(leame, /Este disco NO incluye un visor de imágenes\./);
   assert.ok(leame.includes("el diagnóstico oficial es el informe del radiólogo"));
+});
+
+test("con informe aprobado: INFORME_<accession>.pdf en la raíz y el LEAME lo menciona", async () => {
+  const reportName = reportPdfName("IMD000123");
+  assert.equal(reportName, "INFORME_IMD000123.pdf");
+  const reportPdf = Buffer.from("%PDF-1.4 informe");
+  const media = mockOrthancMedia([
+    { name: "DICOMDIR", source: Buffer.from("DICM") },
+    { name: "IMAGES/IM0", source: Buffer.from("imagen") },
+    // No puede pisar el informe (el nombre está reservado en la raíz):
+    { name: "INFORME_IMD000123.pdf", source: Buffer.from("falso") },
+    { name: "informe_otro.PDF", source: Buffer.from("falso") },
+  ]);
+  const output = new Collector();
+  await writeDvdZip({
+    mediaZip: media,
+    output,
+    viewer: null,
+    report: { name: reportName, data: reportPdf },
+    leame: buildLeame({ ...README_DATA, viewer: null, reportName }),
+  });
+
+  const files = await readZip(output.buffer);
+  assert.deepEqual([...files.keys()].sort(), ["DICOMDIR", "IMAGES/IM0", "INFORME_IMD000123.pdf", "LEAME.txt"]);
+  assert.deepEqual(files.get(reportName), reportPdf);
+  const leame = files.get("LEAME.txt").toString("utf8");
+  assert.ok(leame.includes("El informe del examen, aprobado por un médico, está en este disco: INFORME_IMD000123.pdf."));
+  assert.ok(leame.includes("INFORME_IMD000123.pdf: informe del examen en PDF"));
+  assert.ok(!leame.includes("El informe se entrega por separado."));
+});
+
+test("sin informe aprobado: no va el PDF y el LEAME dice que se entrega por separado", async () => {
+  const media = mockOrthancMedia([
+    { name: "DICOMDIR", source: Buffer.from("DICM") },
+    { name: "IMAGES/IM0", source: Buffer.from("imagen") },
+  ]);
+  const output = new Collector();
+  await writeDvdZip({ mediaZip: media, output, viewer: null, leame: buildLeame({ ...README_DATA, viewer: null }) });
+
+  const files = await readZip(output.buffer);
+  assert.ok(![...files.keys()].some((name) => /^INFORME_/i.test(name)));
+  const leame = files.get("LEAME.txt").toString("utf8");
+  assert.ok(leame.includes("El informe se entrega por separado."));
+  assert.ok(!leame.includes("INFORME_"));
 });
 
 test("un paquete de Orthanc vacío o corrupto hace fallar el armado", async () => {

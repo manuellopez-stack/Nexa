@@ -311,13 +311,25 @@ export function createClient() {
           : { data: { user: null }, error: { message: "token inválido" } },
     },
     storage: {
+      getBucket: async (id) => ({ data: { id }, error: null }),
+      createBucket: async (id) => ({ data: { name: id }, error: null }),
       from: (bucket) => ({
         download: async (filePath) =>
           storageFiles[`${bucket}/${filePath}`]
             ? { data: new Blob([storageFiles[`${bucket}/${filePath}`]]), error: null }
             : { data: null, error: { message: "supabase-mock: sin storage" } },
-        upload: async () => ({ data: null, error: { message: "supabase-mock: sin storage" } }),
-        remove: async () => ({ data: null, error: null }),
+        upload: async (filePath, body) => {
+          storageFiles[`${bucket}/${filePath}`] = Buffer.from(body);
+          return { data: { path: filePath }, error: null };
+        },
+        remove: async (paths) => {
+          for (const filePath of paths) delete storageFiles[`${bucket}/${filePath}`];
+          return { data: null, error: null };
+        },
+        createSignedUrl: async (filePath) => ({
+          data: { signedUrl: `http://storage.mock/${bucket}/${filePath}?firmado` },
+          error: null,
+        }),
       }),
     },
   };

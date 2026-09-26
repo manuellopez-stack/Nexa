@@ -8,7 +8,7 @@ import OpenAI from "openai";
 import { createClient } from "@supabase/supabase-js";
 import { convertDicomToPng } from "./dicomPreview.mjs";
 import { linkOrthancStudyToOrder } from "./orthancStudies.mjs";
-import { buildLeame, dvdFilename, openOrderMedia, writeDvdZip } from "./dvdExport.mjs";
+import { buildLeame, dvdFilename, openOrderMedia, reportPdfName, writeDvdZip } from "./dvdExport.mjs";
 import { getWeasisViewer } from "./weasisPortable.mjs";
 import { sendMail } from "./mailer.mjs";
 import { bookingCancellationEmail, bookingConfirmationEmail } from "./bookingEmails.mjs";
@@ -5024,6 +5024,44 @@ function verifyDvdLink(token) {
   }
 }
 
+// Informe de cada orden, para recepción y el DVD: orderId -> {
+//   approved: la fila del informe aprobado con PDF más reciente, o null;
+//   status:   'aprobado' (hay uno aprobado), 'pendiente' (hay informe pero
+//             ninguno aprobado) o null (la orden no tiene informe);
+// }. select("*") para no depender de que la migración de pdf_path esté
+// aplicada.
+async function loadOrderReports(orderIds) {
+  const reports = new Map();
+  if (orderIds.length === 0) return reports;
+  const { data, error } = await supabase
+    .from("documents")
+    .select("*")
+    .in("imaging_order_id", orderIds)
+    .order("incorporated_at", { ascending: false });
+  if (error) throw error;
+  for (const row of data ?? []) {
+    const report = reports.get(row.imaging_order_id) ?? { approved: null, status: "pendiente" };
+    if (row.validation_status === "aprobado") {
+      report.status = "aprobado";
+      if (!report.approved && row.pdf_path) report.approved = row;
+    }
+    reports.set(row.imaging_order_id, report);
+  }
+  return reports;
+}
+
+// Nombre del informe en la raíz del DVD (ver dvdExport.mjs).
+async function loadDvdReport(order) {
+  const approved = (await loadOrderReports([order.id])).get(order.id)?.approved;
+  if (!approved) return null;
+  const { data, error } = await supabase.storage.from(CLINICAL_DOCS_BUCKET).download(approved.pdf_path);
+  if (error || !data) {
+    console.error(`[DVD] Orden ${order.id}: no se pudo leer el PDF del informe:`, error?.message);
+    return null;
+  }
+  return { name: reportPdfName(order.accession_number), data: Buffer.from(await data.arrayBuffer()) };
+}
+
 // Todo lo que el DVD necesita de la base. null = la orden no existe, no es
 // de ese paciente o es de otra clínica (el caller responde 404).
 async function loadDvdContext({ patientId, orderId, clinicId }) {
@@ -5083,6 +5121,15 @@ async function streamDvd(request, response, context) {
     console.error(`[DVD] Orden ${context.order.id}: se entrega sin visor. Motivo: ${viewerError}`);
   }
 
+  // Informe aprobado con PDF, si hay: va en la raíz del disco. Si no se puede
+  // leer, el disco sale sin él y el LEAME dice que se entrega por separado.
+  let report = null;
+  try {
+    report = await loadDvdReport(context.order);
+  } catch (error) {
+    console.error(`[DVD] Orden ${context.order.id}: no se pudo buscar el informe:`, error);
+  }
+
   let media;
   try {
     media = await openOrderMedia({ supabase, dicomPaths: context.dicomPaths, signal: abort.signal });
@@ -5105,7 +5152,8 @@ async function streamDvd(request, response, context) {
       mediaZip: media.body,
       output: response,
       viewer,
-      leame: buildLeame({ ...context.readme, viewer }),
+      report,
+      leame: buildLeame({ ...context.readme, viewer, reportName: report?.name ?? null }),
     });
   } catch (error) {
     if (!abort.signal.aborted) {
@@ -5135,9 +5183,10 @@ app.get("/patients/:id/dvd-studies", requireRole(DVD_ROLES), async (request, res
     const orderIds = (orders ?? []).map((order) => order.id);
     if (orderIds.length === 0) return response.json({ studies: [] });
 
-    const [filesResult, typesResult] = await Promise.all([
+    const [filesResult, typesResult, reports] = await Promise.all([
       supabase.from("imaging_files").select("order_id, dicom_path").in("order_id", orderIds),
       supabase.from("imaging_order_types").select("order_id, imaging_types(name)").in("order_id", orderIds),
+      loadOrderReports(orderIds),
     ]);
     if (filesResult.error) throw filesResult.error;
     if (typesResult.error) throw typesResult.error;
@@ -5158,6 +5207,15 @@ app.get("/patients/:id/dvd-studies", requireRole(DVD_ROLES), async (request, res
           .map((row) => row.imaging_types?.name)
           .filter(Boolean),
         imageCount: imageCounts.get(order.id),
+        // Para "Imprimir informe": solo el estado y, si está aprobado y
+        // tiene PDF, el nombre del documento para GET .../documents/:filename/pdf.
+        // Nada del contenido clínico del informe.
+        report: reports.has(order.id)
+          ? {
+              status: reports.get(order.id).status,
+              filename: reports.get(order.id).approved?.filename ?? null,
+            }
+          : null,
       }));
 
     return response.json({ studies });

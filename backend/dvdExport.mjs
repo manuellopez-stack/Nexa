@@ -65,6 +65,11 @@ export function dvdFilename({ patientName, examDate, accessionNumber }) {
   return `DVD_${surnameFromFullName(patientName)}_${date}_${accession}.zip`;
 }
 
+// Informe aprobado en la raíz del disco: INFORME_<accession>.pdf.
+export function reportPdfName(accessionNumber) {
+  return `INFORME_${asciiSlug(accessionNumber) || "sin-acceso"}.pdf`;
+}
+
 // Texto para el Bloc de notas de Windows: UTF-8 con BOM y fin de línea CRLF.
 function windowsText(lines) {
   return "﻿" + lines.join("\r\n") + "\r\n";
@@ -78,6 +83,7 @@ export function buildLeame({
   examTypes,
   accessionNumber,
   viewer,
+  reportName = null,
 }) {
   const lines = [
     "IMÁGENES DE SU EXAMEN",
@@ -122,11 +128,17 @@ export function buildLeame({
     "IMPORTANTE",
     "----------",
     "El visor incluido sirve para ver las imágenes; el diagnóstico oficial es el informe del radiólogo.",
+    reportName
+      ? `El informe del examen, aprobado por un médico, está en este disco: ${reportName}.`
+      : "El informe se entrega por separado.",
     "",
     "CONTENIDO DEL DISCO",
     "-------------------",
     "DICOMDIR y carpeta IMAGES: las imágenes del examen en formato DICOM.",
   );
+  if (reportName) {
+    lines.push(`${reportName}: informe del examen en PDF (se abre con cualquier lector de PDF).`);
+  }
 
   if (viewer) {
     lines.push(
@@ -200,6 +212,9 @@ export function buildAutorunInf() {
 const RESERVED_ROOT_NAMES = new Set(
   ["leame.txt", "autorun.inf", LAUNCHER_NAME.toLowerCase(), VIEWER_FOLDER].map((n) => n.toLowerCase()),
 );
+// INFORME_<accession>.pdf (reportPdfName): reservado siempre, vaya o no el
+// informe, para que nada del paquete de Orthanc pase por el informe.
+const RESERVED_ROOT_PATTERN = /^informe_.*\.pdf$/i;
 
 // Ruta segura dentro del ZIP de salida, o null si la entrada se descarta
 // (absoluta, con "..", o que pisaría un archivo nuestro de la raíz).
@@ -207,7 +222,9 @@ function safeMediaEntryName(rawPath) {
   const normalized = String(rawPath).replaceAll("\\", "/").replace(/^\/+/, "");
   const segments = normalized.split("/").filter(Boolean);
   if (segments.length === 0 || segments.some((s) => s === "." || s === "..")) return null;
-  if (RESERVED_ROOT_NAMES.has(segments[0].toLowerCase())) return null;
+  const root = segments[0].toLowerCase();
+  if (RESERVED_ROOT_NAMES.has(root)) return null;
+  if (RESERVED_ROOT_PATTERN.test(root)) return null;
   return segments.join("/");
 }
 
@@ -218,8 +235,12 @@ function safeMediaEntryName(rawPath) {
  *
  * viewer: { dir, version, files: [{ path, size }] } o null (sin visor: no
  * van autorun.inf ni el lanzador, y el LEAME lo dice).
+ *
+ * report: { name, data: Buffer } o null. El informe aprobado en PDF, que va
+ * en la raíz como `name` (reportPdfName); el LEAME lo menciona (buildLeame
+ * con reportName).
  */
-export async function writeDvdZip({ mediaZip, output, viewer, leame }) {
+export async function writeDvdZip({ mediaZip, output, viewer, leame, report = null }) {
   const archive = new ZipArchive({ zlib: { level: 1 } });
   const written = pipeline(archive, output);
   written.catch(() => {}); // el error se re-lanza abajo con await
@@ -229,6 +250,7 @@ export async function writeDvdZip({ mediaZip, output, viewer, leame }) {
 
   try {
     archive.append(leame, { name: "LEAME.txt", date });
+    if (report) archive.append(report.data, { name: report.name, date });
     if (viewer) {
       archive.append(buildAutorunInf(), { name: "autorun.inf", date });
       archive.append(buildLauncherCmd(), { name: LAUNCHER_NAME, date });

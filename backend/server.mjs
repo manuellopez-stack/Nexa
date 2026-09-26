@@ -467,6 +467,8 @@ function shapeDocumentRecord(row) {
     validationStatus: row.validation_status,
     validatedAt: row.validated_at,
     incorporatedAt: row.incorporated_at,
+    // Solo si hay PDF guardado; la ruta en Storage no sale del backend.
+    hasPdf: Boolean(row.pdf_path),
     ...shapeCorrection(row),
   };
 }
@@ -837,10 +839,12 @@ async function saveDocumentRecord({ targetPatientId, documentData, filename, ima
   const crossedDocs = (otherDocs ?? []).filter(
     (doc) => normalizeDocumentName(doc.filename) === normalizedFilename,
   );
+  const crossedPdfPaths = await getDocumentPdfPaths(crossedDocs.map((doc) => doc.id));
   for (const doc of crossedDocs) {
     await supabase.from("history_events").delete().eq("document_id", doc.id);
     await supabase.from("documents").delete().eq("id", doc.id);
   }
+  await removeDocumentPdfs(crossedPdfPaths);
 
   const { data: existingDocs, error: existingDocsError } = await supabase
     .from("documents")
@@ -952,6 +956,107 @@ async function saveDocumentRecord({ targetPatientId, documentData, filename, ima
   }
 
   return savedDocId;
+}
+
+// ============================================
+// PDF ORIGINAL DE LOS DOCUMENTOS
+// ============================================
+// El PDF que se analizó queda en el bucket privado CLINICAL_DOCS_BUCKET, en
+// <clinic_id>/<patient_id>/<uuid>.pdf, y su ruta en documents.pdf_path. Solo
+// el backend lo lee (GET /patients/:id/documents/:filename/pdf); la app nunca
+// recibe URLs del bucket.
+
+const CLINICAL_DOCS_BUCKET = "clinical-documents";
+const MAX_DOCUMENT_PDF_BYTES = 10 * 1024 * 1024;
+
+// Crea el bucket si no existe (privado, solo PDF, 10 MB). Si falla, el
+// servidor sigue arrancando: el guardado del PDF fallará y se verá en el log.
+async function ensureClinicalDocumentsBucket() {
+  try {
+    const { data } = await supabase.storage.getBucket(CLINICAL_DOCS_BUCKET);
+    if (data) return;
+    const { error } = await supabase.storage.createBucket(CLINICAL_DOCS_BUCKET, {
+      public: false,
+      fileSizeLimit: MAX_DOCUMENT_PDF_BYTES,
+      allowedMimeTypes: ["application/pdf"],
+    });
+    if (error && !/already exists/i.test(error.message ?? "")) throw error;
+    console.log(`Bucket de Storage "${CLINICAL_DOCS_BUCKET}" creado (privado).`);
+  } catch (error) {
+    console.error(`No fue posible verificar/crear el bucket "${CLINICAL_DOCS_BUCKET}":`, error?.message ?? error);
+  }
+}
+
+// base64 del cliente -> Buffer del PDF, o null si no es un PDF de hasta 10 MB.
+function decodeDocumentPdf(base64Data) {
+  if (typeof base64Data !== "string" || base64Data.trim().length === 0) return null;
+  // 10 MB en base64 son ~13,4 millones de caracteres: se corta antes de decodificar.
+  if (base64Data.length > 14_000_000) return null;
+  const buffer = Buffer.from(base64Data, "base64");
+  if (buffer.length === 0 || buffer.length > MAX_DOCUMENT_PDF_BYTES) return null;
+  if (buffer.subarray(0, 5).toString("latin1") !== "%PDF-") return null;
+  return buffer;
+}
+
+// pdf_path de esos documentos. select("*") y no "pdf_path": así no falla si
+// la migración documents_pdf_path.sql todavía no está aplicada.
+async function getDocumentPdfPaths(documentIds) {
+  if (documentIds.length === 0) return [];
+  const { data, error } = await supabase.from("documents").select("*").in("id", documentIds);
+  if (error) throw error;
+  return (data ?? []).map((row) => row.pdf_path).filter(Boolean);
+}
+
+async function removeDocumentPdfs(paths) {
+  const valid = paths.filter((p) => typeof p === "string" && p.length > 0);
+  if (valid.length === 0) return;
+  const { error } = await supabase.storage.from(CLINICAL_DOCS_BUCKET).remove(valid);
+  if (error) console.error("No fue posible borrar PDFs de documentos de Storage:", error.message ?? error);
+}
+
+// Sube el PDF de un documento ya guardado y deja su ruta en pdf_path. Si el
+// documento ya tenía un PDF (se volvió a guardar), el anterior se borra.
+async function storeDocumentPdf({ documentId, patientId, clinicId, buffer }) {
+  if (!clinicId) throw new Error("Falta la clínica para guardar el PDF.");
+  const pdfPath = `${clinicId}/${patientId}/${crypto.randomUUID()}.pdf`;
+
+  const { data: current, error: currentError } = await supabase
+    .from("documents")
+    .select("*")
+    .eq("id", documentId)
+    .maybeSingle();
+  if (currentError) throw currentError;
+
+  const { error: uploadError } = await supabase.storage
+    .from(CLINICAL_DOCS_BUCKET)
+    .upload(pdfPath, buffer, { contentType: "application/pdf", upsert: false });
+  if (uploadError) throw uploadError;
+
+  const { error: updateError } = await supabase
+    .from("documents")
+    .update({ pdf_path: pdfPath })
+    .eq("id", documentId);
+  if (updateError) {
+    await removeDocumentPdfs([pdfPath]);
+    throw updateError;
+  }
+
+  if (current?.pdf_path && current.pdf_path !== pdfPath) {
+    await removeDocumentPdfs([current.pdf_path]);
+  }
+  return pdfPath;
+}
+
+// Guarda el PDF sin hacer fallar la operación que lo llama (el documento ya
+// quedó guardado): devuelve true/false y deja el error en el log.
+async function tryStoreDocumentPdf(params) {
+  try {
+    await storeDocumentPdf(params);
+    return true;
+  } catch (error) {
+    console.error(`No fue posible guardar el PDF del documento ${params.documentId}:`, error?.message ?? error);
+    return false;
+  }
 }
 
 async function getDuplicateRutGroupsDb() {
@@ -2889,6 +2994,14 @@ app.patch("/patients/:id/from-document", requireRole(CLINICAL_STAFF), async (req
       return response.status(400).json({ error: "Falta el nombre del archivo del documento a incorporar." });
     }
 
+    // PDF original, opcional: la app lo reenvía cuando el análisis no alcanzó
+    // a guardarlo (documento de otro RUT, o falló el guardado automático).
+    const hasPdfData = request.body?.base64Data != null;
+    const pdfBuffer = hasPdfData ? decodeDocumentPdf(request.body.base64Data) : null;
+    if (hasPdfData && !pdfBuffer) {
+      return response.status(400).json({ error: "El archivo adjunto no es un PDF válido o supera los 10 MB." });
+    }
+
     const cleanValue = (value) => {
       if (typeof value !== "string") return null;
       const c = value.trim();
@@ -2979,12 +3092,22 @@ app.patch("/patients/:id/from-document", requireRole(CLINICAL_STAFF), async (req
     // apenas se analiza el PDF (ver /documents/analyze). Llamarlo de nuevo
     // acá es idempotente: si el documento ya se guardó al analizar, esto
     // solo lo actualiza con los mismos datos.
-    await saveDocumentRecord({
+    const savedDocId = await saveDocumentRecord({
       targetPatientId: targetPatient.id,
       documentData,
       filename,
       imagingOrderId,
     });
+
+    // Sin PDF reenviado se conserva el que haya quedado al analizar.
+    const pdfSaved = pdfBuffer
+      ? await tryStoreDocumentPdf({
+          documentId: savedDocId,
+          patientId: targetPatient.id,
+          clinicId: request.staffProfile.clinic_id,
+          buffer: pdfBuffer,
+        })
+      : null;
 
     const refreshedPatient = await getPatientFull(targetPatient.id);
 
@@ -3004,6 +3127,8 @@ app.patch("/patients/:id/from-document", requireRole(CLINICAL_STAFF), async (req
     return response.json({
       ok: true,
       routedToExistingPatient,
+      // true/false si se envió el PDF; null si no venía (queda el de antes).
+      pdfSaved,
       sourcePatientId: sourcePatient.id,
       targetPatientId: targetPatient.id,
       message: routedToExistingPatient
@@ -3237,6 +3362,7 @@ app.delete("/patients/:id/documents/:filename", requireRole(VALIDATORS), async (
     if (!match) {
       return response.status(404).json({ error: "Este documento no está registrado en la ficha del paciente." });
     }
+    const pdfPaths = await getDocumentPdfPaths([match.id]);
 
     const { error: historyDeleteError } = await supabase
       .from("history_events")
@@ -3249,6 +3375,7 @@ app.delete("/patients/:id/documents/:filename", requireRole(VALIDATORS), async (
       .delete()
       .eq("id", match.id);
     if (docDeleteError) throw docDeleteError;
+    await removeDocumentPdfs(pdfPaths);
 
     const refreshedPatient = await getPatientFull(patientId);
 
@@ -3470,11 +3597,23 @@ Si el documento no es clínico, usa isClinical=false y extrae igualmente la info
       incomingRutForAutoSave !== sourceRutForAutoSave;
 
     let documentSaved = false;
+    let pdfSaved = false;
     let refreshedPatient = null;
     if (documentData.isClinical === true && !identityDiffersForAutoSave) {
       try {
-        await saveDocumentRecord({ targetPatientId: patient.id, documentData, filename });
+        const savedDocId = await saveDocumentRecord({ targetPatientId: patient.id, documentData, filename });
         documentSaved = true;
+        // El documento quedó en la ficha: se guarda también el PDF original.
+        // Si esto falla, la app lo reenvía al incorporar (pdfSaved = false).
+        const pdfBuffer = decodeDocumentPdf(base64Data);
+        pdfSaved = pdfBuffer
+          ? await tryStoreDocumentPdf({
+              documentId: savedDocId,
+              patientId: patient.id,
+              clinicId: request.staffProfile.clinic_id,
+              buffer: pdfBuffer,
+            })
+          : false;
         refreshedPatient = await getPatientFull(patient.id);
       } catch (saveError) {
         // No bloqueamos la respuesta del análisis por esto: el usuario
@@ -3520,6 +3659,7 @@ Si el documento no es clínico, usa isClinical=false y extrae igualmente la info
         : null,
       duplicateRutCount: matchingPatients.length > 1 ? matchingPatients.length : 0,
       documentSaved,
+      pdfSaved,
       patient: refreshedPatient,
     });
   } catch (error) {
@@ -6239,6 +6379,7 @@ Reglas:
 });
 
 app.listen(port, () => {
+  ensureClinicalDocumentsBucket();
   console.log("");
   console.log("========================================");
   console.log("Imagenda Backend iniciado correctamente");

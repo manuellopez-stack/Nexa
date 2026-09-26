@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 
 import '../core/nexa_colors.dart';
 import '../services/api_service.dart';
+import '../widgets/billing_section.dart';
+import '../widgets/cash_close_dialog.dart';
 import '../widgets/imagenda_shell.dart';
 import '../widgets/nexa_ai_section.dart';
 import '../widgets/operational_status_section.dart';
@@ -69,6 +71,8 @@ class DashboardPage extends StatefulWidget {
 class _DashboardPageState extends State<DashboardPage> {
   late Future<List<Map<String, dynamic>>> _appointmentsFuture;
   Future<Map<String, dynamic>>? _summaryFuture;
+  // Caja del día: administrador (toda la clínica) y recepción (lo suyo).
+  Future<Map<String, dynamic>>? _cashFuture;
 
   // Cambia al registrar un paciente para que la lista de hoy se recargue.
   Key _patientsKey = UniqueKey();
@@ -83,6 +87,29 @@ class _DashboardPageState extends State<DashboardPage> {
     if (ApiService.canAccessClinical) {
       _summaryFuture = ApiService.getDashboardSummary();
     }
+    if (ApiService.canManageBilling) {
+      _cashFuture = ApiService.getDailyCashSummary();
+      ApiService.paymentsVersion.addListener(_reloadCash);
+    }
+  }
+
+  @override
+  void dispose() {
+    ApiService.paymentsVersion.removeListener(_reloadCash);
+    super.dispose();
+  }
+
+  void _reloadCash() {
+    if (!mounted) return;
+    setState(() => _cashFuture = ApiService.getDailyCashSummary());
+  }
+
+  Future<void> _openCashClose() async {
+    await showDialog<void>(
+      context: context,
+      builder: (_) => const CashCloseDialog(),
+    );
+    _reloadCash();
   }
 
   Future<void> _registerPatient() async {
@@ -152,6 +179,17 @@ class _DashboardPageState extends State<DashboardPage> {
                 const SizedBox(height: 24),
                 if (clinical) ...[
                   _buildIndicators(),
+                  const SizedBox(height: 20),
+                ],
+                // Recepción no ve la fila de indicadores: solo su caja.
+                if (ApiService.isReception) ...[
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: ConstrainedBox(
+                      constraints: const BoxConstraints(maxWidth: 300),
+                      child: _buildCashCard(),
+                    ),
+                  ),
                   const SizedBox(height: 20),
                 ],
                 LayoutBuilder(
@@ -320,6 +358,32 @@ class _DashboardPageState extends State<DashboardPage> {
     );
   }
 
+  // "Recaudado hoy" (administrador) / "Mi caja de hoy" (recepción). Abre el
+  // diálogo de cierre de caja.
+  Widget _buildCashCard() {
+    return FutureBuilder<Map<String, dynamic>>(
+      future: _cashFuture,
+      builder: (context, snapshot) {
+        final data = snapshot.connectionState == ConnectionState.done
+            ? snapshot.data
+            : null;
+        final count = data == null ? null : _asInt(data['count']);
+        return _IndicatorCard(
+          icon: Icons.point_of_sale_outlined,
+          accent: const Color(0xFFD97706),
+          label: ApiService.isReception ? 'Mi caja de hoy' : 'Recaudado hoy',
+          value: null,
+          valueText: data == null ? null : formatClp(data['total'] as num?),
+          detail: data == null
+              ? (snapshot.hasError ? 'No disponible' : null)
+              : '${count == 1 ? '1 pago' : '$count pagos'} · '
+                    '${formatClp(data['cashTotal'] as num?)} en efectivo',
+          onTap: _openCashClose,
+        );
+      },
+    );
+  }
+
   Widget _buildIndicators() {
     return FutureBuilder<List<Map<String, dynamic>>>(
       future: _appointmentsFuture,
@@ -395,12 +459,15 @@ class _DashboardPageState extends State<DashboardPage> {
                     : 'requieren revisión',
                 onTap: _openPendingReports,
               ),
+              if (ApiService.canManageBilling) _buildCashCard(),
             ];
 
             return LayoutBuilder(
               builder: (context, constraints) {
-                final columns = constraints.maxWidth >= 760
-                    ? 4
+                final columns = constraints.maxWidth >= 1000
+                    ? cards.length
+                    : constraints.maxWidth >= 760
+                    ? (cards.length == 5 ? 3 : 4)
                     : constraints.maxWidth >= 360
                     ? 2
                     : 1;
@@ -441,6 +508,7 @@ class _IndicatorCard extends StatelessWidget {
     required this.label,
     required this.value,
     required this.detail,
+    this.valueText,
     this.onTap,
   });
 
@@ -448,6 +516,8 @@ class _IndicatorCard extends StatelessWidget {
   final Color accent;
   final String label;
   final int? value;
+  // Valor ya formateado (ej. un monto en pesos); tiene prioridad sobre [value].
+  final String? valueText;
   final String? detail;
   final VoidCallback? onTap;
 
@@ -492,7 +562,7 @@ class _IndicatorCard extends StatelessWidget {
               ),
               const SizedBox(height: 12),
               Text(
-                value?.toString() ?? '—',
+                valueText ?? value?.toString() ?? '—',
                 style: const TextStyle(
                   fontSize: 26,
                   height: 1.1,

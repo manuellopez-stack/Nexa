@@ -4,7 +4,7 @@ import '../core/nexa_colors.dart';
 import '../services/api_service.dart';
 
 /// Etiquetas legibles para los métodos de pago que acepta el backend.
-const Map<String, String> _kPaymentMethods = {
+const Map<String, String> kPaymentMethodLabels = {
   'efectivo': 'Efectivo',
   'tarjeta': 'Tarjeta',
   'transferencia': 'Transferencia',
@@ -25,7 +25,7 @@ String _sourceLabel(String? sourceType) {
 }
 
 /// Formatea un monto en pesos chilenos: 12340 -> "$12.340".
-String _formatClp(num? value) {
+String formatClp(num? value) {
   final amount = (value ?? 0).round();
   final digits = amount.abs().toString();
   final buffer = StringBuffer();
@@ -212,12 +212,12 @@ class _BillingOrderCard extends StatelessWidget {
             children: [
               Expanded(
                 child: Text(
-                  'Total: ${_formatClp(totalAmount)}',
+                  'Total: ${formatClp(totalAmount)}',
                   style: const TextStyle(fontWeight: FontWeight.w600),
                 ),
               ),
               Text(
-                'Pagado: ${_formatClp(totalPaid)}',
+                'Pagado: ${formatClp(totalPaid)}',
                 style: const TextStyle(color: NexaColors.textSecondary),
               ),
             ],
@@ -225,7 +225,7 @@ class _BillingOrderCard extends StatelessWidget {
           if (balance > 0) ...[
             const SizedBox(height: 2),
             Text(
-              'Saldo pendiente: ${_formatClp(balance)}',
+              'Saldo pendiente: ${formatClp(balance)}',
               style: const TextStyle(
                 color: Color(0xFFC2410C),
                 fontWeight: FontWeight.w600,
@@ -252,8 +252,8 @@ class _BillingOrderCard extends StatelessWidget {
               return Padding(
                 padding: const EdgeInsets.only(bottom: 2),
                 child: Text(
-                  '• ${_kPaymentMethods[method] ?? method}: '
-                  '${_formatClp(amount)}'
+                  '• ${kPaymentMethodLabels[method] ?? method}: '
+                  '${formatClp(amount)}'
                   '${reference != null && reference.isNotEmpty ? '  (ref: $reference)' : ''}',
                   style: const TextStyle(fontSize: 13),
                 ),
@@ -310,7 +310,7 @@ class _RegisterPaymentDialog extends StatefulWidget {
 }
 
 class _RegisterPaymentDialogState extends State<_RegisterPaymentDialog> {
-  String _method = _kPaymentMethods.keys.first;
+  String _method = kPaymentMethodLabels.keys.first;
   late final TextEditingController _amountController;
   final TextEditingController _referenceController = TextEditingController();
   bool _isSubmitting = false;
@@ -385,7 +385,7 @@ class _RegisterPaymentDialogState extends State<_RegisterPaymentDialog> {
                 labelText: 'Método de pago',
                 border: OutlineInputBorder(),
               ),
-              items: _kPaymentMethods.entries
+              items: kPaymentMethodLabels.entries
                   .map(
                     (entry) => DropdownMenuItem(
                       value: entry.key,

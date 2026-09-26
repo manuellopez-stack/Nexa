@@ -43,6 +43,10 @@ class ApiService {
   // ImagendaShell para mostrarlo en la credencial del menú lateral.
   static final ValueNotifier<Uint8List?> clinicLogo = ValueNotifier(null);
 
+  // Sube cada vez que se registra un pago. La tarjeta de caja del Centro de
+  // Control lo escucha para recargarse sin esperar a que se recargue la página.
+  static final ValueNotifier<int> paymentsVersion = ValueNotifier(0);
+
   static bool get isLoggedIn => _accessToken != null;
   static Map<String, dynamic>? get currentUser => _currentUser;
     static String? get role => _role;
@@ -1775,7 +1779,38 @@ class ApiService {
       throw const ApiException('El backend no entregó el cobro actualizado.');
     }
 
+    paymentsVersion.value++;
     return {...decodedBody, 'order': Map<String, dynamic>.from(order)};
+  }
+
+  /// Cierre de caja del día [date] (hoy si es null), en hora de Chile.
+  /// Administrador recibe todos los pagos de su clínica (`scope: clinic`, con
+  /// `byUser`); recepción solo los que registró (`scope: mine`). Ver
+  /// GET /billing/daily-summary en server.mjs.
+  static Future<Map<String, dynamic>> getDailyCashSummary({
+    DateTime? date,
+  }) async {
+    String two(int n) => n.toString().padLeft(2, '0');
+    final uri = Uri.parse('$_baseUrl/billing/daily-summary').replace(
+      queryParameters: {
+        if (date != null)
+          'date': '${date.year}-${two(date.month)}-${two(date.day)}',
+      },
+    );
+
+    final http.Response response;
+
+    try {
+      response = await http
+          .get(uri, headers: _headers())
+          .timeout(const Duration(seconds: 30));
+    } catch (_) {
+      throw const ApiException(
+        'No fue posible conectar con el backend de Imagenda.',
+      );
+    }
+
+    return _decodeMap(response);
   }
 
   static Future<Map<String, dynamic>> updateBonoFolio({

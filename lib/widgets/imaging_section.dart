@@ -9,6 +9,7 @@ import 'correction_widgets.dart';
 import 'dicom_viewer.dart';
 import 'document_pdf.dart';
 import 'dvd_download.dart';
+import 'ohif_viewer_button.dart';
 
 class ImagingOrdersSection extends StatefulWidget {
   const ImagingOrdersSection({
@@ -851,9 +852,20 @@ class _ImagingOrderDetailDialogState extends State<_ImagingOrderDetailDialog> {
                         children: [
                           thumbnails,
                           const SizedBox(height: 12),
-                          DvdDownloadButton(
-                            patientId: widget.patientId,
-                            orderId: widget.orderId,
+                          Wrap(
+                            spacing: 8,
+                            runSpacing: 8,
+                            children: [
+                              DvdDownloadButton(
+                                patientId: widget.patientId,
+                                orderId: widget.orderId,
+                              ),
+                              if (ApiService.ohifViewerEnabled)
+                                OhifViewerButton(
+                                  patientId: widget.patientId,
+                                  orderId: widget.orderId,
+                                ),
+                            ],
                           ),
                         ],
                       );

@@ -47,6 +47,13 @@ class _WebPendingTab implements PendingBrowserTab {
   }
 
   @override
+  void navigate(String url) {
+    // Corta window.opener antes de ir a otro origen.
+    _window.opener = null;
+    _window.location.href = url;
+  }
+
+  @override
   void close() => _window.close();
 }
 

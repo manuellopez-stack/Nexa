@@ -1,0 +1,12 @@
+{
+  "name": "pacs-gate",
+  "version": "1.0.0",
+  "description": "Portero del visor OHIF de Imagenda (forward_auth de Caddy en el droplet)",
+  "type": "module",
+  "main": "server.mjs",
+  "private": true,
+  "scripts": {
+    "start": "node server.mjs",
+    "test": "node --test \"test/*.test.mjs\""
+  }
+}

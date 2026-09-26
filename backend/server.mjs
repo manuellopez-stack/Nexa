@@ -5199,7 +5199,7 @@ async function loadDvdContext({ patientId, orderId, clinicId }) {
     supabase.from("imaging_order_types").select("imaging_types(name)").eq("order_id", orderId),
     supabase
       .from("imaging_files")
-      .select("dicom_path, uploaded_at")
+      .select("dicom_path, orthanc_instance_id, uploaded_at")
       .eq("order_id", orderId)
       .order("uploaded_at", { ascending: true }),
   ]);
@@ -5207,13 +5207,28 @@ async function loadDvdContext({ patientId, orderId, clinicId }) {
     if (result.error) throw result.error;
   }
 
+  // Filas antiguas: DICOM en Storage, se rehidratan en Orthanc. Filas de
+  // Orthanc (Fase 2A): el DVD sale directo de los estudios vinculados a la
+  // orden, que siguen en Orthanc (ver openOrderMedia en dvdExport.mjs).
   const dicomPaths = (filesResult.data ?? []).map((row) => row.dicom_path).filter(Boolean);
+  let orthancStudyIds = [];
+  if ((filesResult.data ?? []).some(isOrthancImagingFile)) {
+    const { data: linkedStudies, error: linkedError } = await supabase
+      .from("orthanc_studies")
+      .select("orthanc_study_id")
+      .eq("linked_order_id", orderId)
+      .eq("status", "linked");
+    if (linkedError) throw linkedError;
+    orthancStudyIds = (linkedStudies ?? []).map((row) => row.orthanc_study_id);
+  }
   const patientName = patientResult.data?.name ?? "";
   const examDate = order.performed_at ?? order.requested_at;
 
   return {
     order,
     dicomPaths,
+    orthancStudyIds,
+    hasImages: dicomPaths.length > 0 || orthancStudyIds.length > 0,
     filename: dvdFilename({ patientName, examDate, accessionNumber: order.accession_number }),
     readme: {
       clinicName: clinicResult.data?.name ?? "",
@@ -5250,7 +5265,12 @@ async function streamDvd(request, response, context) {
 
   let media;
   try {
-    media = await openOrderMedia({ supabase, dicomPaths: context.dicomPaths, signal: abort.signal });
+    media = await openOrderMedia({
+      supabase,
+      dicomPaths: context.dicomPaths,
+      orthancStudyIds: context.orthancStudyIds,
+      signal: abort.signal,
+    });
   } catch (error) {
     console.error(`[DVD] Orden ${context.order.id}: no se pudo obtener el paquete de Orthanc:`, error);
     if (!response.headersSent && !abort.signal.aborted) {
@@ -5302,7 +5322,7 @@ app.get("/patients/:id/dvd-studies", requireRole(DVD_ROLES), async (request, res
     if (orderIds.length === 0) return response.json({ studies: [] });
 
     const [filesResult, typesResult, reports] = await Promise.all([
-      supabase.from("imaging_files").select("order_id, dicom_path").in("order_id", orderIds),
+      supabase.from("imaging_files").select("order_id, dicom_path, orthanc_instance_id").in("order_id", orderIds),
       supabase.from("imaging_order_types").select("order_id, imaging_types(name)").in("order_id", orderIds),
       loadOrderReports(orderIds),
     ]);
@@ -5311,7 +5331,7 @@ app.get("/patients/:id/dvd-studies", requireRole(DVD_ROLES), async (request, res
 
     const imageCounts = new Map();
     for (const file of filesResult.data ?? []) {
-      if (file.dicom_path) imageCounts.set(file.order_id, (imageCounts.get(file.order_id) ?? 0) + 1);
+      if (file.dicom_path || isOrthancImagingFile(file)) imageCounts.set(file.order_id, (imageCounts.get(file.order_id) ?? 0) + 1);
     }
 
     const studies = (orders ?? [])
@@ -5356,7 +5376,7 @@ app.post(
       if (!context) {
         return response.status(404).json({ error: "Orden de imagenología no encontrada." });
       }
-      if (context.dicomPaths.length === 0) {
+      if (!context.hasImages) {
         return response.status(409).json({ error: DVD_NO_IMAGES_ERROR });
       }
 
@@ -5391,7 +5411,7 @@ app.get(
       if (!context) {
         return response.status(404).json({ error: "Orden de imagenología no encontrada." });
       }
-      if (context.dicomPaths.length === 0) {
+      if (!context.hasImages) {
         return response.status(409).json({ error: DVD_NO_IMAGES_ERROR });
       }
       await streamDvd(request, response, context);
@@ -5436,7 +5456,7 @@ app.get("/dvd-downloads/:token", async (request, response) => {
     if (!context) {
       return response.status(404).json({ error: "Orden de imagenología no encontrada." });
     }
-    if (context.dicomPaths.length === 0) {
+    if (!context.hasImages) {
       return response.status(409).json({ error: DVD_NO_IMAGES_ERROR });
     }
     await streamDvd(request, response, context);

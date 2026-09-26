@@ -81,7 +81,8 @@ Future<void> showDvdBurnHelp(BuildContext context) {
     'Seleccionar todo el contenido de la carpeta extraída (no la carpeta '
         'misma), clic derecho > Enviar a > la unidad de DVD.',
     "En la unidad de DVD, 'Grabar en disco'.",
-    "Probar el disco: al insertarlo debe ofrecer 'Abrir imágenes'.",
+    "Probar el disco: al insertarlo debe ofrecer 'Abrir imagenes'. Si no, "
+        "abrir el disco y hacer doble clic en 'Abrir_imagenes'.",
   ];
 
   return showDialog<void>(

@@ -10,6 +10,8 @@ import { convertDicomToPng } from "./dicomPreview.mjs";
 import { linkOrthancStudyToOrder } from "./orthancStudies.mjs";
 import { buildLeame, dvdFilename, openOrderMedia, writeDvdZip } from "./dvdExport.mjs";
 import { getWeasisViewer } from "./weasisPortable.mjs";
+import { sendMail } from "./mailer.mjs";
+import { bookingCancellationEmail, bookingConfirmationEmail } from "./bookingEmails.mjs";
 dotenv.config({ quiet: true });
 
 const app = express();
@@ -2307,7 +2309,7 @@ async function findBookingClinic(slug) {
   if (!BOOKING_SLUG_RE.test(normalized)) return null;
   const { data, error } = await supabase
     .from("clinics")
-    .select("id, name, logo_path")
+    .select("id, name, address, logo_path")
     .eq("booking_slug", normalized)
     .eq("status", "activa")
     .maybeSingle();
@@ -2597,13 +2599,39 @@ app.post("/public/booking", async (request, response) => {
       .single();
     if (insertAppointmentError) throw insertAppointmentError;
 
+    const cancelUrl = `https://${BOOKING_HOST}/cancelar/${cancelToken}`;
+
+    // Confirmación por correo, solo si el paciente lo dejó. Un fallo acá no
+    // tumba la reserva (ya quedó creada): solo se informa correoEnviado:false.
+    let correoEnviado = false;
+    if (patientEmail) {
+      try {
+        const result = await sendMail({
+          to: patientEmail,
+          ...bookingConfirmationEmail({
+            patientName: values.name,
+            clinicName: clinic.name,
+            clinicAddress: clinic.address,
+            tipo,
+            fecha,
+            hora,
+            cancelUrl,
+          }),
+        });
+        correoEnviado = result.sent === true;
+      } catch (mailError) {
+        logBookingMailError("confirmación", appointment.id, mailError);
+      }
+    }
+
     return response.status(201).json({
       reserva: {
         id: appointment.id,
         fecha,
         hora,
         tipo,
-        cancelUrl: `https://${BOOKING_HOST}/cancelar/${cancelToken}`,
+        cancelUrl,
+        correoEnviado,
       },
     });
   } catch (error) {
@@ -2612,11 +2640,21 @@ app.post("/public/booking", async (request, response) => {
   }
 });
 
+// Error de envío de un correo de reserva, sin datos sensibles (ni el correo
+// del paciente, ni el token, ni credenciales SMTP): solo la cita y el código.
+function logBookingMailError(kind, appointmentId, error) {
+  console.error(
+    `No se pudo enviar el correo de ${kind} de la reserva web (cita ${appointmentId}):`,
+    error?.code || error?.responseCode || error?.message || "error desconocido",
+  );
+}
+
 // ---- Cancelación por el paciente ------------------------------------------
 // Con el cancel_token que recibió al reservar, el paciente puede ver y
 // cancelar su hora sin iniciar sesión. Como el enlace es lo único que se
 // necesita, la respuesta NO lleva RUT, teléfono ni correo: solo el nombre de
-// pila y los datos de la cita.
+// pila y los datos de la cita. (El correo del paciente sí se lee, pero solo
+// para mandarle el aviso de cancelación; nunca va en la respuesta.)
 
 const BOOKING_CANCEL_TOKEN_RE = /^[a-f0-9]{48}$/;
 const BOOKING_CANCELLABLE_STATUSES = ["programada", "en_espera"];
@@ -2630,7 +2668,7 @@ async function findAppointmentByCancelToken(token) {
   const { data, error } = await supabase
     .from("appointments")
     .select(
-      "id, scheduled_at, status, reason, patient:patients(name), clinic:clinics(name, booking_slug, logo_path)",
+      "id, scheduled_at, status, reason, patient:patients(name, email), clinic:clinics(name, booking_slug, logo_path)",
     )
     .eq("cancel_token", normalized)
     .maybeSingle();
@@ -2721,6 +2759,21 @@ app.post("/public/booking/cancel/:token", async (request, response) => {
       return response.status(409).json({
         error: "Esta hora ya no se puede cancelar: comunícate directamente con el centro.",
       });
+    }
+
+    // Aviso por correo sin bloquear la respuesta: la cancelación ya quedó.
+    const patientEmail = appointment.patient?.email;
+    if (patientEmail) {
+      sendMail({
+        to: patientEmail,
+        ...bookingCancellationEmail({
+          patientName: appointment.patient?.name,
+          clinicName: appointment.clinic?.name ?? "el centro",
+          clinicSlug: appointment.clinic?.booking_slug,
+          fecha: formatClinicDate(appointment.scheduled_at),
+          hora: formatClinicClock(appointment.scheduled_at),
+        }),
+      }).catch((mailError) => logBookingMailError("cancelación", appointment.id, mailError));
     }
 
     return response.json({ ok: true, estado: "cancelada" });

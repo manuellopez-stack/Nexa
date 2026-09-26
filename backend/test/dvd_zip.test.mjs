@@ -115,7 +115,7 @@ test("estructura de la raíz, autorun.inf, lanzador y LEAME con los datos", asyn
   const roots = new Set([...files.keys()].map((name) => name.split("/")[0]));
   assert.deepEqual(
     [...roots].sort(),
-    ["Abrir imagenes.cmd", "DICOMDIR", "IMAGES", "LEAME.txt", "autorun.inf", "viewer"],
+    ["Abrir_imagenes.cmd", "DICOMDIR", "IMAGES", "LEAME.txt", "autorun.inf", "viewer"],
   );
   assert.equal(files.get("DICOMDIR").toString(), "DICM-directorio");
   assert.equal(files.get("IMAGES/IM0").length, 200_000);
@@ -124,13 +124,13 @@ test("estructura de la raíz, autorun.inf, lanzador y LEAME con los datos", asyn
 
   const autorun = files.get("autorun.inf").toString();
   assert.match(autorun, /^\[autorun\]\r\n/);
-  assert.match(autorun, /^open=viewer\\Weasis\.exe weasis:\/\/%24dicom%3Aget%20-l%20DICOMDIR\r$/m);
+  assert.match(autorun, /^shellexecute=Abrir_imagenes\.cmd\r$/m);
   assert.match(autorun, /^action=Abrir imagenes\r$/m);
   assert.match(autorun, /^icon=viewer\\Weasis\.exe,0\r$/m);
 
-  const launcher = files.get("Abrir imagenes.cmd").toString();
-  assert.match(launcher, /cd \/d "%~dp0"/);
-  assert.match(launcher, /start "" "viewer\\Weasis\.exe" "weasis:\/\/%%24dicom%%3Aget%%20-l%%20DICOMDIR"/);
+  const launcher = files.get("Abrir_imagenes.cmd").toString();
+  assert.match(launcher, /^set "DISCO=%~dp0\."\r$/m);
+  assert.match(launcher, /"\$dicom:get" "-p" "\$weasis:config" "pro=\\"weasis\.portable\.dir !DISCO!\\""\r$/m);
 
   const leame = files.get("LEAME.txt").toString("utf8");
   assert.ok(leame.startsWith("﻿"), "UTF-8 con BOM para el Bloc de notas");

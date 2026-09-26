@@ -4781,7 +4781,7 @@ app.get(
 // IMAGENOLOGÍA — DESCARGAR PARA DVD
 // ============================================
 // ZIP listo para grabar: paquete de medios de Orthanc (DICOMDIR + IMAGES/),
-// visor Weasis portable para Windows, autorun.inf, "Abrir imagenes" y
+// visor Weasis portable para Windows, autorun.inf, "Abrir_imagenes" y
 // LEAME.txt (ver dvdExport.mjs y weasisPortable.mjs). Lo pueden bajar
 // CLINICAL_STAFF y recepción; una orden de otra clínica responde 404.
 //

@@ -206,7 +206,7 @@ test("recepción descarga el ZIP; el estudio temporal se etiqueta y se borra de 
   assert.deepEqual(
     [...files.keys()].sort(),
     [
-      "Abrir imagenes.cmd",
+      "Abrir_imagenes.cmd",
       "DICOMDIR",
       "IMAGES/IM0",
       "IMAGES/IM1",

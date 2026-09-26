@@ -1,6 +1,6 @@
 // "Descargar para DVD": arma en streaming un único ZIP con el paquete de
 // medios DICOM de Orthanc (DICOMDIR + IMAGES/), el visor Weasis portable para
-// Windows (weasisPortable.mjs), un autorun.inf, un lanzador "Abrir imagenes"
+// Windows (weasisPortable.mjs), un autorun.inf, un lanzador "Abrir_imagenes"
 // y un LEAME.txt. La ruta HTTP vive en server.mjs.
 //
 // Los estudios vinculados a una orden ya NO están en Orthanc: al vincularlos
@@ -23,7 +23,7 @@ import {
 
 export const DVD_TEMP_LABEL = "imagenda-dvd-temporal";
 export const VIEWER_FOLDER = "viewer";
-export const LAUNCHER_NAME = "Abrir imagenes.cmd";
+export const LAUNCHER_NAME = "Abrir_imagenes.cmd";
 
 const CLINIC_TIME_ZONE = "America/Santiago";
 
@@ -99,7 +99,7 @@ export function buildLeame({
       "Este disco incluye un visor de imágenes (Weasis), no hace falta instalar nada.",
       "1. Inserte el disco. Si Windows pregunta qué hacer con él, elija \"Abrir imagenes\".",
       "2. Si no pregunta, abra el disco en el Explorador de archivos y haga doble clic",
-      "   en \"Abrir imagenes\".",
+      "   en \"Abrir_imagenes\".",
       "El visor se ejecuta desde el disco, así que puede tardar un poco en abrir.",
     );
   } else {
@@ -132,38 +132,63 @@ export function buildLeame({
     lines.push(
       `${VIEWER_FOLDER}: visor Weasis ${viewer.version} para Windows, software libre`,
       "  (licencia EPL 2.0, https://github.com/nroduit/Weasis).",
-      "Abrir imagenes y autorun.inf: abren el visor con las imágenes del disco.",
+      "Abrir_imagenes y autorun.inf: abren el visor con las imágenes del disco.",
     );
   }
 
   return windowsText(lines);
 }
 
-// Weasis recibe los comandos de arranque como URI weasis:// (igual que el
-// Autorun.inf y el RUN.bat que el propio Weasis pone en sus CD). La ruta del
-// DICOMDIR va relativa: Windows ejecuta el autorun con la raíz del disco como
-// carpeta de trabajo, y el lanzador hace cd a su propia carpeta.
-const WEASIS_OPEN_DICOMDIR_URI = "weasis://%24dicom%3Aget%20-l%20DICOMDIR";
-
-export function buildAutorunInf() {
+// Cómo abre Weasis 4.x las imágenes de un disco (código de Weasis 4.7.3):
+// - `$dicom:get -l <ruta>` carga la ruta como imagen o carpeta suelta; si la
+//   ruta es el archivo DICOMDIR NO lo interpreta, por eso el lanzador viejo
+//   (`-l DICOMDIR`) abría Weasis vacío.
+// - `$dicom:get -p` (modo portable) lee <weasis.portable.dir>\DICOMDIR. Es lo
+//   que usan el Autorun.inf y el RUN.bat que el propio Weasis pone en sus CD
+//   (app\resources\isowriter), con weasis.portable.dir = "." (la carpeta de
+//   trabajo). Aquí va la ruta ABSOLUTA de la raíz del disco.
+// - Los argumentos pueden ir sin URI weasis:// (ConfigData.splitArgToCmd):
+//   cada argumento que empieza con $ abre un comando y los siguientes se le
+//   suman separados por espacio. Así la ruta no pasa por URLDecoder, que
+//   rompería rutas con "%" o "+", ni por el corte en "$" de la URI.
+// - `$weasis:config pro="weasis.portable.dir <ruta>"`: las comillas protegen
+//   los espacios (Utils.splitSpaceExceptInQuotes) y el valor es todo lo que
+//   sigue al primer espacio, espacios incluidos.
+//
+// En el .cmd, %~dp0 es la carpeta del lanzador con "\" final:
+// - Se le agrega "." para que el argumento no termine en \\" (en la línea de
+//   comandos de Windows eso cierra las comillas en vez de dar una comilla
+//   literal); "D:\." es la raíz, igual que el "." oficial.
+// - cmd.exe no entiende \" y alterna comillas en cada ", así que dentro de
+//   pro=\"...\" la ruta le queda SIN comillas: si llevara & o ^ cortaría el
+//   comando. Por eso va en una variable leída con expansión diferida (!DISCO!),
+//   que cmd reemplaza después de interpretar esos caracteres. El set se hace
+//   antes del setlocal y la línea del start no usa %~dp0 (se expandiría antes
+//   y pasaría por la expansión diferida) para que un "!" en la ruta no se
+//   pierda.
+export function buildLauncherCmd() {
   return [
-    "[autorun]",
-    `open=${VIEWER_FOLDER}\\Weasis.exe ${WEASIS_OPEN_DICOMDIR_URI}`,
-    "action=Abrir imagenes",
-    `icon=${VIEWER_FOLDER}\\Weasis.exe,0`,
-    "label=Imagenes",
+    "@echo off",
+    "REM Abre las imagenes de este disco con el visor incluido.",
+    'set "DISCO=%~dp0."',
+    'cd /d "%~dp0"',
+    "setlocal EnableDelayedExpansion",
+    `start "" "!DISCO!\\${VIEWER_FOLDER}\\Weasis.exe" "$dicom:get" "-p" "$weasis:config" "pro=\\"weasis.portable.dir !DISCO!\\""`,
     "",
   ].join("\r\n");
 }
 
-export function buildLauncherCmd() {
-  // En un .cmd el % se escribe %% para que no se lea como variable.
-  const uri = WEASIS_OPEN_DICOMDIR_URI.replaceAll("%", "%%");
+// open= del autorun.inf no puede armar rutas absolutas (no expande %~dp0), así
+// que el autorun ejecuta el lanzador; shellexecute= abre también un .cmd
+// (open= solo acepta ejecutables). Windows lo ejecuta con la raíz del disco
+// como carpeta de trabajo.
+export function buildAutorunInf() {
   return [
-    "@echo off",
-    "REM Abre las imagenes de este disco con el visor incluido.",
-    'cd /d "%~dp0"',
-    `start "" "${VIEWER_FOLDER}\\Weasis.exe" "${uri}"`,
+    "[autorun]",
+    `shellexecute=${LAUNCHER_NAME}`,
+    "action=Abrir imagenes",
+    `icon=${VIEWER_FOLDER}\\Weasis.exe,0`,
+    "label=Imagenes",
     "",
   ].join("\r\n");
 }

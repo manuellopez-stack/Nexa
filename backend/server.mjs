@@ -5428,6 +5428,145 @@ app.post(
   },
 );
 
+// Cierre de caja: pagos registrados en un día local de Chile (?date=YYYY-MM-DD,
+// por defecto hoy) en la clínica de quien consulta. Administrador ve todos
+// los pagos de su clínica (scope "clinic", con desglose por recepcionista);
+// recepción solo los que registró ella misma (scope "mine").
+app.get(
+  "/billing/daily-summary",
+  requireRole(BILLING_STAFF),
+  async (request, response) => {
+    try {
+      const dateParam = typeof request.query.date === "string" ? request.query.date.trim() : "";
+      if (dateParam && !/^\d{4}-\d{2}-\d{2}$/.test(dateParam)) {
+        return response.status(400).json({ error: "La fecha debe tener el formato YYYY-MM-DD." });
+      }
+
+      const { day, startUtc } = clinicDayRangeUtc(dateParam || undefined);
+      if (Number.isNaN(startUtc.getTime())) {
+        return response.status(400).json({ error: "La fecha no es válida." });
+      }
+      // Fin = inicio del día siguiente (no +24 h fijas: los días de cambio de
+      // horario duran 23 o 25 horas).
+      const [y, m, d] = day.split("-").map(Number);
+      const nextDay = new Date(Date.UTC(y, m - 1, d + 1)).toISOString().slice(0, 10);
+      const { startUtc: endUtc } = clinicDayRangeUtc(nextDay);
+
+      const isAdmin = request.staffRole === "administrador";
+      const scope = isAdmin ? "clinic" : "mine";
+
+      let query = supabase
+        .from("payments")
+        .select("*")
+        .eq("clinic_id", request.staffProfile.clinic_id)
+        .gte("paid_at", startUtc.toISOString())
+        .lt("paid_at", endUtc.toISOString())
+        .order("paid_at", { ascending: true });
+      if (!isAdmin) query = query.eq("registered_by", request.user.id);
+      const { data: paymentRows, error: paymentsError } = await query;
+      if (paymentsError) throw paymentsError;
+
+      const rows = paymentRows ?? [];
+
+      // Paciente de cada pago: payments -> billing_orders -> patients.
+      const orderIds = [...new Set(rows.map((row) => row.billing_order_id).filter(Boolean))];
+      const { data: orderRows, error: ordersError } = orderIds.length
+        ? await supabase
+            .from("billing_orders")
+            .select("id, patient_id, source_type")
+            .in("id", orderIds)
+        : { data: [], error: null };
+      if (ordersError) throw ordersError;
+      const orderById = new Map((orderRows ?? []).map((row) => [row.id, row]));
+
+      const patientIds = [
+        ...new Set((orderRows ?? []).map((row) => row.patient_id).filter((id) => id != null)),
+      ];
+      const { data: patientRows, error: patientsError } = patientIds.length
+        ? await supabase.from("patients").select("id, name, rut").in("id", patientIds)
+        : { data: [], error: null };
+      if (patientsError) throw patientsError;
+      const patientById = new Map((patientRows ?? []).map((row) => [row.id, row]));
+
+      const staffIds = [...new Set(rows.map((row) => row.registered_by).filter(Boolean))];
+      const { data: staffRows, error: staffError } = staffIds.length
+        ? await supabase.from("staff_profiles").select("id, full_name, email").in("id", staffIds)
+        : { data: [], error: null };
+      if (staffError) throw staffError;
+      const staffById = new Map((staffRows ?? []).map((row) => [row.id, row]));
+      const staffName = (userId) => {
+        if (!userId) return "Sin registrar";
+        const staff = staffById.get(userId);
+        return staff?.full_name || staff?.email || "Sin registrar";
+      };
+
+      let total = 0;
+      let cashTotal = 0;
+      const byMethod = new Map();
+      const byUser = new Map();
+      const payments = rows.map((row) => {
+        const amount = Number(row.amount) || 0;
+        total += amount;
+        if (row.method === "efectivo") cashTotal += amount;
+
+        const methodEntry = byMethod.get(row.method) ?? { method: row.method, total: 0, count: 0 };
+        methodEntry.total += amount;
+        methodEntry.count += 1;
+        byMethod.set(row.method, methodEntry);
+
+        const userKey = row.registered_by ?? null;
+        const userEntry = byUser.get(userKey) ?? {
+          userId: userKey,
+          name: staffName(userKey),
+          total: 0,
+          count: 0,
+        };
+        userEntry.total += amount;
+        userEntry.count += 1;
+        byUser.set(userKey, userEntry);
+
+        const order = orderById.get(row.billing_order_id);
+        const patient = order ? patientById.get(order.patient_id) : null;
+        return {
+          id: row.id,
+          paidAt: row.paid_at,
+          method: row.method,
+          amount,
+          reference: row.reference,
+          patientName: patient?.name ?? null,
+          patientRut: patient?.rut ?? null,
+          registeredByName: staffName(row.registered_by),
+          sourceType: order?.source_type ?? null,
+        };
+      });
+
+      // Métodos en el mismo orden que PAYMENT_METHODS (los desconocidos al final).
+      const methodOrder = (method) => {
+        const index = PAYMENT_METHODS.indexOf(method);
+        return index === -1 ? PAYMENT_METHODS.length : index;
+      };
+
+      return response.json({
+        date: day,
+        scope,
+        total,
+        count: rows.length,
+        cashTotal,
+        byMethod: [...byMethod.values()].sort((a, b) => methodOrder(a.method) - methodOrder(b.method)),
+        ...(isAdmin
+          ? { byUser: [...byUser.values()].sort((a, b) => b.total - a.total) }
+          : {}),
+        payments,
+      });
+    } catch (error) {
+      console.error("Error al obtener el cierre de caja:", error);
+      return response
+        .status(500)
+        .json({ error: "No fue posible obtener el cierre de caja." });
+    }
+  },
+);
+
 // Edita manualmente el folio del bono de un cobro (por ahora solo ese campo).
 // Solo administrador y recepción.
 app.patch(

@@ -5434,12 +5434,12 @@ app.post(
           .json({ error: "Orden de imagenología no encontrada." });
       }
 
-      const { totalInstances, copiedNow } = await linkOrthancStudyToOrder(supabase, {
+      const { totalInstances, linkedNow } = await linkOrthancStudyToOrder(supabase, {
         orthancStudyId,
         orderId: orderRow.id,
       });
 
-      return response.json({ linked: true, orderId: orderRow.id, totalInstances, copiedNow });
+      return response.json({ linked: true, orderId: orderRow.id, totalInstances, linkedNow });
     } catch (error) {
       console.error("Error al vincular estudio de Orthanc:", error);
       return response.status(500).json({

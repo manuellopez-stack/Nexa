@@ -3230,6 +3230,61 @@ app.get("/patients/:id/documents/:filename", requireRole([...CLINICAL_STAFF, "re
   }
 });
 
+// PDF original del documento, para ver o imprimir en el navegador. El
+// personal clínico lo ve siempre; recepción solo si un médico ya aprobó el
+// documento (es lo que entrega impreso al paciente).
+const DOCUMENT_PDF_ROLES = [...CLINICAL_STAFF, "recepcion"];
+
+app.get("/patients/:id/documents/:filename/pdf", requireRole(DOCUMENT_PDF_ROLES), async (request, response) => {
+  try {
+    const patientId = Number(request.params.id);
+    const normalized = normalizeDocumentName(decodeURIComponent(request.params.filename));
+
+    if (!(await patientBelongsToRequesterClinic(patientId, request))) {
+      return response.status(404).json({ error: "Paciente no encontrado" });
+    }
+
+    const { data: docs, error: docsError } = await supabase
+      .from("documents")
+      .select("*")
+      .eq("patient_id", patientId);
+    if (docsError) throw docsError;
+
+    const record = (docs ?? []).find((doc) => normalizeDocumentName(doc.filename) === normalized);
+    if (!record) {
+      return response.status(404).json({ error: "Documento no encontrado." });
+    }
+    if (!CLINICAL_STAFF.includes(request.staffRole) && record.validation_status !== "aprobado") {
+      return response.status(403).json({ error: "El informe todavía no está aprobado por un médico." });
+    }
+    if (!record.pdf_path) {
+      return response.status(404).json({ error: "Este documento no tiene el PDF original guardado." });
+    }
+
+    const { data: file, error: downloadError } = await supabase.storage
+      .from(CLINICAL_DOCS_BUCKET)
+      .download(record.pdf_path);
+    if (downloadError || !file) {
+      console.error(`No fue posible leer el PDF del documento ${record.id}:`, downloadError?.message);
+      return response.status(404).json({ error: "No fue posible encontrar el PDF guardado de este documento." });
+    }
+
+    const downloadName = String(record.filename || "documento.pdf").replace(/["\\\r\n]/g, "_");
+    const asciiName = downloadName.normalize("NFD").replace(/[^\x20-\x7E]/g, "_");
+    response.set("Content-Type", "application/pdf");
+    response.set(
+      "Content-Disposition",
+      `inline; filename="${asciiName}"; filename*=UTF-8''${encodeURIComponent(downloadName)}`,
+    );
+    response.set("Cache-Control", "private, no-store");
+    response.set("X-Content-Type-Options", "nosniff");
+    return response.send(Buffer.from(await file.arrayBuffer()));
+  } catch (error) {
+    console.error("Error al entregar el PDF del documento:", error);
+    return response.status(500).json({ error: "No fue posible obtener el PDF del documento." });
+  }
+});
+
 // V11: validación humana por documento.
 app.patch("/patients/:id/documents/:filename/validate", requireRole(VALIDATORS), async (request, response) => {
   try {

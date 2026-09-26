@@ -4899,9 +4899,14 @@ app.post(
   },
 );
 
+// Solo lectura: recepción también la usa, para "Ver imágenes" en su pestaña
+// "Imágenes" (visor DICOM). Subir imágenes, marcar realizado y el detalle de
+// la orden (con su informe) siguen siendo solo CLINICAL_STAFF.
+const IMAGE_VIEW_ROLES = [...CLINICAL_STAFF, "recepcion"];
+
 app.get(
   "/patients/:id/imaging-orders/:orderId/images",
-  requireRole(CLINICAL_STAFF),
+  requireRole(IMAGE_VIEW_ROLES),
   async (request, response) => {
     try {
       const patientId = Number(request.params.id);

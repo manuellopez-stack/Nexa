@@ -6489,6 +6489,19 @@ async function parseOptionalClinicId(value) {
   return { clinicId: clinicRow.id };
 }
 
+// Estado de inicio de sesión de una cuenta en Supabase Auth:
+// { exists, neverSignedIn }. Una cuenta que ya no existe en Auth cuenta como
+// que nunca entró (no hay historial que conservar). Lanza en otros errores.
+async function getAuthSignInState(userId) {
+  const { data, error } = await supabase.auth.admin.getUserById(userId);
+  if (error) {
+    if (error.status === 404 || error.code === "user_not_found") return { exists: false, neverSignedIn: true };
+    throw error;
+  }
+  if (!data?.user) return { exists: false, neverSignedIn: true };
+  return { exists: true, neverSignedIn: !data.user.last_sign_in_at };
+}
+
 const LAST_PLATFORM_ADMIN_ERROR =
   "Debe quedar al menos un Administrador total activo en el equipo Imagenda.";
 
@@ -6500,7 +6513,18 @@ app.get("/platform-team", async (_request, response) => {
       .order("created_at", { ascending: true });
     if (error) throw error;
 
-    return response.json({ team: (data ?? []).filter(isPlatformTeamRow).map(shapePlatformTeamRow) });
+    const members = (data ?? []).filter(isPlatformTeamRow);
+    // pendingInvite: nunca aceptó la invitación (last_sign_in_at nulo en
+    // Auth). Solo se expone ese booleano, nada más de Auth. Si no se pudo
+    // consultar a alguien, queda en false (no se ofrece eliminarlo).
+    const signIns = await Promise.all(members.map((row) => getAuthSignInState(row.id).catch(() => null)));
+
+    return response.json({
+      team: members.map((row, index) => ({
+        ...shapePlatformTeamRow(row),
+        pendingInvite: signIns[index]?.neverSignedIn === true,
+      })),
+    });
   } catch (error) {
     console.error("Error al obtener el equipo Imagenda:", error);
     return response.status(500).json({ error: "No fue posible obtener el equipo Imagenda." });
@@ -6677,6 +6701,58 @@ app.post("/platform-team/:id/revoke", serializePlatformTeam(async (request, resp
   } catch (error) {
     console.error("Error al quitar el acceso al equipo Imagenda:", error);
     return response.status(500).json({ error: "No fue posible quitar el acceso a esta persona." });
+  }
+}));
+
+// Elimina una invitación hecha por error (p. ej. correo mal escrito): borra
+// el perfil y la cuenta de Auth, así el enlace deja de servir y el correo
+// queda libre. Solo si la persona nunca inició sesión; si ya entró, se usa
+// "Quitar acceso" para conservar el historial. Sirve también para alguien
+// desactivado que nunca entró.
+app.delete("/platform-team/:id", serializePlatformTeam(async (request, response) => {
+  try {
+    if (!ensurePlatformRoleAdmin(request, response, "eliminar invitaciones del equipo Imagenda")) return;
+
+    const targetId = request.params.id;
+    if (targetId === request.user?.id) {
+      return response.status(400).json({ error: "No puedes eliminarte a ti mismo." });
+    }
+
+    const targetRow = await loadPlatformTeamMember(targetId);
+    if (!targetRow) return response.status(404).json({ error: "Persona no encontrada en el equipo Imagenda." });
+
+    const authState = await getAuthSignInState(targetId);
+    if (!authState.neverSignedIn) {
+      return response.status(400).json({
+        error: "Esta persona ya usó su cuenta. Usa 'Quitar acceso' para conservar el historial.",
+      });
+    }
+
+    if (isActivePlatformMember(targetRow) && effectivePlatformRole(targetRow) === "admin") {
+      if ((await countActivePlatformAdmins()) <= 1) {
+        return response.status(400).json({ error: LAST_PLATFORM_ADMIN_ERROR });
+      }
+    }
+
+    const { clinic: _clinic, ...originalRow } = targetRow;
+    const { error: deleteProfileError } = await supabase.from("staff_profiles").delete().eq("id", targetId);
+    if (deleteProfileError) throw deleteProfileError;
+
+    if (authState.exists) {
+      const { error: deleteUserError } = await supabase.auth.admin.deleteUser(targetId);
+      if (deleteUserError) {
+        // No dejar a medias: si no se pudo borrar la cuenta de Auth, el
+        // perfil vuelve tal como estaba.
+        const { error: restoreError } = await supabase.from("staff_profiles").insert(originalRow);
+        if (restoreError) console.error("No fue posible restaurar el perfil tras el error:", restoreError);
+        throw deleteUserError;
+      }
+    }
+
+    return response.json({ ok: true });
+  } catch (error) {
+    console.error("Error al eliminar la invitación del equipo Imagenda:", error);
+    return response.status(500).json({ error: "No fue posible eliminar la invitación." });
   }
 }));
 

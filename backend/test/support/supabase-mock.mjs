@@ -17,12 +17,16 @@ export const storageFiles = {};
 export const authAdminCalls = [];
 /** Ganchos de auth.admin para tests: { beforeUpdateUser: async (id, attrs) => {} }. */
 export const authAdminHooks = {};
+/** Cuentas de Auth simuladas para auth.admin: { id: { last_sign_in_at } }.
+ * Un id ausente se trata como cuenta que ya inició sesión alguna vez. */
+export const authUsers = {};
 
 export function resetDb(seed = {}) {
   for (const key of Object.keys(db)) delete db[key];
   for (const key of Object.keys(users)) delete users[key];
   for (const key of Object.keys(storageFiles)) delete storageFiles[key];
   authAdminCalls.length = 0;
+  for (const key of Object.keys(authUsers)) delete authUsers[key];
   for (const key of Object.keys(authAdminHooks)) delete authAdminHooks[key];
   for (const [table, rows] of Object.entries(seed)) {
     db[table] = rows.map((row) => ({ ...row }));
@@ -336,7 +340,22 @@ export function createClient() {
       admin: {
         inviteUserByEmail: async (email) => {
           authAdminCalls.push({ method: "inviteUserByEmail", args: [email] });
-          return { data: { user: { id: randomUUID(), email } }, error: null };
+          const id = randomUUID();
+          authUsers[id] = { last_sign_in_at: null };
+          return { data: { user: { id, email } }, error: null };
+        },
+        getUserById: async (id) => {
+          authAdminCalls.push({ method: "getUserById", args: [id] });
+          if (authUsers[id] === null) {
+            return { data: { user: null }, error: { status: 404, code: "user_not_found", message: "User not found" } };
+          }
+          const lastSignIn = authUsers[id] ? authUsers[id].last_sign_in_at : "2026-01-01T00:00:00.000Z";
+          return { data: { user: { id, last_sign_in_at: lastSignIn } }, error: null };
+        },
+        deleteUser: async (id) => {
+          authAdminCalls.push({ method: "deleteUser", args: [id] });
+          authUsers[id] = null;
+          return { data: {}, error: null };
         },
         updateUserById: async (id, attributes) => {
           authAdminCalls.push({ method: "updateUserById", args: [id, attributes] });

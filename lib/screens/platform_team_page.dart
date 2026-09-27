@@ -192,6 +192,43 @@ class _PlatformTeamPageState extends State<PlatformTeamPage> {
     );
   }
 
+  Future<void> _deleteInvite(Map<String, dynamic> member) async {
+    final email = member['email']?.toString() ?? _memberLabel(member);
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Eliminar invitación'),
+        content: SizedBox(
+          width: 420,
+          child: Text(
+            'Se eliminará la invitación enviada a $email. El enlace que '
+            'recibió dejará de funcionar. ¿Continuar?',
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('Cancelar'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            style: FilledButton.styleFrom(
+              backgroundColor: const Color(0xFFDC2626),
+            ),
+            child: const Text('Eliminar invitación'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+
+    await _runAction(
+      member,
+      ApiService.deletePlatformInvite,
+      'No fue posible eliminar la invitación.',
+    );
+  }
+
   Future<void> _restore(Map<String, dynamic> member) async {
     final role = await showDialog<String>(
       context: context,
@@ -325,6 +362,7 @@ class _PlatformTeamPageState extends State<PlatformTeamPage> {
                             onChangeClinic: _changeClinic,
                             onRevoke: _revoke,
                             onRestore: _restore,
+                            onDeleteInvite: _deleteInvite,
                           );
                         },
                       ),
@@ -349,6 +387,7 @@ class _TeamTable extends StatelessWidget {
     required this.onChangeClinic,
     required this.onRevoke,
     required this.onRestore,
+    required this.onDeleteInvite,
   });
 
   final List<Map<String, dynamic>> team;
@@ -358,12 +397,15 @@ class _TeamTable extends StatelessWidget {
   final void Function(Map<String, dynamic>) onChangeClinic;
   final void Function(Map<String, dynamic>) onRevoke;
   final void Function(Map<String, dynamic>) onRestore;
+  final void Function(Map<String, dynamic>) onDeleteInvite;
 
   Widget _actions(Map<String, dynamic> member) {
     final id = member['id']?.toString();
     // La propia cuenta no se puede cambiar ni quitar (el backend responde 400).
     final isSelf = id == ApiService.currentUser?['id']?.toString();
     final active = member['active'] == true;
+    // Invitación que nunca se aceptó: se puede eliminar (correo mal escrito).
+    final pending = member['pendingInvite'] == true;
 
     if (busyId == id) {
       return const SizedBox(
@@ -379,10 +421,21 @@ class _TeamTable extends StatelessWidget {
       );
     }
     if (!active) {
-      return TextButton.icon(
-        onPressed: () => onRestore(member),
-        icon: const Icon(Icons.lock_open_outlined, size: 18),
-        label: const Text('Reactivar'),
+      return Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          TextButton.icon(
+            onPressed: () => onRestore(member),
+            icon: const Icon(Icons.lock_open_outlined, size: 18),
+            label: const Text('Reactivar'),
+          ),
+          if (pending)
+            IconButton(
+              tooltip: 'Eliminar invitación',
+              onPressed: () => onDeleteInvite(member),
+              icon: const Icon(Icons.delete_outline, color: Color(0xFFB91C1C)),
+            ),
+        ],
       );
     }
     return PopupMenuButton<void Function(Map<String, dynamic>)>(
@@ -414,6 +467,17 @@ class _TeamTable extends StatelessWidget {
             ),
           ),
         ),
+        if (pending)
+          PopupMenuItem(
+            value: onDeleteInvite,
+            child: const ListTile(
+              leading: Icon(Icons.delete_outline, color: Color(0xFFB91C1C)),
+              title: Text(
+                'Eliminar invitación',
+                style: TextStyle(color: Color(0xFFB91C1C)),
+              ),
+            ),
+          ),
       ],
     );
   }
@@ -456,7 +520,12 @@ class _TeamTable extends StatelessWidget {
                   _AccessBadge(role: member['platformRole']?.toString()),
                 ),
                 DataCell(Text(_clinicLabel(member))),
-                DataCell(_StatusBadge(active: member['active'] == true)),
+                DataCell(
+                  _StatusBadge(
+                    active: member['active'] == true,
+                    pendingInvite: member['pendingInvite'] == true,
+                  ),
+                ),
                 if (canManage) DataCell(_actions(member)),
               ],
             ),
@@ -482,17 +551,41 @@ class _AccessBadge extends StatelessWidget {
   }
 }
 
+/// Estado de la fila: Activo / Sin acceso, e "Invitación pendiente" si la
+/// persona nunca aceptó la invitación (en lugar de "Activo", o junto a "Sin
+/// acceso" si además se le quitó el acceso).
 class _StatusBadge extends StatelessWidget {
-  const _StatusBadge({required this.active});
+  const _StatusBadge({required this.active, required this.pendingInvite});
 
   final bool active;
+  final bool pendingInvite;
 
   @override
   Widget build(BuildContext context) {
-    return _Pill(
-      text: active ? 'Activo' : 'Sin acceso',
-      background: active ? const Color(0xFFDCFCE7) : const Color(0xFFFEE2E2),
-      foreground: active ? const Color(0xFF15803D) : const Color(0xFFB91C1C),
+    const pendingPill = _Pill(
+      text: 'Invitación pendiente',
+      background: Color(0xFFFEF3C7),
+      foreground: Color(0xFFB45309),
+    );
+    if (active) {
+      return pendingInvite
+          ? pendingPill
+          : const _Pill(
+              text: 'Activo',
+              background: Color(0xFFDCFCE7),
+              foreground: Color(0xFF15803D),
+            );
+    }
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        const _Pill(
+          text: 'Sin acceso',
+          background: Color(0xFFFEE2E2),
+          foreground: Color(0xFFB91C1C),
+        ),
+        if (pendingInvite) ...[const SizedBox(width: 6), pendingPill],
+      ],
     );
   }
 }

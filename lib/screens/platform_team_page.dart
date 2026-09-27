@@ -18,6 +18,16 @@ String _platformRoleLabel(String? role) {
   }
 }
 
+/// Valor del selector "Acceso a pacientes" para "Solo Imagenda" (sin clínica
+/// base). DropdownButton no distingue bien un valor null elegido de "sin
+/// elegir", así que se usa '' y se traduce a null al llamar al backend.
+const String _kImagendaOnly = '';
+
+String _clinicLabel(Map<String, dynamic> member) {
+  if (member['clinicId'] == null) return 'Solo Imagenda';
+  return member['clinicName']?.toString() ?? 'Clínica desconocida';
+}
+
 String _memberLabel(Map<String, dynamic> member) {
   final name = member['fullName']?.toString().trim() ?? '';
   if (name.isNotEmpty) return name;
@@ -59,18 +69,22 @@ class _PlatformTeamPageState extends State<PlatformTeamPage> {
     ).showSnackBar(SnackBar(content: Text(message)));
   }
 
-  Future<void> _openInviteDialog() async {
-    final List<Map<String, dynamic>> clinics;
+  /// Clínicas para el selector "Acceso a pacientes". null si falló (ya se
+  /// mostró el mensaje).
+  Future<List<Map<String, dynamic>>?> _loadClinics() async {
     try {
-      clinics = await ApiService.getClinics();
+      return await ApiService.getClinics();
     } on ApiException catch (error) {
       _showMessage(error.message);
-      return;
     } catch (_) {
       _showMessage('No fue posible cargar las clínicas.');
-      return;
     }
-    if (!mounted) return;
+    return null;
+  }
+
+  Future<void> _openInviteDialog() async {
+    final clinics = await _loadClinics();
+    if (clinics == null || !mounted) return;
 
     final invited = await showDialog<bool>(
       context: context,
@@ -117,6 +131,25 @@ class _PlatformTeamPageState extends State<PlatformTeamPage> {
       (id) =>
           ApiService.updatePlatformRole(memberId: id, platformRole: newRole),
       'No fue posible cambiar el tipo de acceso.',
+    );
+  }
+
+  Future<void> _changeClinic(Map<String, dynamic> member) async {
+    final clinics = await _loadClinics();
+    if (clinics == null || !mounted) return;
+
+    final choice = await showDialog<String>(
+      context: context,
+      builder: (_) => _PatientAccessDialog(member: member, clinics: clinics),
+    );
+    if (choice == null) return;
+    final clinicId = choice == _kImagendaOnly ? null : choice;
+    if (clinicId == member['clinicId']) return;
+
+    await _runAction(
+      member,
+      (id) => ApiService.updatePlatformClinic(memberId: id, clinicId: clinicId),
+      'No fue posible cambiar el acceso a pacientes.',
     );
   }
 
@@ -289,6 +322,7 @@ class _PlatformTeamPageState extends State<PlatformTeamPage> {
                             canManage: _canManage,
                             busyId: _busyId,
                             onChangeRole: _changeRole,
+                            onChangeClinic: _changeClinic,
                             onRevoke: _revoke,
                             onRestore: _restore,
                           );
@@ -312,6 +346,7 @@ class _TeamTable extends StatelessWidget {
     required this.canManage,
     required this.busyId,
     required this.onChangeRole,
+    required this.onChangeClinic,
     required this.onRevoke,
     required this.onRestore,
   });
@@ -320,6 +355,7 @@ class _TeamTable extends StatelessWidget {
   final bool canManage;
   final String? busyId;
   final void Function(Map<String, dynamic>) onChangeRole;
+  final void Function(Map<String, dynamic>) onChangeClinic;
   final void Function(Map<String, dynamic>) onRevoke;
   final void Function(Map<String, dynamic>) onRestore;
 
@@ -349,19 +385,34 @@ class _TeamTable extends StatelessWidget {
         label: const Text('Reactivar'),
       );
     }
-    return Row(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        TextButton.icon(
-          onPressed: () => onChangeRole(member),
-          icon: const Icon(Icons.swap_horiz, size: 18),
-          label: const Text('Cambiar tipo'),
+    return PopupMenuButton<void Function(Map<String, dynamic>)>(
+      tooltip: 'Acciones',
+      icon: const Icon(Icons.more_vert),
+      onSelected: (action) => action(member),
+      itemBuilder: (_) => [
+        PopupMenuItem(
+          value: onChangeRole,
+          child: const ListTile(
+            leading: Icon(Icons.swap_horiz),
+            title: Text('Cambiar tipo de acceso'),
+          ),
         ),
-        TextButton.icon(
-          onPressed: () => onRevoke(member),
-          icon: const Icon(Icons.block, size: 18),
-          label: const Text('Quitar acceso'),
-          style: TextButton.styleFrom(foregroundColor: const Color(0xFFB91C1C)),
+        PopupMenuItem(
+          value: onChangeClinic,
+          child: const ListTile(
+            leading: Icon(Icons.local_hospital_outlined),
+            title: Text('Cambiar acceso a pacientes'),
+          ),
+        ),
+        PopupMenuItem(
+          value: onRevoke,
+          child: const ListTile(
+            leading: Icon(Icons.block, color: Color(0xFFB91C1C)),
+            title: Text(
+              'Quitar acceso',
+              style: TextStyle(color: Color(0xFFB91C1C)),
+            ),
+          ),
         ),
       ],
     );
@@ -404,7 +455,7 @@ class _TeamTable extends StatelessWidget {
                 DataCell(
                   _AccessBadge(role: member['platformRole']?.toString()),
                 ),
-                DataCell(Text(member['clinicName']?.toString() ?? '—')),
+                DataCell(Text(_clinicLabel(member))),
                 DataCell(_StatusBadge(active: member['active'] == true)),
                 if (canManage) DataCell(_actions(member)),
               ],
@@ -593,10 +644,11 @@ class _InviteMemberDialog extends StatefulWidget {
 class _InviteMemberDialogState extends State<_InviteMemberDialog> {
   final TextEditingController _emailController = TextEditingController();
   final TextEditingController _fullNameController = TextEditingController();
-  // Sin valores preseleccionados: tipo de acceso y clínica base se eligen a
-  // conciencia (mismo criterio que la invitación de personal de clínica).
+  // El tipo de acceso se elige a conciencia (sin valor inicial). El acceso a
+  // pacientes parte en "Solo Imagenda": dar acceso a una clínica es la
+  // decisión que hay que tomar a propósito.
   String? _platformRole;
-  String? _clinicId;
+  String _clinicChoice = _kImagendaOnly;
   bool _isSubmitting = false;
   String? _error;
 
@@ -611,7 +663,6 @@ class _InviteMemberDialogState extends State<_InviteMemberDialog> {
       _emailController.text.trim().isNotEmpty &&
       _fullNameController.text.trim().isNotEmpty &&
       _platformRole != null &&
-      _clinicId != null &&
       !_isSubmitting;
 
   Future<void> _submit() async {
@@ -627,7 +678,7 @@ class _InviteMemberDialogState extends State<_InviteMemberDialog> {
         email: _emailController.text.trim(),
         fullName: _fullNameController.text.trim(),
         platformRole: _platformRole!,
-        clinicId: _clinicId!,
+        clinicId: _clinicChoice == _kImagendaOnly ? null : _clinicChoice,
       );
       if (mounted) Navigator.pop(context, true);
     } on ApiException catch (error) {
@@ -687,25 +738,10 @@ class _InviteMemberDialogState extends State<_InviteMemberDialog> {
               onChanged: (value) => setState(() => _platformRole = value),
             ),
             const SizedBox(height: 14),
-            DropdownButtonFormField<String>(
-              initialValue: _clinicId,
-              decoration: const InputDecoration(
-                labelText: 'Clínica base',
-                border: OutlineInputBorder(),
-              ),
-              hint: const Text('Elige la clínica base'),
-              items: widget.clinics
-                  .map(
-                    (clinic) => DropdownMenuItem(
-                      value: clinic['id']?.toString(),
-                      child: Text(
-                        clinic['name']?.toString() ?? '',
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                    ),
-                  )
-                  .toList(),
-              onChanged: (value) => setState(() => _clinicId = value),
+            _PatientAccessField(
+              clinics: widget.clinics,
+              value: _clinicChoice,
+              onChanged: (value) => setState(() => _clinicChoice = value),
             ),
             const SizedBox(height: 10),
             const _AccessHelp(),
@@ -774,6 +810,122 @@ class _ErrorMessage extends StatelessWidget {
           ),
         ],
       ),
+    );
+  }
+}
+
+/// Selector "Acceso a pacientes": "Solo Imagenda" ([_kImagendaOnly]) o una
+/// clínica, con la explicación debajo.
+class _PatientAccessField extends StatelessWidget {
+  const _PatientAccessField({
+    required this.clinics,
+    required this.value,
+    required this.onChanged,
+  });
+
+  final List<Map<String, dynamic>> clinics;
+  final String value;
+  final ValueChanged<String> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final clinicIds = clinics.map((clinic) => clinic['id']?.toString());
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        DropdownButtonFormField<String>(
+          // Si la clínica actual ya no está en la lista, cae a Solo Imagenda
+          // en vez de romper el Dropdown.
+          initialValue: clinicIds.contains(value) ? value : _kImagendaOnly,
+          isExpanded: true,
+          decoration: const InputDecoration(
+            labelText: 'Acceso a pacientes',
+            border: OutlineInputBorder(),
+          ),
+          items: [
+            const DropdownMenuItem(
+              value: _kImagendaOnly,
+              child: Text('Solo Imagenda (sin acceso a pacientes)'),
+            ),
+            for (final clinic in clinics)
+              if (clinic['id'] != null)
+                DropdownMenuItem(
+                  value: clinic['id'].toString(),
+                  child: Text(
+                    clinic['name']?.toString() ?? '',
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+          ],
+          onChanged: (selected) {
+            if (selected != null) onChanged(selected);
+          },
+        ),
+        const SizedBox(height: 6),
+        const Text(
+          'Si eliges una clínica, esta persona también verá los pacientes de esa clínica.',
+          style: TextStyle(fontSize: 12, color: NexaColors.textSecondary),
+        ),
+      ],
+    );
+  }
+}
+
+/// "Cambiar acceso a pacientes" de una fila. Devuelve la opción elegida
+/// ([_kImagendaOnly] o el id de la clínica), o null si se cancela.
+class _PatientAccessDialog extends StatefulWidget {
+  const _PatientAccessDialog({required this.member, required this.clinics});
+
+  final Map<String, dynamic> member;
+  final List<Map<String, dynamic>> clinics;
+
+  @override
+  State<_PatientAccessDialog> createState() => _PatientAccessDialogState();
+}
+
+class _PatientAccessDialogState extends State<_PatientAccessDialog> {
+  late String _choice = widget.member['clinicId']?.toString() ?? _kImagendaOnly;
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Cambiar acceso a pacientes'),
+      content: SizedBox(
+        width: 420,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              _memberLabel(widget.member),
+              style: const TextStyle(fontWeight: FontWeight.w700),
+            ),
+            const SizedBox(height: 16),
+            _PatientAccessField(
+              clinics: widget.clinics,
+              value: _choice,
+              onChanged: (value) => setState(() => _choice = value),
+            ),
+            const SizedBox(height: 10),
+            const Text(
+              'El acceso a los datos cambia de inmediato; su menú se actualiza la '
+              'próxima vez que inicie sesión.',
+              style: TextStyle(fontSize: 12, color: NexaColors.textSecondary),
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Cancelar'),
+        ),
+        FilledButton(
+          onPressed: () => Navigator.pop(context, _choice),
+          child: const Text('Guardar'),
+        ),
+      ],
     );
   }
 }

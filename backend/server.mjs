@@ -1344,8 +1344,11 @@ app.post("/staff/accept-invite", async (request, response) => {
 // A partir de aquí, todas las rutas requieren haber iniciado sesión y
 // tener un rol asignado. Algunas rutas además exigen un rol específico.
 app.use("/patients", requireAuth, requireClinic);
-app.use("/dashboard", requireAuth);
-app.use("/validation-queue", requireAuth);
+// /dashboard y /validation-queue muestran datos de pacientes (nombres, RUT,
+// pendientes): una cuenta sin clínica ("Solo Imagenda") no entra, aunque sea
+// del equipo Imagenda.
+app.use("/dashboard", requireAuth, requireClinic);
+app.use("/validation-queue", requireAuth, requireClinic);
 app.use("/rooms", requireAuth, requireClinic);
 app.use("/appointments", requireAuth, requireClinic);
 app.use("/chat", requireAuth, requireRole(AI_STAFF));
@@ -6470,6 +6473,22 @@ function serializePlatformTeam(handler) {
   };
 }
 
+// Clínica base de un miembro del equipo: vacío o null = "Solo Imagenda"
+// (clinic_id null, sin acceso a datos de pacientes por requireClinic). Si
+// viene, tiene que existir. Devuelve { clinicId } o { error }.
+async function parseOptionalClinicId(value) {
+  if (value == null || (typeof value === "string" && value.trim() === "")) return { clinicId: null };
+  if (typeof value !== "string") return { error: "La clínica elegida no es válida." };
+  const { data: clinicRow, error } = await supabase
+    .from("clinics")
+    .select("id")
+    .eq("id", value.trim())
+    .maybeSingle();
+  if (error) throw error;
+  if (!clinicRow) return { error: "La clínica elegida no existe." };
+  return { clinicId: clinicRow.id };
+}
+
 const LAST_PLATFORM_ADMIN_ERROR =
   "Debe quedar al menos un Administrador total activo en el equipo Imagenda.";
 
@@ -6495,26 +6514,17 @@ app.post("/platform-team/invite", async (request, response) => {
     const email = typeof request.body?.email === "string" ? request.body.email.trim() : "";
     const fullName = typeof request.body?.fullName === "string" ? request.body.fullName.trim() : "";
     const platformRole = request.body?.platformRole;
-    const clinicId = typeof request.body?.clinicId === "string" ? request.body.clinicId.trim() : "";
 
     if (!email || !PLATFORM_ROLES.includes(platformRole)) {
       return response.status(400).json({ error: "Debes indicar un email válido y el tipo de acceso." });
     }
-    if (!clinicId) {
-      return response.status(400).json({ error: "Debes elegir la clínica base de la persona invitada." });
-    }
 
-    // Igual que /staff/invite: se valida la clínica antes de mandar el correo,
-    // para no dejar una cuenta de Auth creada sin perfil.
-    const { data: clinicRow, error: clinicError } = await supabase
-      .from("clinics")
-      .select("id")
-      .eq("id", clinicId)
-      .maybeSingle();
-    if (clinicError) throw clinicError;
-    if (!clinicRow) {
-      return response.status(400).json({ error: "La clínica elegida no existe." });
-    }
+    // Clínica base opcional: sin clínica = "Solo Imagenda" (no ve pacientes).
+    // Igual que /staff/invite, se valida antes de mandar el correo, para no
+    // dejar una cuenta de Auth creada sin perfil.
+    const clinic = await parseOptionalClinicId(request.body?.clinicId);
+    if (clinic.error) return response.status(400).json({ error: clinic.error });
+    const clinicId = clinic.clinicId;
 
     const { data: inviteData, error: inviteError } = await supabase.auth.admin.inviteUserByEmail(email);
     if (inviteError) throw inviteError;
@@ -6588,6 +6598,37 @@ app.patch("/platform-team/:id", serializePlatformTeam(async (request, response) 
   } catch (error) {
     console.error("Error al cambiar el tipo de acceso:", error);
     return response.status(500).json({ error: "No fue posible cambiar el tipo de acceso." });
+  }
+}));
+
+// Cambia la clínica base de un miembro activo (null = "Solo Imagenda").
+app.patch("/platform-team/:id/clinic", serializePlatformTeam(async (request, response) => {
+  try {
+    if (!ensurePlatformRoleAdmin(request, response, "cambiar el acceso a pacientes")) return;
+
+    const targetRow = await loadPlatformTeamMember(request.params.id);
+    if (!targetRow) return response.status(404).json({ error: "Persona no encontrada en el equipo Imagenda." });
+    if (!isActivePlatformMember(targetRow)) {
+      return response
+        .status(400)
+        .json({ error: "Esta persona no tiene acceso activo. Usa \"Reactivar\" para devolvérselo." });
+    }
+
+    const clinic = await parseOptionalClinicId(request.body?.clinicId);
+    if (clinic.error) return response.status(400).json({ error: clinic.error });
+
+    const { data: updatedRow, error } = await supabase
+      .from("staff_profiles")
+      .update({ clinic_id: clinic.clinicId })
+      .eq("id", targetRow.id)
+      .select("*, clinic:clinics(name)")
+      .single();
+    if (error) throw error;
+
+    return response.json({ member: shapePlatformTeamRow(updatedRow) });
+  } catch (error) {
+    console.error("Error al cambiar la clínica base:", error);
+    return response.status(500).json({ error: "No fue posible cambiar el acceso a pacientes." });
   }
 }));
 

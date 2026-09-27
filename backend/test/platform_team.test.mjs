@@ -18,6 +18,7 @@ const TOKENS = {
   legado: "tok-legado",
   clinica: "tok-clinica",
   desactivado: "tok-desactivado",
+  soloImagenda: "tok-solo-imagenda",
 };
 
 function seed() {
@@ -51,6 +52,15 @@ function seed() {
         clinic_id: CLINIC,
         is_platform_admin: true,
       },
+      // Miembro del equipo "Solo Imagenda": sin clínica base.
+      {
+        id: "u-solo",
+        email: "solo@imagenda.cl",
+        role: "administrador",
+        clinic_id: null,
+        is_platform_admin: true,
+        platform_role: "soporte",
+      },
       { id: "u-clinica", email: "jefe@clinica.cl", role: "administrador", clinic_id: OTHER_CLINIC },
       {
         id: "u-desactivado",
@@ -68,6 +78,7 @@ function seed() {
   users[TOKENS.legado] = { id: "u-legado", email: "legado@imagenda.cl" };
   users[TOKENS.clinica] = { id: "u-clinica", email: "jefe@clinica.cl" };
   users[TOKENS.desactivado] = { id: "u-desactivado", email: "ex@imagenda.cl" };
+  users[TOKENS.soloImagenda] = { id: "u-solo", email: "solo@imagenda.cl" };
 }
 
 function call(method, url, as, body) {
@@ -121,7 +132,9 @@ test("GET /platform-team: solo el equipo; Soporte puede ver, incluye a los desac
   assert.equal(response.status, 200);
   const { team } = await response.json();
   const byId = Object.fromEntries(team.map((member) => [member.id, member]));
-  assert.deepEqual(Object.keys(byId).sort(), ["u-admin", "u-desactivado", "u-legado", "u-soporte"]);
+  assert.deepEqual(Object.keys(byId).sort(), ["u-admin", "u-desactivado", "u-legado", "u-solo", "u-soporte"]);
+  assert.equal(byId["u-solo"].clinicId, null);
+  assert.equal(byId["u-solo"].clinicName, null);
   assert.equal(byId["u-legado"].platformRole, "admin");
   assert.equal(byId["u-soporte"].platformRole, "soporte");
   assert.equal(byId["u-admin"].clinicName, "Clínica Test");
@@ -292,12 +305,7 @@ test("admin total puede invitar, cambiar tipo, quitar y reactivar acceso", async
   assert.equal(create.status, 200);
 });
 
-test("invitar al equipo exige clínica base válida y tipo de acceso", async () => {
-  const sinClinica = await call("POST", "/platform-team/invite", "admin", {
-    email: "x@imagenda.cl",
-    platformRole: "admin",
-  });
-  assert.equal(sinClinica.status, 400);
+test("invitar al equipo exige tipo de acceso y, si viene, una clínica base que exista", async () => {
   const clinicaFalsa = await call("POST", "/platform-team/invite", "admin", {
     email: "x@imagenda.cl",
     platformRole: "admin",
@@ -311,4 +319,87 @@ test("invitar al equipo exige clínica base válida y tipo de acceso", async () 
   });
   assert.equal(tipoMalo.status, 400);
   assert.equal(authAdminCalls.length, 0);
+});
+
+test("invitar sin clínica base crea un miembro \"Solo Imagenda\" (clinic_id null)", async () => {
+  for (const clinicId of [undefined, null, ""]) {
+    const email = `solo-${String(clinicId)}@imagenda.cl`;
+    const response = await call("POST", "/platform-team/invite", "admin", {
+      email,
+      fullName: "Sin Clínica",
+      platformRole: "soporte",
+      ...(clinicId === undefined ? {} : { clinicId }),
+    });
+    assert.equal(response.status, 200, `clinicId=${JSON.stringify(clinicId)}`);
+    const { member } = await response.json();
+    assert.equal(member.clinicId, null);
+    assert.equal(member.clinicName, null);
+    assert.equal(profile(member.id).clinic_id, null);
+    assert.equal(profile(member.id).is_platform_admin, true);
+  }
+});
+
+test("cuenta del equipo sin clínica: 403 en datos clínicos, 200 en plataforma", async () => {
+  const clinicalRoutes = [
+    ["GET", "/patients"],
+    ["GET", "/patients/1"],
+    ["GET", "/appointments"],
+    ["GET", "/rooms"],
+    ["GET", "/dashboard/summary"],
+    ["GET", "/validation-queue"],
+    ["GET", "/lab/panels"],
+    ["GET", "/imaging/types"],
+    ["GET", "/dental/procedures"],
+    ["GET", "/orthanc-studies"],
+    ["GET", "/billing/daily-summary"],
+  ];
+  for (const [method, url] of clinicalRoutes) {
+    const response = await call(method, url, "soloImagenda");
+    assert.equal(response.status, 403, `${method} ${url}`);
+    assert.match((await response.json()).error, /no tiene una clínica asignada/, `${method} ${url}`);
+  }
+
+  for (const url of ["/clinics", "/platform-team", "/staff"]) {
+    assert.equal((await call("GET", url, "soloImagenda")).status, 200, url);
+  }
+
+  // Puede invitar personal a cualquier clínica (/staff no distingue tipo de acceso).
+  const invite = await call("POST", "/staff/invite", "soloImagenda", {
+    email: "tecnico@otra.cl",
+    role: "tecnico",
+    clinicId: OTHER_CLINIC,
+  });
+  assert.equal(invite.status, 200);
+  const { staff } = await invite.json();
+  assert.equal(profile(staff.id).clinic_id, OTHER_CLINIC);
+});
+
+test("cambiar la clínica base: solo Administrador total; null = Solo Imagenda", async () => {
+  const soporte = await call("PATCH", "/platform-team/u-legado/clinic", "soporte", { clinicId: null });
+  assert.equal(soporte.status, 403);
+  assert.equal(profile("u-legado").clinic_id, CLINIC);
+
+  const toNone = await call("PATCH", "/platform-team/u-legado/clinic", "admin", { clinicId: null });
+  assert.equal(toNone.status, 200);
+  assert.equal((await toNone.json()).member.clinicId, null);
+  assert.equal(profile("u-legado").clinic_id, null);
+
+  const toOther = await call("PATCH", "/platform-team/u-legado/clinic", "admin", { clinicId: OTHER_CLINIC });
+  assert.equal(toOther.status, 200);
+  assert.equal((await toOther.json()).member.clinicName, "Otra clínica");
+  assert.equal(profile("u-legado").clinic_id, OTHER_CLINIC);
+
+  const fake = await call("PATCH", "/platform-team/u-legado/clinic", "admin", {
+    clinicId: "33333333-3333-3333-3333-333333333333",
+  });
+  assert.equal(fake.status, 400);
+  assert.equal(profile("u-legado").clinic_id, OTHER_CLINIC);
+
+  // Desactivados: primero hay que reactivarlos.
+  const inactive = await call("PATCH", "/platform-team/u-desactivado/clinic", "admin", { clinicId: null });
+  assert.equal(inactive.status, 400);
+  // Quien no es del equipo no existe para esta ruta.
+  const outsider = await call("PATCH", "/platform-team/u-clinica/clinic", "admin", { clinicId: null });
+  assert.equal(outsider.status, 404);
+  assert.equal(profile("u-clinica").clinic_id, OTHER_CLINIC);
 });

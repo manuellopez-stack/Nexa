@@ -1723,6 +1723,25 @@ class ApiService {
     );
   }
 
+  /// Elimina una invitación que nunca se aceptó: borra el perfil y la cuenta
+  /// de Auth (el enlace deja de servir y el correo queda libre).
+  static Future<void> deletePlatformInvite(String memberId) async {
+    final http.Response response;
+
+    try {
+      response = await http
+          .delete(
+            Uri.parse('$_baseUrl/platform-team/$memberId'),
+            headers: _headers(extra: const {'Accept': 'application/json'}),
+          )
+          .timeout(const Duration(seconds: 30));
+    } catch (_) {
+      throw const ApiException('No fue posible eliminar la invitación.');
+    }
+
+    await _decodeMap(response);
+  }
+
   static Future<Map<String, dynamic>> revokePlatformAccess(String memberId) {
     return _platformTeamWrite(
       'POST',

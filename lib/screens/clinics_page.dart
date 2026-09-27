@@ -65,15 +65,17 @@ class _ClinicsPageState extends State<ClinicsPage> {
               children: [
                 ImagendaPageHeader(
                   title: 'Clínicas',
+                  // Soporte del equipo Imagenda solo mira: no crea clínicas.
                   actions: [
-                    FilledButton.icon(
-                      onPressed: _openAddDialog,
-                      icon: const Icon(Icons.add_business_outlined, size: 18),
-                      label: const Text('Agregar clínica'),
-                      style: FilledButton.styleFrom(
-                        backgroundColor: NexaColors.primary,
+                    if (!ApiService.isPlatformSupport)
+                      FilledButton.icon(
+                        onPressed: _openAddDialog,
+                        icon: const Icon(Icons.add_business_outlined, size: 18),
+                        label: const Text('Agregar clínica'),
+                        style: FilledButton.styleFrom(
+                          backgroundColor: NexaColors.primary,
+                        ),
                       ),
-                    ),
                   ],
                 ),
                 const SizedBox(height: 20),
@@ -351,12 +353,14 @@ class _ClinicTileState extends State<_ClinicTile> {
                   runSpacing: 4,
                   crossAxisAlignment: WrapCrossAlignment.center,
                   children: [
-                    TextButton.icon(
-                      onPressed: _isBusy ? null : _uploadLogo,
-                      icon: const Icon(Icons.upload_outlined, size: 18),
-                      label: Text(_hasLogo ? 'Cambiar logo' : 'Subir logo'),
-                    ),
-                    if (_hasLogo)
+                    // Soporte tampoco edita clínicas (el backend responde 403).
+                    if (!ApiService.isPlatformSupport)
+                      TextButton.icon(
+                        onPressed: _isBusy ? null : _uploadLogo,
+                        icon: const Icon(Icons.upload_outlined, size: 18),
+                        label: Text(_hasLogo ? 'Cambiar logo' : 'Subir logo'),
+                      ),
+                    if (_hasLogo && !ApiService.isPlatformSupport)
                       TextButton.icon(
                         onPressed: _isBusy ? null : _deleteLogo,
                         icon: const Icon(Icons.delete_outline, size: 18),

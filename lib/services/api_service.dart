@@ -76,6 +76,12 @@ class ApiService {
   //   - isPlatformAdmin -> staff_profiles.is_platform_admin: gestiona clínicas
   //     y el personal de todas ellas (invitar a cualquier clínica, etc.).
   static bool get isPlatformAdmin => _currentUser?['isPlatformAdmin'] == true;
+  //   - platformRole -> tipo de acceso dentro del equipo Imagenda: 'admin'
+  //     (Administrador total) o 'soporte' (solo mira: no crea/edita clínicas
+  //     ni gestiona al equipo). null si no es del equipo.
+  static String? get platformRole =>
+      isPlatformAdmin ? (_currentUser?['platformRole'] as String? ?? 'admin') : null;
+  static bool get isPlatformSupport => platformRole == 'soporte';
   static String? get clinicId => _currentUser?['clinicId'] as String?;
   //   - ohifViewerEnabled -> OHIF_VIEWER_ENABLED del backend (Fase 3,
   //     apagado por defecto): muestra "Ver en OHIF". Mismos roles que ver
@@ -1607,6 +1613,117 @@ class ApiService {
     }
 
     await _decodeMap(response);
+  }
+
+  // ============================================
+  // EQUIPO IMAGENDA (equipo interno de la plataforma)
+  // ============================================
+
+  static Future<List<Map<String, dynamic>>> getPlatformTeam() async {
+    final http.Response response;
+
+    try {
+      response = await http
+          .get(Uri.parse('$_baseUrl/platform-team'), headers: _headers())
+          .timeout(const Duration(seconds: 30));
+    } catch (_) {
+      throw const ApiException(
+        'No fue posible conectar con el backend de Imagenda.',
+      );
+    }
+
+    final decodedBody = await _decodeMap(response);
+    final team = decodedBody['team'];
+
+    if (team is! List) {
+      throw const ApiException('El backend no entregó el equipo Imagenda.');
+    }
+
+    return team
+        .whereType<Map>()
+        .map((member) => Map<String, dynamic>.from(member))
+        .toList();
+  }
+
+  static Future<Map<String, dynamic>> _platformTeamWrite(
+    String method,
+    String path,
+    Map<String, dynamic>? body,
+    String failureMessage,
+  ) async {
+    final http.Response response;
+
+    try {
+      final request = http.Request(method, Uri.parse('$_baseUrl/platform-team$path'))
+        ..headers.addAll(_headers(extra: const {'Content-Type': 'application/json'}));
+      if (body != null) request.body = jsonEncode(body);
+      response = await http.Response.fromStream(
+        await request.send().timeout(const Duration(seconds: 30)),
+      ).timeout(const Duration(seconds: 30));
+    } catch (_) {
+      throw ApiException(failureMessage);
+    }
+
+    final decodedBody = await _decodeMap(response);
+    final member = decodedBody['member'];
+
+    if (member is! Map) {
+      throw const ApiException('El backend no entregó a la persona del equipo.');
+    }
+
+    return Map<String, dynamic>.from(member);
+  }
+
+  static Future<Map<String, dynamic>> invitePlatformMember({
+    required String email,
+    required String fullName,
+    required String platformRole,
+    required String clinicId,
+  }) {
+    return _platformTeamWrite(
+      'POST',
+      '/invite',
+      {
+        'email': email,
+        'fullName': fullName,
+        'platformRole': platformRole,
+        'clinicId': clinicId,
+      },
+      'No fue posible invitar a esta persona.',
+    );
+  }
+
+  static Future<Map<String, dynamic>> updatePlatformRole({
+    required String memberId,
+    required String platformRole,
+  }) {
+    return _platformTeamWrite(
+      'PATCH',
+      '/$memberId',
+      {'platformRole': platformRole},
+      'No fue posible cambiar el tipo de acceso.',
+    );
+  }
+
+  static Future<Map<String, dynamic>> revokePlatformAccess(String memberId) {
+    return _platformTeamWrite(
+      'POST',
+      '/$memberId/revoke',
+      null,
+      'No fue posible quitar el acceso a esta persona.',
+    );
+  }
+
+  static Future<Map<String, dynamic>> restorePlatformAccess({
+    required String memberId,
+    required String platformRole,
+  }) {
+    return _platformTeamWrite(
+      'POST',
+      '/$memberId/restore',
+      {'platformRole': platformRole},
+      'No fue posible reactivar el acceso a esta persona.',
+    );
   }
 
   // ============================================

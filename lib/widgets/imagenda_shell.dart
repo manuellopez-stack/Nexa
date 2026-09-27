@@ -8,6 +8,7 @@ import '../screens/appointments_page.dart';
 import '../screens/clinics_page.dart';
 import '../screens/dashboard_page.dart';
 import '../screens/orthanc_studies_page.dart';
+import '../screens/platform_team_page.dart';
 import '../screens/staff_management_page.dart';
 import '../screens/validation_queue_page.dart';
 import '../services/api_service.dart';
@@ -20,6 +21,7 @@ enum ShellSection {
   validation,
   team,
   clinics,
+  platformTeam,
 }
 
 /// Estructura común de las pantallas de Imagenda: menú lateral blanco a la
@@ -89,6 +91,7 @@ class ImagendaShell extends StatefulWidget {
       ShellSection.validation => const ValidationQueuePage(),
       ShellSection.team => const StaffManagementPage(),
       ShellSection.clinics => const ClinicsPage(),
+      ShellSection.platformTeam => const PlatformTeamPage(),
     };
     Navigator.pushReplacement(
       context,
@@ -325,7 +328,7 @@ class _Sidebar extends StatelessWidget {
                             : const SizedBox.shrink(),
                       ),
                     ),
-                  if (isAdmin) ...[
+                  if (isAdmin || ApiService.isPlatformAdmin) ...[
                     const Padding(
                       padding: EdgeInsets.fromLTRB(12, 20, 12, 8),
                       child: Text(
@@ -338,12 +341,19 @@ class _Sidebar extends StatelessWidget {
                         ),
                       ),
                     ),
-                    item(ShellSection.team, Icons.groups_outlined, 'Equipo'),
-                    if (ApiService.isPlatformAdmin)
+                    if (isAdmin)
+                      item(ShellSection.team, Icons.groups_outlined, 'Equipo'),
+                    if (isAdmin && ApiService.isPlatformAdmin)
                       item(
                         ShellSection.clinics,
                         Icons.local_hospital_outlined,
                         'Clínicas',
+                      ),
+                    if (ApiService.isPlatformAdmin)
+                      item(
+                        ShellSection.platformTeam,
+                        Icons.admin_panel_settings_outlined,
+                        'Equipo Imagenda',
                       ),
                   ],
                 ],

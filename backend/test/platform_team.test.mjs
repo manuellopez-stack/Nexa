@@ -7,7 +7,7 @@
 import assert from "node:assert/strict";
 import { after, before, beforeEach, test } from "node:test";
 
-import { authAdminCalls, authAdminHooks, db, resetDb, users } from "./support/supabase-mock.mjs";
+import { authAdminCalls, authAdminHooks, authUsers, db, resetDb, users } from "./support/supabase-mock.mjs";
 
 const BASE = "http://localhost:3000";
 const CLINIC = "11111111-1111-1111-1111-111111111111";
@@ -402,4 +402,101 @@ test("cambiar la clínica base: solo Administrador total; null = Solo Imagenda",
   const outsider = await call("PATCH", "/platform-team/u-clinica/clinic", "admin", { clinicId: null });
   assert.equal(outsider.status, 404);
   assert.equal(profile("u-clinica").clinic_id, OTHER_CLINIC);
+});
+
+test("GET /platform-team marca pendingInvite solo a quien nunca inició sesión", async () => {
+  authUsers["u-legado"] = { last_sign_in_at: null };
+  const response = await call("GET", "/platform-team", "soporte");
+  assert.equal(response.status, 200);
+  const { team } = await response.json();
+  const byId = Object.fromEntries(team.map((member) => [member.id, member]));
+  assert.equal(byId["u-legado"].pendingInvite, true);
+  assert.equal(byId["u-admin"].pendingInvite, false);
+  assert.equal(byId["u-soporte"].pendingInvite, false);
+  // No se expone nada más de Auth.
+  assert.equal(byId["u-legado"].last_sign_in_at, undefined);
+  assert.equal(byId["u-legado"].lastSignInAt, undefined);
+});
+
+test("admin total elimina una invitación pendiente: se borran perfil y cuenta de Auth", async () => {
+  const invite = await call("POST", "/platform-team/invite", "admin", {
+    email: "mal-escrito@imagenda.cll",
+    fullName: "Error de tipeo",
+    platformRole: "soporte",
+  });
+  const { member } = await invite.json();
+
+  const list = await (await call("GET", "/platform-team", "admin")).json();
+  assert.equal(list.team.find((row) => row.id === member.id).pendingInvite, true);
+
+  const response = await call("DELETE", `/platform-team/${member.id}`, "admin");
+  assert.equal(response.status, 200);
+  assert.equal(profile(member.id), undefined);
+  assert.deepEqual(authAdminCalls.at(-1), { method: "deleteUser", args: [member.id] });
+});
+
+test("se puede eliminar a alguien desactivado que nunca inició sesión", async () => {
+  authUsers["u-desactivado"] = { last_sign_in_at: null };
+  const response = await call("DELETE", "/platform-team/u-desactivado", "admin");
+  assert.equal(response.status, 200);
+  assert.equal(profile("u-desactivado"), undefined);
+  assert.deepEqual(authAdminCalls.at(-1), { method: "deleteUser", args: ["u-desactivado"] });
+});
+
+test("no se puede eliminar a quien ya inició sesión", async () => {
+  authUsers["u-legado"] = { last_sign_in_at: "2026-09-01T10:00:00.000Z" };
+  const response = await call("DELETE", "/platform-team/u-legado", "admin");
+  assert.equal(response.status, 400);
+  assert.equal(
+    (await response.json()).error,
+    "Esta persona ya usó su cuenta. Usa 'Quitar acceso' para conservar el historial.",
+  );
+  assert.ok(profile("u-legado"));
+  assert.ok(!authAdminCalls.some((entry) => entry.method === "deleteUser"));
+});
+
+test("eliminar invitación: Soporte 403, no a sí mismo, fuera del equipo 404", async () => {
+  authUsers["u-legado"] = { last_sign_in_at: null };
+  authUsers["u-admin"] = { last_sign_in_at: null };
+  authUsers["u-clinica"] = { last_sign_in_at: null };
+
+  assert.equal((await call("DELETE", "/platform-team/u-legado", "soporte")).status, 403);
+  assert.ok(profile("u-legado"));
+
+  const self = await call("DELETE", "/platform-team/u-admin", "admin");
+  assert.equal(self.status, 400);
+  assert.match((await self.json()).error, /a ti mismo/);
+  assert.ok(profile("u-admin"));
+
+  assert.equal((await call("DELETE", "/platform-team/u-clinica", "admin")).status, 404);
+  assert.ok(profile("u-clinica"));
+  assert.ok(!authAdminCalls.some((entry) => entry.method === "deleteUser"));
+});
+
+test("eliminar invitación respeta que quede al menos un Administrador total activo", async () => {
+  // Carrera: u-admin elimina a u-legado (invitación pendiente) mientras
+  // u-legado, todavía con sesión válida, elimina a u-admin.
+  authUsers["u-legado"] = { last_sign_in_at: null };
+  authUsers["u-admin"] = { last_sign_in_at: null };
+  let release;
+  const paused = new Promise((resolve) => (release = resolve));
+  // Se pausa el primer DELETE con una revocación en cola delante.
+  authAdminHooks.beforeUpdateUser = () => paused;
+  const blocker = call("POST", "/platform-team/u-soporte/revoke", "admin");
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  const first = call("DELETE", "/platform-team/u-legado", "admin");
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  // u-legado ya pasó requireAuth antes de que se borre su perfil.
+  const second = call("DELETE", "/platform-team/u-admin", "legado");
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  release();
+
+  assert.equal((await blocker).status, 200);
+  assert.equal((await first).status, 200);
+  const blocked = await second;
+  // Su propio perfil ya no está: para la ruta, u-admin sigue siendo el único
+  // Administrador total activo.
+  assert.equal(blocked.status, 400);
+  assert.match((await blocked.json()).error, /al menos un Administrador total activo/);
+  assert.ok(profile("u-admin"));
 });

@@ -3,6 +3,7 @@ import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
+import 'package:shared_preferences/shared_preferences.dart';
 
 class ApiException implements Exception {
   const ApiException(this.message);
@@ -85,14 +86,82 @@ class ApiService {
   //   - isImagendaOnly -> equipo Imagenda sin clínica base ("Solo Imagenda"):
   //     no ve datos de pacientes (el backend responde 403 por requireClinic),
   //     así que el menú oculta las secciones clínicas.
+  // Con allClinics hay clínica activa (salvo que no exista ninguna clínica).
   static bool get isImagendaOnly => isPlatformAdmin && clinicId == null;
-  static String? get clinicId => _currentUser?['clinicId'] as String?;
+  //   - allClinics -> equipo Imagenda con acceso a pacientes de todas las
+  //     clínicas: elige la clínica activa en la barra lateral y todas las
+  //     peticiones llevan X-Clinic-Id (el backend lo ignora para otras cuentas).
+  static bool get allClinics =>
+      isPlatformAdmin && _currentUser?['allClinics'] == true;
+  // Clínica con la que se trabaja: la activa del selector (allClinics) o la
+  // propia del perfil.
+  static String? get clinicId =>
+      allClinics ? _activeClinicId : _currentUser?['clinicId'] as String?;
   //   - ohifViewerEnabled -> OHIF_VIEWER_ENABLED del backend (Fase 3,
   //     apagado por defecto): muestra "Ver en OHIF". Mismos roles que ver
   //     imágenes (CLINICAL_STAFF + recepcion).
   static bool get ohifViewerEnabled =>
       _currentUser?['ohifViewerEnabled'] == true;
-  static String? get clinicName => _currentUser?['clinicName'] as String?;
+  static String? get clinicName => allClinics
+      ? _activeClinicName
+      : _currentUser?['clinicName'] as String?;
+
+  // Selector de clínica (allClinics). La elegida se recuerda entre sesiones.
+  static const String _activeClinicPrefKey = 'imagenda.activeClinicId';
+  static String? _activeClinicId;
+  static String? _activeClinicName;
+  static List<Map<String, dynamic>> _selectableClinics = const [];
+
+  /// Clínicas del selector (vacía si la cuenta no tiene allClinics).
+  static List<Map<String, dynamic>> get selectableClinics => _selectableClinics;
+
+  /// Carga las clínicas del selector y fija la activa: la recordada si
+  /// sigue existiendo, si no la primera de la lista. Nunca lanza: si falla,
+  /// queda sin clínica activa (el menú pasa a modo "Solo Imagenda").
+  static Future<void> _initActiveClinic() async {
+    _activeClinicId = null;
+    _activeClinicName = null;
+    _selectableClinics = const [];
+    if (!allClinics) return;
+
+    try {
+      _selectableClinics = await getClinics();
+    } catch (_) {
+      return;
+    }
+    if (_selectableClinics.isEmpty) return;
+
+    String? savedId;
+    try {
+      savedId = (await SharedPreferences.getInstance()).getString(
+        _activeClinicPrefKey,
+      );
+    } catch (_) {
+      savedId = null;
+    }
+    final saved = _selectableClinics.where((clinic) => clinic['id'] == savedId);
+    final chosen = saved.isNotEmpty ? saved.first : _selectableClinics.first;
+    _activeClinicId = chosen['id']?.toString();
+    _activeClinicName = chosen['name']?.toString();
+  }
+
+  /// Cambia la clínica activa (allClinics): la recuerda y recarga el logo.
+  /// Quien llama debe recargar la pantalla para ver los datos nuevos.
+  static Future<void> setActiveClinic(String clinicId) async {
+    final matches = _selectableClinics.where((clinic) => clinic['id'] == clinicId);
+    if (!allClinics || matches.isEmpty) return;
+    _activeClinicId = clinicId;
+    _activeClinicName = matches.first['name']?.toString();
+    try {
+      await (await SharedPreferences.getInstance()).setString(
+        _activeClinicPrefKey,
+        clinicId,
+      );
+    } catch (_) {
+      // Si no se puede guardar, igual se usa en esta sesión.
+    }
+    await loadMyClinicLogo();
+  }
   //   - canAccessAgenda -> AGENDA_STAFF = administrador, medico, tecnico, recepcion
   //     (gestión de citas: pantalla nueva en el AppBar del dashboard)
   static bool get canAccessAgenda =>
@@ -117,6 +186,9 @@ class ApiService {
     _currentUser = null;
     _role = null;
     _fullName = null;
+    _activeClinicId = null;
+    _activeClinicName = null;
+    _selectableClinics = const [];
     clinicLogo.value = null;
   }
 
@@ -136,6 +208,7 @@ class ApiService {
   static Map<String, String> _headers({Map<String, String>? extra}) {
     return {
       if (_accessToken != null) 'Authorization': 'Bearer $_accessToken',
+      if (allClinics && _activeClinicId != null) 'X-Clinic-Id': _activeClinicId!,
       ...?extra,
     };
   }
@@ -204,6 +277,9 @@ class ApiService {
     final fullName = user['fullName'] as String?;
 
     _setSession(accessToken, Map<String, dynamic>.from(user), role: role, fullName: fullName);
+    // Antes de entrar: con allClinics, la primera pantalla ya pide los datos
+    // de la clínica activa.
+    await _initActiveClinic();
     // El logo se carga en segundo plano: no retrasa el ingreso.
     unawaited(loadMyClinicLogo());
   }
@@ -1678,12 +1754,13 @@ class ApiService {
     return Map<String, dynamic>.from(member);
   }
 
-  /// [clinicId] null = "Solo Imagenda" (sin acceso a pacientes).
+  /// [patientAccess]: 'todas' (selector de clínica), 'ninguna' ("Solo
+  /// Imagenda", sin acceso a pacientes) o el id de una clínica.
   static Future<Map<String, dynamic>> invitePlatformMember({
     required String email,
     required String fullName,
     required String platformRole,
-    required String? clinicId,
+    required String patientAccess,
   }) {
     return _platformTeamWrite(
       'POST',
@@ -1692,7 +1769,7 @@ class ApiService {
         'email': email,
         'fullName': fullName,
         'platformRole': platformRole,
-        'clinicId': clinicId,
+        'patientAccess': patientAccess,
       },
       'No fue posible invitar a esta persona.',
     );
@@ -1710,15 +1787,16 @@ class ApiService {
     );
   }
 
-  /// Cambia la clínica base; [clinicId] null = "Solo Imagenda".
+  /// Cambia el acceso a pacientes ([patientAccess] como en
+  /// [invitePlatformMember]).
   static Future<Map<String, dynamic>> updatePlatformClinic({
     required String memberId,
-    required String? clinicId,
+    required String patientAccess,
   }) {
     return _platformTeamWrite(
       'PATCH',
       '/$memberId/clinic',
-      {'clinicId': clinicId},
+      {'patientAccess': patientAccess},
       'No fue posible cambiar el acceso a pacientes.',
     );
   }
@@ -1836,10 +1914,12 @@ class ApiService {
 
   /// Carga el logo de la clínica de quien está conectado en [clinicLogo]
   /// (null si no tiene, si falla o si es la cuenta de administración de
-  /// plataforma, que no muestra logo de clínica). Nunca lanza.
+  /// plataforma, que no muestra logo de clínica). Con allClinics es el de la
+  /// clínica activa (X-Clinic-Id). Nunca lanza.
   static Future<void> loadMyClinicLogo() async {
     final token = _accessToken;
-    if (token == null || isPlatformAdmin) {
+    final clinicAtStart = _activeClinicId;
+    if (token == null || (isPlatformAdmin && !allClinics)) {
       clinicLogo.value = null;
       return;
     }
@@ -1856,9 +1936,11 @@ class ApiService {
       bytes = null;
     }
 
-    // Si la sesión cambió mientras se cargaba (logout u otro login), no
-    // pisar el valor de la sesión nueva.
-    if (_accessToken == token) clinicLogo.value = bytes;
+    // Si la sesión (logout u otro login) o la clínica activa cambió mientras
+    // se cargaba, no pisar el valor nuevo.
+    if (_accessToken == token && _activeClinicId == clinicAtStart) {
+      clinicLogo.value = bytes;
+    }
   }
 
   static Future<Map<String, dynamic>> uploadClinicLogo(

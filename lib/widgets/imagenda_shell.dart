@@ -500,13 +500,34 @@ class _CountBubble extends StatelessWidget {
 /// Credencial de la clínica de quien está conectado: logo, nombre de la
 /// clínica y correo. Para la cuenta de administración de plataforma muestra
 /// el ícono de administración y 'Administración Imagenda' ('Imagenda' si no
-/// tiene clínica).
+/// tiene clínica). Con acceso a todas las clínicas, el nombre es un selector
+/// de la clínica activa.
 class _ClinicBadge extends StatelessWidget {
   const _ClinicBadge();
 
+  /// Cambia la clínica activa (allClinics) y vuelve al Centro de Control,
+  /// que se construye de nuevo con los datos de esa clínica.
+  static Future<void> _switchClinic(BuildContext context, String id) async {
+    if (id == ApiService.clinicId) return;
+    await ApiService.setActiveClinic(id);
+    ImagendaShell.refreshUnlinkedStudiesCount();
+    ImagendaShell.refreshPendingValidationCount();
+    if (context.mounted) {
+      ImagendaShell.navigate(context, ShellSection.dashboard);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
-    final isPlatformAdmin = ApiService.isPlatformAdmin;
+    // Con acceso a todas las clínicas se muestra el logo y el selector de la
+    // clínica activa, no la credencial de administración.
+    final isPlatformAdmin =
+        ApiService.isPlatformAdmin && !ApiService.allClinics;
+    final clinics = ApiService.selectableClinics;
+    final showSelector =
+        ApiService.allClinics &&
+        clinics.isNotEmpty &&
+        ApiService.clinicId != null;
     // "Solo Imagenda" (equipo sin clínica): simplemente "Imagenda".
     final clinicName = ApiService.isImagendaOnly
         ? 'Imagenda'
@@ -558,17 +579,46 @@ class _ClinicBadge extends StatelessWidget {
                 mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(
-                    clinicName,
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                      fontSize: 13.5,
-                      height: 1.2,
-                      fontWeight: FontWeight.w600,
-                      color: NexaColors.textPrimary,
+                  if (showSelector)
+                    DropdownButton<String>(
+                      value: ApiService.clinicId,
+                      isExpanded: true,
+                      isDense: true,
+                      underline: const SizedBox.shrink(),
+                      style: const TextStyle(
+                        fontSize: 13.5,
+                        height: 1.2,
+                        fontWeight: FontWeight.w600,
+                        color: NexaColors.textPrimary,
+                      ),
+                      items: [
+                        for (final clinic in clinics)
+                          if (clinic['id'] != null)
+                            DropdownMenuItem(
+                              value: clinic['id'].toString(),
+                              child: Text(
+                                clinic['name']?.toString() ?? '',
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
+                      ],
+                      onChanged: (id) {
+                        if (id != null) _switchClinic(context, id);
+                      },
+                    )
+                  else
+                    Text(
+                      clinicName,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        fontSize: 13.5,
+                        height: 1.2,
+                        fontWeight: FontWeight.w600,
+                        color: NexaColors.textPrimary,
+                      ),
                     ),
-                  ),
                   if (email != null)
                     Text(
                       email,

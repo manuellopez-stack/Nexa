@@ -13,11 +13,17 @@ export const db = {};
 export const users = {};
 /** Storage simulado: { "bucket/ruta": Buffer }. Vacío = sin archivos. */
 export const storageFiles = {};
+/** Llamadas a auth.admin registradas: [{ method, args }]. */
+export const authAdminCalls = [];
+/** Ganchos de auth.admin para tests: { beforeUpdateUser: async (id, attrs) => {} }. */
+export const authAdminHooks = {};
 
 export function resetDb(seed = {}) {
   for (const key of Object.keys(db)) delete db[key];
   for (const key of Object.keys(users)) delete users[key];
   for (const key of Object.keys(storageFiles)) delete storageFiles[key];
+  authAdminCalls.length = 0;
+  for (const key of Object.keys(authAdminHooks)) delete authAdminHooks[key];
   for (const [table, rows] of Object.entries(seed)) {
     db[table] = rows.map((row) => ({ ...row }));
   }
@@ -327,6 +333,17 @@ export function createClient() {
         users[token]
           ? { data: { user: users[token] }, error: null }
           : { data: { user: null }, error: { message: "token inválido" } },
+      admin: {
+        inviteUserByEmail: async (email) => {
+          authAdminCalls.push({ method: "inviteUserByEmail", args: [email] });
+          return { data: { user: { id: randomUUID(), email } }, error: null };
+        },
+        updateUserById: async (id, attributes) => {
+          authAdminCalls.push({ method: "updateUserById", args: [id, attributes] });
+          await authAdminHooks.beforeUpdateUser?.(id, attributes);
+          return { data: { user: { id } }, error: null };
+        },
+      },
     },
     storage: {
       getBucket: async (id) => ({ data: { id }, error: null }),

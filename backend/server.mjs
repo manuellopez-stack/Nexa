@@ -204,11 +204,40 @@ async function requireAuth(request, response, next) {
     });
   }
 
+  // Equipo Imagenda: una cuenta a la que se le quitó el acceso queda bloqueada
+  // aunque todavía tenga una sesión válida de antes del bloqueo.
+  if (profileRow.disabled_at) {
+    return response.status(403).json({ error: "Tu acceso a Imagenda fue desactivado." });
+  }
+
   request.user = data.user;
   request.staffRole = profileRow.role;
   request.staffProfile = profileRow;
   request.isPlatformAdmin = profileRow.is_platform_admin === true;
+  // Tipo de acceso dentro del equipo Imagenda: "admin" (Administrador total)
+  // o "soporte". Ambos tienen is_platform_admin = true; un admin de plataforma
+  // sin platform_role (anterior a la migración) cuenta como "admin".
+  request.platformRole = request.isPlatformAdmin ? (profileRow.platform_role ?? "admin") : null;
   next();
+}
+
+// Solo el equipo Imagenda (admin de plataforma, sea Administrador total o
+// Soporte).
+function requirePlatformAdmin(request, response, next) {
+  if (!request.isPlatformAdmin) {
+    return response.status(403).json({ error: "Solo el equipo Imagenda puede acceder a esta sección." });
+  }
+  next();
+}
+
+// Acciones reservadas al Administrador total del equipo Imagenda (Soporte
+// solo puede mirar). Responde 403 y devuelve false si no corresponde.
+function ensurePlatformRoleAdmin(request, response, action) {
+  if (request.platformRole === "admin") return true;
+  response.status(403).json({
+    error: `Tu acceso de Soporte no permite ${action}. Solo un Administrador total de Imagenda puede hacerlo.`,
+  });
+  return false;
 }
 
 // Exige que la cuenta tenga clínica asignada. Va en todas las rutas de datos
@@ -707,6 +736,27 @@ function shapeStaffRow(row) {
   };
 }
 
+// Equipo Imagenda: platformRole es "admin", "soporte" o null. Un admin de
+// plataforma sin platform_role (anterior a la migración) cuenta como "admin".
+function effectivePlatformRole(row) {
+  if (row.is_platform_admin === true) return row.platform_role ?? "admin";
+  return row.platform_role ?? null;
+}
+
+function shapePlatformTeamRow(row) {
+  return {
+    id: row.id,
+    email: row.email,
+    fullName: row.full_name,
+    platformRole: effectivePlatformRole(row),
+    clinicId: row.clinic_id ?? null,
+    clinicName: row.clinic?.name ?? null,
+    active: isActivePlatformMember(row),
+    disabledAt: row.disabled_at ?? null,
+    createdAt: row.created_at,
+  };
+}
+
 function shapeClinicRow(row) {
   return {
     id: row.id,
@@ -1197,6 +1247,11 @@ app.post("/auth/login", async (request, response) => {
       .eq("id", data.user.id)
       .maybeSingle();
 
+    // Respaldo del bloqueo de Auth (ban_duration) al quitar el acceso.
+    if (profileRow?.disabled_at) {
+      return response.status(403).json({ error: "Tu acceso a Imagenda fue desactivado." });
+    }
+
     // Nombre de la clínica para la credencial de la barra superior.
     let clinicName = null;
     if (profileRow?.clinic_id) {
@@ -1218,6 +1273,8 @@ app.post("/auth/login", async (request, response) => {
         clinicId: profileRow?.clinic_id ?? null,
         clinicName,
         isPlatformAdmin: profileRow?.is_platform_admin === true,
+        platformRole:
+          profileRow?.is_platform_admin === true ? (profileRow.platform_role ?? "admin") : null,
         // Fase 3: botón "Ver en OHIF" (OHIF_VIEWER_ENABLED, apagado por defecto).
         ohifViewerEnabled: isOhifViewerEnabled(),
       },
@@ -1300,6 +1357,7 @@ app.use("/billing", requireAuth, requireClinic);
 app.use("/staff", requireAuth, requireRole(ADMIN_ONLY));
 app.use("/clinics", requireAuth, requireRole(ADMIN_ONLY));
 app.use("/my-clinic", requireAuth);
+app.use("/platform-team", requireAuth, requirePlatformAdmin);
 
 // Agenda del día leída desde la tabla appointments. Devuelve filas con la MISMA
 // forma que /patients/today esperaba (id = id del paciente, para abrir la
@@ -6165,8 +6223,10 @@ app.patch(
 
 // Un admin de plataforma gestiona personal de cualquier clínica; un admin de
 // clínica, solo el de la suya, y nunca a un admin de plataforma (aunque
-// comparta clínica con él).
+// comparta clínica con él). A un miembro del equipo Imagenda solo lo gestiona
+// un Administrador total (no Soporte).
 function canManageStaffMember(request, targetRow) {
+  if (targetRow.is_platform_admin === true) return request.platformRole === "admin";
   if (request.isPlatformAdmin) return true;
   const requesterClinicId = request.staffProfile?.clinic_id ?? null;
   if (!requesterClinicId) return false;
@@ -6356,6 +6416,264 @@ app.delete("/staff/:id", async (request, response) => {
 });
 
 // ============================================
+// EQUIPO IMAGENDA (equipo interno de la plataforma)
+// ============================================
+// Miembros: staff_profiles con is_platform_admin = true (activos) o con
+// platform_role (incluye a quienes se les quitó el acceso, para poder
+// reactivarlos). Tipos de acceso: "admin" (Administrador total, gestiona
+// todo) y "soporte" (ve todo, no crea/edita clínicas ni gestiona al equipo).
+// Todas exigen requirePlatformAdmin (ver app.use más arriba); las que
+// escriben, además, Administrador total.
+const PLATFORM_ROLES = ["admin", "soporte"];
+// Bloqueo "indefinido" de Supabase Auth (100 años) al quitar el acceso.
+const PLATFORM_REVOKE_BAN = "876000h";
+
+function isPlatformTeamRow(row) {
+  return row.is_platform_admin === true || row.platform_role != null;
+}
+
+function isActivePlatformMember(row) {
+  return row.is_platform_admin === true && !row.disabled_at;
+}
+
+async function loadPlatformTeamMember(id) {
+  const { data, error } = await supabase
+    .from("staff_profiles")
+    .select("*, clinic:clinics(name)")
+    .eq("id", id)
+    .maybeSingle();
+  if (error) throw error;
+  return data && isPlatformTeamRow(data) ? data : null;
+}
+
+// Administradores totales con acceso vigente.
+async function countActivePlatformAdmins() {
+  const { data, error } = await supabase
+    .from("staff_profiles")
+    .select("id, platform_role, disabled_at")
+    .eq("is_platform_admin", true);
+  if (error) throw error;
+  return (data ?? []).filter((row) => !row.disabled_at && (row.platform_role ?? "admin") === "admin")
+    .length;
+}
+
+// Las escrituras sobre el equipo van de a una: si dos Administradores totales
+// se quitan el acceso mutuamente al mismo tiempo, el segundo ya ve el conteo
+// actualizado y recibe el error de "último admin" en vez de dejar el equipo
+// sin ninguno.
+let platformTeamQueue = Promise.resolve();
+function serializePlatformTeam(handler) {
+  return (request, response) => {
+    const run = platformTeamQueue.then(() => handler(request, response));
+    platformTeamQueue = run.catch(() => {});
+    return run;
+  };
+}
+
+const LAST_PLATFORM_ADMIN_ERROR =
+  "Debe quedar al menos un Administrador total activo en el equipo Imagenda.";
+
+app.get("/platform-team", async (_request, response) => {
+  try {
+    const { data, error } = await supabase
+      .from("staff_profiles")
+      .select("*, clinic:clinics(name)")
+      .order("created_at", { ascending: true });
+    if (error) throw error;
+
+    return response.json({ team: (data ?? []).filter(isPlatformTeamRow).map(shapePlatformTeamRow) });
+  } catch (error) {
+    console.error("Error al obtener el equipo Imagenda:", error);
+    return response.status(500).json({ error: "No fue posible obtener el equipo Imagenda." });
+  }
+});
+
+app.post("/platform-team/invite", async (request, response) => {
+  try {
+    if (!ensurePlatformRoleAdmin(request, response, "invitar al equipo Imagenda")) return;
+
+    const email = typeof request.body?.email === "string" ? request.body.email.trim() : "";
+    const fullName = typeof request.body?.fullName === "string" ? request.body.fullName.trim() : "";
+    const platformRole = request.body?.platformRole;
+    const clinicId = typeof request.body?.clinicId === "string" ? request.body.clinicId.trim() : "";
+
+    if (!email || !PLATFORM_ROLES.includes(platformRole)) {
+      return response.status(400).json({ error: "Debes indicar un email válido y el tipo de acceso." });
+    }
+    if (!clinicId) {
+      return response.status(400).json({ error: "Debes elegir la clínica base de la persona invitada." });
+    }
+
+    // Igual que /staff/invite: se valida la clínica antes de mandar el correo,
+    // para no dejar una cuenta de Auth creada sin perfil.
+    const { data: clinicRow, error: clinicError } = await supabase
+      .from("clinics")
+      .select("id")
+      .eq("id", clinicId)
+      .maybeSingle();
+    if (clinicError) throw clinicError;
+    if (!clinicRow) {
+      return response.status(400).json({ error: "La clínica elegida no existe." });
+    }
+
+    const { data: inviteData, error: inviteError } = await supabase.auth.admin.inviteUserByEmail(email);
+    if (inviteError) throw inviteError;
+
+    const newUserId = inviteData?.user?.id;
+    if (!newUserId) {
+      return response.status(500).json({ error: "No fue posible crear el usuario invitado." });
+    }
+
+    const { data: profileRow, error: profileError } = await supabase
+      .from("staff_profiles")
+      .insert({
+        id: newUserId,
+        email,
+        full_name: fullName || null,
+        role: "administrador",
+        clinic_id: clinicId,
+        is_platform_admin: true,
+        platform_role: platformRole,
+      })
+      .select("*, clinic:clinics(name)")
+      .single();
+    if (profileError) throw profileError;
+
+    return response.json({ member: shapePlatformTeamRow(profileRow) });
+  } catch (error) {
+    console.error("Error al invitar al equipo Imagenda:", error);
+    return response.status(500).json({
+      error: "No fue posible invitar a esta persona.",
+      detalle: typeof error?.message === "string" ? error.message : "Error desconocido.",
+    });
+  }
+});
+
+app.patch("/platform-team/:id", serializePlatformTeam(async (request, response) => {
+  try {
+    if (!ensurePlatformRoleAdmin(request, response, "cambiar el tipo de acceso")) return;
+
+    const targetId = request.params.id;
+    const platformRole = request.body?.platformRole;
+    if (!PLATFORM_ROLES.includes(platformRole)) {
+      return response.status(400).json({ error: "Tipo de acceso inválido." });
+    }
+    if (targetId === request.user?.id) {
+      return response.status(400).json({ error: "No puedes cambiar tu propio tipo de acceso." });
+    }
+
+    const targetRow = await loadPlatformTeamMember(targetId);
+    if (!targetRow) return response.status(404).json({ error: "Persona no encontrada en el equipo Imagenda." });
+    if (!isActivePlatformMember(targetRow)) {
+      return response
+        .status(400)
+        .json({ error: "Esta persona no tiene acceso activo. Usa \"Reactivar\" para devolvérselo." });
+    }
+
+    if (effectivePlatformRole(targetRow) === "admin" && platformRole !== "admin") {
+      if ((await countActivePlatformAdmins()) <= 1) {
+        return response.status(400).json({ error: LAST_PLATFORM_ADMIN_ERROR });
+      }
+    }
+
+    const { data: updatedRow, error } = await supabase
+      .from("staff_profiles")
+      .update({ platform_role: platformRole })
+      .eq("id", targetId)
+      .select("*, clinic:clinics(name)")
+      .single();
+    if (error) throw error;
+
+    return response.json({ member: shapePlatformTeamRow(updatedRow) });
+  } catch (error) {
+    console.error("Error al cambiar el tipo de acceso:", error);
+    return response.status(500).json({ error: "No fue posible cambiar el tipo de acceso." });
+  }
+}));
+
+app.post("/platform-team/:id/revoke", serializePlatformTeam(async (request, response) => {
+  try {
+    if (!ensurePlatformRoleAdmin(request, response, "quitar el acceso al equipo Imagenda")) return;
+
+    const targetId = request.params.id;
+    if (targetId === request.user?.id) {
+      return response.status(400).json({ error: "No puedes quitarte el acceso a ti mismo." });
+    }
+
+    const targetRow = await loadPlatformTeamMember(targetId);
+    if (!targetRow) return response.status(404).json({ error: "Persona no encontrada en el equipo Imagenda." });
+    if (!isActivePlatformMember(targetRow)) {
+      return response.status(400).json({ error: "Esta persona ya no tiene acceso." });
+    }
+
+    if (effectivePlatformRole(targetRow) === "admin") {
+      if ((await countActivePlatformAdmins()) <= 1) {
+        return response.status(400).json({ error: LAST_PLATFORM_ADMIN_ERROR });
+      }
+    }
+
+    // Primero se bloquea el login en Auth: si esto falla, el perfil queda
+    // intacto y no hay estados a medias.
+    const { error: banError } = await supabase.auth.admin.updateUserById(targetId, {
+      ban_duration: PLATFORM_REVOKE_BAN,
+    });
+    if (banError) throw banError;
+
+    // platform_role se conserva para saber que fue del equipo (y reactivarlo).
+    const { data: updatedRow, error } = await supabase
+      .from("staff_profiles")
+      .update({
+        is_platform_admin: false,
+        disabled_at: new Date().toISOString(),
+        platform_role: effectivePlatformRole(targetRow),
+      })
+      .eq("id", targetId)
+      .select("*, clinic:clinics(name)")
+      .single();
+    if (error) throw error;
+
+    return response.json({ member: shapePlatformTeamRow(updatedRow) });
+  } catch (error) {
+    console.error("Error al quitar el acceso al equipo Imagenda:", error);
+    return response.status(500).json({ error: "No fue posible quitar el acceso a esta persona." });
+  }
+}));
+
+app.post("/platform-team/:id/restore", serializePlatformTeam(async (request, response) => {
+  try {
+    if (!ensurePlatformRoleAdmin(request, response, "reactivar el acceso al equipo Imagenda")) return;
+
+    const targetId = request.params.id;
+    const platformRole = request.body?.platformRole;
+    if (!PLATFORM_ROLES.includes(platformRole)) {
+      return response.status(400).json({ error: "Debes elegir el tipo de acceso." });
+    }
+
+    const targetRow = await loadPlatformTeamMember(targetId);
+    if (!targetRow) return response.status(404).json({ error: "Persona no encontrada en el equipo Imagenda." });
+    if (isActivePlatformMember(targetRow)) {
+      return response.status(400).json({ error: "Esta persona ya tiene acceso activo." });
+    }
+
+    const { error: unbanError } = await supabase.auth.admin.updateUserById(targetId, { ban_duration: "none" });
+    if (unbanError) throw unbanError;
+
+    const { data: updatedRow, error } = await supabase
+      .from("staff_profiles")
+      .update({ is_platform_admin: true, disabled_at: null, platform_role: platformRole })
+      .eq("id", targetId)
+      .select("*, clinic:clinics(name)")
+      .single();
+    if (error) throw error;
+
+    return response.json({ member: shapePlatformTeamRow(updatedRow) });
+  } catch (error) {
+    console.error("Error al reactivar el acceso al equipo Imagenda:", error);
+    return response.status(500).json({ error: "No fue posible reactivar el acceso a esta persona." });
+  }
+}));
+
+// ============================================
 // GESTIÓN DE CLÍNICAS (solo Administrador)
 // ============================================
 // Alta de clínicas nuevas, con asignación automática del AE Title y puerto
@@ -6408,6 +6726,7 @@ app.post("/clinics", async (request, response) => {
     if (!request.isPlatformAdmin) {
       return response.status(403).json({ error: "Solo un administrador de plataforma puede crear clínicas." });
     }
+    if (!ensurePlatformRoleAdmin(request, response, "crear clínicas")) return;
     const name = typeof request.body?.name === "string" ? request.body.name.trim() : "";
     const address =
       typeof request.body?.address === "string" && request.body.address.trim().length > 0
@@ -6558,6 +6877,7 @@ async function sendClinicLogo(response, logoPath) {
 
 app.put("/clinics/:id/logo", async (request, response) => {
   try {
+    if (request.isPlatformAdmin && !ensurePlatformRoleAdmin(request, response, "editar clínicas")) return;
     const clinicRow = await loadManageableClinic(request, request.params.id);
     if (!clinicRow) return response.status(404).json({ error: "Clínica no encontrada." });
 
@@ -6614,6 +6934,7 @@ app.put("/clinics/:id/logo", async (request, response) => {
 
 app.delete("/clinics/:id/logo", async (request, response) => {
   try {
+    if (request.isPlatformAdmin && !ensurePlatformRoleAdmin(request, response, "editar clínicas")) return;
     const clinicRow = await loadManageableClinic(request, request.params.id);
     if (!clinicRow) return response.status(404).json({ error: "Clínica no encontrada." });
 

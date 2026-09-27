@@ -11,6 +11,9 @@ import { randomUUID } from "node:crypto";
 export const db = {};
 /** Tokens de sesión simulados: { token: { id, email } }. */
 export const users = {};
+/** Contraseñas para signInWithPassword: { email: password }. El login
+ * devuelve como access_token el token de `users` con ese email. */
+export const passwords = {};
 /** Storage simulado: { "bucket/ruta": Buffer }. Vacío = sin archivos. */
 export const storageFiles = {};
 /** Llamadas a auth.admin registradas: [{ method, args }]. */
@@ -24,6 +27,7 @@ export const authUsers = {};
 export function resetDb(seed = {}) {
   for (const key of Object.keys(db)) delete db[key];
   for (const key of Object.keys(users)) delete users[key];
+  for (const key of Object.keys(passwords)) delete passwords[key];
   for (const key of Object.keys(storageFiles)) delete storageFiles[key];
   authAdminCalls.length = 0;
   for (const key of Object.keys(authUsers)) delete authUsers[key];
@@ -333,6 +337,14 @@ export function createClient() {
     from: (tableName) => new QueryBuilder(tableName),
     rpc: async (name) => ({ data: null, error: { message: `supabase-mock: rpc ${name} no disponible` } }),
     auth: {
+      signInWithPassword: async ({ email, password }) => {
+        const entry = Object.entries(users).find(([, user]) => user.email === email);
+        if (!entry || passwords[email] !== password) {
+          return { data: { session: null, user: null }, error: { message: "Invalid login credentials" } };
+        }
+        const [token, user] = entry;
+        return { data: { session: { access_token: token }, user }, error: null };
+      },
       getUser: async (token) =>
         users[token]
           ? { data: { user: users[token] }, error: null }

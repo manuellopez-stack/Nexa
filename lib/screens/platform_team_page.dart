@@ -18,12 +18,19 @@ String _platformRoleLabel(String? role) {
   }
 }
 
-/// Valor del selector "Acceso a pacientes" para "Solo Imagenda" (sin clínica
-/// base). DropdownButton no distingue bien un valor null elegido de "sin
-/// elegir", así que se usa '' y se traduce a null al llamar al backend.
-const String _kImagendaOnly = '';
+/// Valores del selector "Acceso a pacientes", los mismos que acepta el
+/// backend en patientAccess: 'todas', 'ninguna' o el id de una clínica.
+const String _kAllClinics = 'todas';
+const String _kImagendaOnly = 'ninguna';
+
+/// Acceso a pacientes actual de un miembro, en los valores del selector.
+String _patientAccessOf(Map<String, dynamic> member) {
+  if (member['allClinics'] == true) return _kAllClinics;
+  return member['clinicId']?.toString() ?? _kImagendaOnly;
+}
 
 String _clinicLabel(Map<String, dynamic> member) {
+  if (member['allClinics'] == true) return 'Todas las clínicas';
   if (member['clinicId'] == null) return 'Solo Imagenda';
   return member['clinicName']?.toString() ?? 'Clínica desconocida';
 }
@@ -142,13 +149,12 @@ class _PlatformTeamPageState extends State<PlatformTeamPage> {
       context: context,
       builder: (_) => _PatientAccessDialog(member: member, clinics: clinics),
     );
-    if (choice == null) return;
-    final clinicId = choice == _kImagendaOnly ? null : choice;
-    if (clinicId == member['clinicId']) return;
+    if (choice == null || choice == _patientAccessOf(member)) return;
 
     await _runAction(
       member,
-      (id) => ApiService.updatePlatformClinic(memberId: id, clinicId: clinicId),
+      (id) =>
+          ApiService.updatePlatformClinic(memberId: id, patientAccess: choice),
       'No fue posible cambiar el acceso a pacientes.',
     );
   }
@@ -771,7 +777,7 @@ class _InviteMemberDialogState extends State<_InviteMemberDialog> {
         email: _emailController.text.trim(),
         fullName: _fullNameController.text.trim(),
         platformRole: _platformRole!,
-        clinicId: _clinicChoice == _kImagendaOnly ? null : _clinicChoice,
+        patientAccess: _clinicChoice,
       );
       if (mounted) Navigator.pop(context, true);
     } on ApiException catch (error) {
@@ -907,8 +913,9 @@ class _ErrorMessage extends StatelessWidget {
   }
 }
 
-/// Selector "Acceso a pacientes": "Solo Imagenda" ([_kImagendaOnly]) o una
-/// clínica, con la explicación debajo.
+/// Selector "Acceso a pacientes": "Todas las clínicas" ([_kAllClinics]),
+/// "Solo Imagenda" ([_kImagendaOnly]) o una clínica, con la explicación
+/// debajo.
 class _PatientAccessField extends StatelessWidget {
   const _PatientAccessField({
     required this.clinics,
@@ -922,7 +929,11 @@ class _PatientAccessField extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final clinicIds = clinics.map((clinic) => clinic['id']?.toString());
+    final validValues = {
+      _kAllClinics,
+      _kImagendaOnly,
+      for (final clinic in clinics) clinic['id']?.toString(),
+    };
     return Column(
       mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -930,13 +941,17 @@ class _PatientAccessField extends StatelessWidget {
         DropdownButtonFormField<String>(
           // Si la clínica actual ya no está en la lista, cae a Solo Imagenda
           // en vez de romper el Dropdown.
-          initialValue: clinicIds.contains(value) ? value : _kImagendaOnly,
+          initialValue: validValues.contains(value) ? value : _kImagendaOnly,
           isExpanded: true,
           decoration: const InputDecoration(
             labelText: 'Acceso a pacientes',
             border: OutlineInputBorder(),
           ),
           items: [
+            const DropdownMenuItem(
+              value: _kAllClinics,
+              child: Text('Todas las clínicas (selector de clínica)'),
+            ),
             const DropdownMenuItem(
               value: _kImagendaOnly,
               child: Text('Solo Imagenda (sin acceso a pacientes)'),
@@ -957,7 +972,8 @@ class _PatientAccessField extends StatelessWidget {
         ),
         const SizedBox(height: 6),
         const Text(
-          'Si eliges una clínica, esta persona también verá los pacientes de esa clínica.',
+          'Si eliges una clínica, esta persona también verá los pacientes de esa clínica. '
+          'Con "Todas las clínicas" elige con cuál trabajar desde el menú lateral.',
           style: TextStyle(fontSize: 12, color: NexaColors.textSecondary),
         ),
       ],
@@ -966,7 +982,8 @@ class _PatientAccessField extends StatelessWidget {
 }
 
 /// "Cambiar acceso a pacientes" de una fila. Devuelve la opción elegida
-/// ([_kImagendaOnly] o el id de la clínica), o null si se cancela.
+/// ([_kAllClinics], [_kImagendaOnly] o el id de la clínica), o null si se
+/// cancela.
 class _PatientAccessDialog extends StatefulWidget {
   const _PatientAccessDialog({required this.member, required this.clinics});
 
@@ -978,7 +995,7 @@ class _PatientAccessDialog extends StatefulWidget {
 }
 
 class _PatientAccessDialogState extends State<_PatientAccessDialog> {
-  late String _choice = widget.member['clinicId']?.toString() ?? _kImagendaOnly;
+  late String _choice = _patientAccessOf(widget.member);
 
   @override
   Widget build(BuildContext context) {

@@ -82,6 +82,10 @@ class ApiService {
   static String? get platformRole =>
       isPlatformAdmin ? (_currentUser?['platformRole'] as String? ?? 'admin') : null;
   static bool get isPlatformSupport => platformRole == 'soporte';
+  //   - isImagendaOnly -> equipo Imagenda sin clínica base ("Solo Imagenda"):
+  //     no ve datos de pacientes (el backend responde 403 por requireClinic),
+  //     así que el menú oculta las secciones clínicas.
+  static bool get isImagendaOnly => isPlatformAdmin && clinicId == null;
   static String? get clinicId => _currentUser?['clinicId'] as String?;
   //   - ohifViewerEnabled -> OHIF_VIEWER_ENABLED del backend (Fase 3,
   //     apagado por defecto): muestra "Ver en OHIF". Mismos roles que ver
@@ -1674,11 +1678,12 @@ class ApiService {
     return Map<String, dynamic>.from(member);
   }
 
+  /// [clinicId] null = "Solo Imagenda" (sin acceso a pacientes).
   static Future<Map<String, dynamic>> invitePlatformMember({
     required String email,
     required String fullName,
     required String platformRole,
-    required String clinicId,
+    required String? clinicId,
   }) {
     return _platformTeamWrite(
       'POST',
@@ -1702,6 +1707,19 @@ class ApiService {
       '/$memberId',
       {'platformRole': platformRole},
       'No fue posible cambiar el tipo de acceso.',
+    );
+  }
+
+  /// Cambia la clínica base; [clinicId] null = "Solo Imagenda".
+  static Future<Map<String, dynamic>> updatePlatformClinic({
+    required String memberId,
+    required String? clinicId,
+  }) {
+    return _platformTeamWrite(
+      'PATCH',
+      '/$memberId/clinic',
+      {'clinicId': clinicId},
+      'No fue posible cambiar el acceso a pacientes.',
     );
   }
 

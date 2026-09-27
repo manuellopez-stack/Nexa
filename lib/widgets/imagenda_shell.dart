@@ -44,7 +44,7 @@ class ImagendaShell extends StatefulWidget {
 
   /// Vuelve a consultar los estudios sin vincular. Nunca lanza.
   static Future<void> refreshUnlinkedStudiesCount() async {
-    if (!ApiService.canAccessClinical) {
+    if (!ApiService.canAccessClinical || ApiService.isImagendaOnly) {
       unlinkedStudiesCount.value = null;
       return;
     }
@@ -62,7 +62,7 @@ class ImagendaShell extends StatefulWidget {
 
   /// Vuelve a consultar los informes por validar. Nunca lanza.
   static Future<void> refreshPendingValidationCount() async {
-    if (!ApiService.canValidate) {
+    if (!ApiService.canValidate || ApiService.isImagendaOnly) {
       pendingValidationCount.value = null;
       return;
     }
@@ -76,13 +76,35 @@ class ImagendaShell extends StatefulWidget {
     }
   }
 
-  /// Reemplaza la pantalla actual por la de [section] (sin apilar).
-  static void navigate(
-    BuildContext context,
+  /// Secciones que leen datos de pacientes. Una cuenta "Solo Imagenda"
+  /// (equipo Imagenda sin clínica) no las ve: el backend le responde 403.
+  static const Set<ShellSection> clinicalSections = {
+    ShellSection.dashboard,
+    ShellSection.agenda,
+    ShellSection.unlinkedStudies,
+    ShellSection.validation,
+  };
+
+  /// Pantalla al entrar: el Centro de Control, salvo para "Solo Imagenda",
+  /// que parte en Clínicas (o en Equipo Imagenda si su rol no es
+  /// administrador, porque /clinics lo exige).
+  static ShellSection get homeSection {
+    if (!ApiService.isImagendaOnly) return ShellSection.dashboard;
+    return ApiService.role == 'administrador'
+        ? ShellSection.clinics
+        : ShellSection.platformTeam;
+  }
+
+  static Widget homePage() => _pageFor(homeSection);
+
+  static Widget _pageFor(
     ShellSection section, {
     bool openNewAppointment = false,
   }) {
-    final Widget page = switch (section) {
+    if (ApiService.isImagendaOnly && clinicalSections.contains(section)) {
+      section = homeSection;
+    }
+    return switch (section) {
       ShellSection.dashboard => const DashboardPage(),
       ShellSection.agenda => AppointmentsPage(
         openNewAppointment: openNewAppointment,
@@ -93,6 +115,17 @@ class ImagendaShell extends StatefulWidget {
       ShellSection.clinics => const ClinicsPage(),
       ShellSection.platformTeam => const PlatformTeamPage(),
     };
+  }
+
+  /// Reemplaza la pantalla actual por la de [section] (sin apilar). Una
+  /// sección clínica pedida por una cuenta "Solo Imagenda" lleva a
+  /// [homeSection].
+  static void navigate(
+    BuildContext context,
+    ShellSection section, {
+    bool openNewAppointment = false,
+  }) {
+    final page = _pageFor(section, openNewAppointment: openNewAppointment);
     Navigator.pushReplacement(
       context,
       PageRouteBuilder(
@@ -256,6 +289,8 @@ class _Sidebar extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final isAdmin = ApiService.role == 'administrador';
+    // "Solo Imagenda": sin secciones clínicas (ver clinicalSections).
+    final showClinical = !ApiService.isImagendaOnly;
 
     Widget item(
       ShellSection section,
@@ -291,18 +326,19 @@ class _Sidebar extends StatelessWidget {
               child: ListView(
                 padding: EdgeInsets.zero,
                 children: [
-                  item(
-                    ShellSection.dashboard,
-                    Icons.space_dashboard_outlined,
-                    'Centro de Control',
-                  ),
-                  if (ApiService.canAccessAgenda)
+                  if (showClinical)
+                    item(
+                      ShellSection.dashboard,
+                      Icons.space_dashboard_outlined,
+                      'Centro de Control',
+                    ),
+                  if (showClinical && ApiService.canAccessAgenda)
                     item(
                       ShellSection.agenda,
                       Icons.event_note_outlined,
                       'Agenda',
                     ),
-                  if (ApiService.canAccessClinical)
+                  if (showClinical && ApiService.canAccessClinical)
                     item(
                       ShellSection.unlinkedStudies,
                       Icons.link_off,
@@ -315,7 +351,7 @@ class _Sidebar extends StatelessWidget {
                             : const SizedBox.shrink(),
                       ),
                     ),
-                  if (ApiService.canValidate)
+                  if (showClinical && ApiService.canValidate)
                     item(
                       ShellSection.validation,
                       Icons.fact_check_outlined,
@@ -463,14 +499,18 @@ class _CountBubble extends StatelessWidget {
 
 /// Credencial de la clínica de quien está conectado: logo, nombre de la
 /// clínica y correo. Para la cuenta de administración de plataforma muestra
-/// el ícono de administración y 'Administración Imagenda'.
+/// el ícono de administración y 'Administración Imagenda' ('Imagenda' si no
+/// tiene clínica).
 class _ClinicBadge extends StatelessWidget {
   const _ClinicBadge();
 
   @override
   Widget build(BuildContext context) {
     final isPlatformAdmin = ApiService.isPlatformAdmin;
-    final clinicName = isPlatformAdmin
+    // "Solo Imagenda" (equipo sin clínica): simplemente "Imagenda".
+    final clinicName = ApiService.isImagendaOnly
+        ? 'Imagenda'
+        : isPlatformAdmin
         ? 'Administración Imagenda'
         : ApiService.clinicName ?? 'Sin clínica asignada';
     final email = ApiService.currentUser?['email']?.toString();

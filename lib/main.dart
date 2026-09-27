@@ -2,8 +2,8 @@ import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 
 import 'core/nexa_colors.dart';
-import 'screens/dashboard_page.dart';
 import 'services/api_service.dart';
+import 'widgets/imagenda_shell.dart';
 
 void main() {
   final inviteLink = _extractInviteAccessToken();
@@ -195,7 +195,8 @@ class _LoginPageState extends State<LoginPage> {
       if (!mounted) return;
       Navigator.pushReplacement(
         context,
-        MaterialPageRoute(builder: (_) => const DashboardPage()),
+        // Centro de Control, o Clínicas para el equipo "Solo Imagenda".
+        MaterialPageRoute(builder: (_) => ImagendaShell.homePage()),
       );
     } on ApiException catch (error) {
       if (mounted) setState(() => _error = error.message);

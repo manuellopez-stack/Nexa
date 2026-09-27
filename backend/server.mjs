@@ -64,6 +64,9 @@ app.use(
     origin(origin, callback) {
       callback(null, isOriginAllowed(origin));
     },
+    // X-Clinic-Id: clínica elegida en el selector del equipo Imagenda con
+    // acceso a todas las clínicas (ver requireAuth).
+    allowedHeaders: ["Authorization", "Content-Type", "Accept", "X-Clinic-Id"],
   }),
 );
 app.use(express.json({ limit: "50mb" }));
@@ -210,9 +213,36 @@ async function requireAuth(request, response, next) {
     return response.status(403).json({ error: "Tu acceso a Imagenda fue desactivado." });
   }
 
+  // Equipo Imagenda con acceso a todas las clínicas: el header X-Clinic-Id
+  // elige la clínica con la que trabaja en esta petición. Se aplica sobre una
+  // COPIA del perfil (la base no cambia), así todos los filtros por
+  // staffProfile.clinic_id quedan en esa clínica. Para cualquier otra cuenta
+  // el header se ignora por completo.
+  let staffProfile = profileRow;
+  let clinicOverride = false;
+  const headerClinicId = (request.get("x-clinic-id") ?? "").trim();
+  if (profileRow.is_platform_admin === true && profileRow.all_clinics === true && headerClinicId) {
+    const { data: clinicRow, error: clinicError } = await supabase
+      .from("clinics")
+      .select("id")
+      .eq("id", headerClinicId)
+      .maybeSingle();
+    // 22P02: no es un uuid válido -> igual que una clínica inexistente.
+    if (clinicError && clinicError.code !== "22P02") {
+      console.error("Error al verificar la clínica elegida:", clinicError);
+      return response.status(500).json({ error: "No fue posible verificar la clínica elegida." });
+    }
+    if (!clinicRow) {
+      return response.status(400).json({ error: "La clínica elegida no existe." });
+    }
+    staffProfile = { ...profileRow, clinic_id: clinicRow.id };
+    clinicOverride = true;
+  }
+
   request.user = data.user;
   request.staffRole = profileRow.role;
-  request.staffProfile = profileRow;
+  request.staffProfile = staffProfile;
+  request.clinicOverride = clinicOverride;
   request.isPlatformAdmin = profileRow.is_platform_admin === true;
   // Tipo de acceso dentro del equipo Imagenda: "admin" (Administrador total)
   // o "soporte". Ambos tienen is_platform_admin = true; un admin de plataforma
@@ -751,6 +781,7 @@ function shapePlatformTeamRow(row) {
     platformRole: effectivePlatformRole(row),
     clinicId: row.clinic_id ?? null,
     clinicName: row.clinic?.name ?? null,
+    allClinics: row.all_clinics === true,
     active: isActivePlatformMember(row),
     disabledAt: row.disabled_at ?? null,
     createdAt: row.created_at,
@@ -1275,6 +1306,8 @@ app.post("/auth/login", async (request, response) => {
         isPlatformAdmin: profileRow?.is_platform_admin === true,
         platformRole:
           profileRow?.is_platform_admin === true ? (profileRow.platform_role ?? "admin") : null,
+        // Selector de clínica: solo el equipo Imagenda activo con all_clinics.
+        allClinics: profileRow?.is_platform_admin === true && profileRow.all_clinics === true,
         // Fase 3: botón "Ver en OHIF" (OHIF_VIEWER_ENABLED, apagado por defecto).
         ohifViewerEnabled: isOhifViewerEnabled(),
       },
@@ -1701,7 +1734,10 @@ app.get("/dashboard/summary", requireRole([...CLINICAL_STAFF, "recepcion"]), asy
   try {
     // Alcance del resumen: la clínica de quien pregunta. Solo un admin de
     // plataforma ve la suma de todas las clínicas (scopeClinicId = null).
-    const scopeClinicId = request.isPlatformAdmin ? null : request.staffProfile?.clinic_id ?? null;
+    // Con el selector de clínica (X-Clinic-Id, ver requireAuth) se ve solo la
+    // clínica elegida, no la suma.
+    const scopeClinicId =
+      request.isPlatformAdmin && !request.clinicOverride ? null : request.staffProfile?.clinic_id ?? null;
     if (!request.isPlatformAdmin && !scopeClinicId) {
       return response.status(403).json({ error: "Tu cuenta no tiene una clínica asignada." });
     }
@@ -1924,7 +1960,10 @@ app.get("/dashboard/summary", requireRole([...CLINICAL_STAFF, "recepcion"]), asy
 // informe (PATCH /patients/:id/documents/:filename/validate).
 app.get("/validation-queue", requireRole(VALIDATORS), async (request, response) => {
   try {
-    const scopeClinicId = request.isPlatformAdmin ? null : request.staffProfile?.clinic_id ?? null;
+    // Con el selector de clínica (X-Clinic-Id, ver requireAuth) se ve solo la
+    // clínica elegida, no la suma.
+    const scopeClinicId =
+      request.isPlatformAdmin && !request.clinicOverride ? null : request.staffProfile?.clinic_id ?? null;
     if (!request.isPlatformAdmin && !scopeClinicId) {
       return response.status(403).json({ error: "Tu cuenta no tiene una clínica asignada." });
     }
@@ -6473,20 +6512,27 @@ function serializePlatformTeam(handler) {
   };
 }
 
-// Clínica base de un miembro del equipo: vacío o null = "Solo Imagenda"
-// (clinic_id null, sin acceso a datos de pacientes por requireClinic). Si
-// viene, tiene que existir. Devuelve { clinicId } o { error }.
-async function parseOptionalClinicId(value) {
-  if (value == null || (typeof value === "string" && value.trim() === "")) return { clinicId: null };
-  if (typeof value !== "string") return { error: "La clínica elegida no es válida." };
+// Acceso a pacientes de un miembro del equipo (campo patientAccess):
+//   "todas"   -> all_clinics = true,  clinic_id null (selector de clínica)
+//   "ninguna" -> all_clinics = false, clinic_id null ("Solo Imagenda")
+//   <id>      -> all_clinics = false, clinic_id = esa clínica (debe existir)
+// Sin patientAccess se acepta el campo anterior clinicId (vacío/null =
+// "ninguna"). Devuelve { fields: { clinic_id, all_clinics } } o { error }.
+async function parsePatientAccess(body) {
+  const value = body?.patientAccess !== undefined ? body.patientAccess : body?.clinicId;
+  if (value === "todas") return { fields: { clinic_id: null, all_clinics: true } };
+  if (value == null || value === "ninguna" || (typeof value === "string" && value.trim() === "")) {
+    return { fields: { clinic_id: null, all_clinics: false } };
+  }
+  if (typeof value !== "string") return { error: "El acceso a pacientes elegido no es válido." };
   const { data: clinicRow, error } = await supabase
     .from("clinics")
     .select("id")
     .eq("id", value.trim())
     .maybeSingle();
-  if (error) throw error;
+  if (error && error.code !== "22P02") throw error;
   if (!clinicRow) return { error: "La clínica elegida no existe." };
-  return { clinicId: clinicRow.id };
+  return { fields: { clinic_id: clinicRow.id, all_clinics: false } };
 }
 
 // Estado de inicio de sesión de una cuenta en Supabase Auth:
@@ -6543,12 +6589,11 @@ app.post("/platform-team/invite", async (request, response) => {
       return response.status(400).json({ error: "Debes indicar un email válido y el tipo de acceso." });
     }
 
-    // Clínica base opcional: sin clínica = "Solo Imagenda" (no ve pacientes).
-    // Igual que /staff/invite, se valida antes de mandar el correo, para no
-    // dejar una cuenta de Auth creada sin perfil.
-    const clinic = await parseOptionalClinicId(request.body?.clinicId);
-    if (clinic.error) return response.status(400).json({ error: clinic.error });
-    const clinicId = clinic.clinicId;
+    // Acceso a pacientes (ver parsePatientAccess): todas, ninguna ("Solo
+    // Imagenda") o una clínica. Igual que /staff/invite, se valida antes de
+    // mandar el correo, para no dejar una cuenta de Auth creada sin perfil.
+    const access = await parsePatientAccess(request.body);
+    if (access.error) return response.status(400).json({ error: access.error });
 
     const { data: inviteData, error: inviteError } = await supabase.auth.admin.inviteUserByEmail(email);
     if (inviteError) throw inviteError;
@@ -6565,7 +6610,7 @@ app.post("/platform-team/invite", async (request, response) => {
         email,
         full_name: fullName || null,
         role: "administrador",
-        clinic_id: clinicId,
+        ...access.fields,
         is_platform_admin: true,
         platform_role: platformRole,
       })
@@ -6625,7 +6670,7 @@ app.patch("/platform-team/:id", serializePlatformTeam(async (request, response) 
   }
 }));
 
-// Cambia la clínica base de un miembro activo (null = "Solo Imagenda").
+// Cambia el acceso a pacientes de un miembro activo (ver parsePatientAccess).
 app.patch("/platform-team/:id/clinic", serializePlatformTeam(async (request, response) => {
   try {
     if (!ensurePlatformRoleAdmin(request, response, "cambiar el acceso a pacientes")) return;
@@ -6638,12 +6683,12 @@ app.patch("/platform-team/:id/clinic", serializePlatformTeam(async (request, res
         .json({ error: "Esta persona no tiene acceso activo. Usa \"Reactivar\" para devolvérselo." });
     }
 
-    const clinic = await parseOptionalClinicId(request.body?.clinicId);
-    if (clinic.error) return response.status(400).json({ error: clinic.error });
+    const access = await parsePatientAccess(request.body);
+    if (access.error) return response.status(400).json({ error: access.error });
 
     const { data: updatedRow, error } = await supabase
       .from("staff_profiles")
-      .update({ clinic_id: clinic.clinicId })
+      .update(access.fields)
       .eq("id", targetRow.id)
       .select("*, clinic:clinics(name)")
       .single();

@@ -114,7 +114,10 @@ class _StaffManagementPageState extends State<StaffManagementPage> {
       builder: (dialogContext) => AlertDialog(
         title: const Text('Quitar del equipo'),
         content: Text(
-          '¿Quitar a "$label" del equipo? Esta acción no se puede deshacer.',
+          ApiService.isPlatformAdmin
+              ? '¿Quitar a "$label" del equipo? Esta acción no se puede deshacer.'
+              : '¿Quitar a "$label" de esta clínica? Si también trabaja en '
+                    'otras clínicas de Imagenda, conserva su acceso a esas.',
         ),
         actions: [
           TextButton(
@@ -474,13 +477,25 @@ class _InviteStaffDialogState extends State<_InviteStaffDialog> {
     });
 
     try {
-      await ApiService.inviteStaff(
+      final invited = await ApiService.inviteStaff(
         email: email,
         fullName: fullName,
         role: role,
         clinicId: clinicId,
       );
-      if (mounted) Navigator.pop(context, true);
+      if (!mounted) return;
+      // Si el correo ya tenía cuenta en Imagenda, el backend solo le da
+      // acceso a esta clínica y avisa con este mensaje.
+      final message = invited['message'];
+      if (message is String) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(message),
+            duration: const Duration(seconds: 6),
+          ),
+        );
+      }
+      Navigator.pop(context, true);
     } on ApiException catch (error) {
       if (mounted) setState(() => _error = error.message);
     } catch (_) {

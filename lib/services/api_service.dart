@@ -100,41 +100,72 @@ class ApiService {
   //     peticiones llevan X-Clinic-Id (el backend lo ignora para otras cuentas).
   static bool get allClinics =>
       isPlatformAdmin && _currentUser?['allClinics'] == true;
-  // Clínica con la que se trabaja: la activa del selector (allClinics) o la
-  // propia del perfil.
-  static String? get clinicId =>
-      allClinics ? _activeClinicId : _currentUser?['clinicId'] as String?;
+  //   - memberships -> clínicas de la cuenta con su rol en cada una
+  //     ([{clinicId, clinicName, role}], la principal primero).
+  static List<Map<String, dynamic>> get memberships {
+    final raw = _currentUser?['clinics'];
+    if (raw is! List) return const [];
+    return [
+      for (final item in raw)
+        if (item is Map && item['clinicId'] != null)
+          Map<String, dynamic>.from(item),
+    ];
+  }
+
+  //   - hasClinicSelector -> la barra muestra el selector de clínica: equipo
+  //     Imagenda con todas las clínicas o una cuenta con más de una clínica.
+  //     Las peticiones llevan X-Clinic-Id con la clínica activa.
+  static bool get hasClinicSelector => allClinics || memberships.length > 1;
+  // Clínica con la que se trabaja: la activa del selector o la propia del
+  // perfil.
+  static String? get clinicId => hasClinicSelector
+      ? _activeClinicId
+      : _currentUser?['clinicId'] as String?;
   //   - ohifViewerEnabled -> OHIF_VIEWER_ENABLED del backend (Fase 3,
   //     apagado por defecto): muestra "Ver en OHIF". Mismos roles que ver
   //     imágenes (CLINICAL_STAFF + recepcion).
   static bool get ohifViewerEnabled =>
       _currentUser?['ohifViewerEnabled'] == true;
-  static String? get clinicName => allClinics
+  static String? get clinicName => hasClinicSelector
       ? _activeClinicName
       : _currentUser?['clinicName'] as String?;
 
-  // Selector de clínica (allClinics). La elegida se recuerda entre sesiones.
+  // Selector de clínica. La elegida se recuerda entre sesiones.
   static const String _activeClinicPrefKey = 'imagenda.activeClinicId';
   static String? _activeClinicId;
   static String? _activeClinicName;
   static List<Map<String, dynamic>> _selectableClinics = const [];
 
-  /// Clínicas del selector (vacía si la cuenta no tiene allClinics).
+  /// Clínicas del selector ({id, name} y, para las membresías, role). Vacía
+  /// si la cuenta no tiene selector.
   static List<Map<String, dynamic>> get selectableClinics => _selectableClinics;
 
   /// Carga las clínicas del selector y fija la activa: la recordada si
-  /// sigue existiendo, si no la primera de la lista. Nunca lanza: si falla,
-  /// queda sin clínica activa (el menú pasa a modo "Solo Imagenda").
+  /// sigue siendo válida, si no la principal (o la primera de la lista).
+  /// Nunca lanza: si falla, queda sin clínica activa (el menú pasa a modo
+  /// "Solo Imagenda").
   static Future<void> _initActiveClinic() async {
     _activeClinicId = null;
     _activeClinicName = null;
     _selectableClinics = const [];
-    if (!allClinics) return;
+    if (!hasClinicSelector) return;
 
-    try {
-      _selectableClinics = await getClinics();
-    } catch (_) {
-      return;
+    if (allClinics) {
+      try {
+        _selectableClinics = await getClinics();
+      } catch (_) {
+        return;
+      }
+    } else {
+      // Solo las clínicas donde la persona tiene membresía, con su rol.
+      _selectableClinics = [
+        for (final membership in memberships)
+          {
+            'id': membership['clinicId'].toString(),
+            'name': membership['clinicName']?.toString() ?? 'Clínica',
+            'role': membership['role']?.toString(),
+          },
+      ];
     }
     if (_selectableClinics.isEmpty) return;
 
@@ -147,18 +178,37 @@ class ApiService {
       savedId = null;
     }
     final saved = _selectableClinics.where((clinic) => clinic['id'] == savedId);
-    final chosen = saved.isNotEmpty ? saved.first : _selectableClinics.first;
-    _activeClinicId = chosen['id']?.toString();
-    _activeClinicName = chosen['name']?.toString();
+    final principalId = _currentUser?['clinicId'];
+    final principal = _selectableClinics.where(
+      (clinic) => clinic['id'] == principalId,
+    );
+    final chosen = saved.isNotEmpty
+        ? saved.first
+        : principal.isNotEmpty
+        ? principal.first
+        : _selectableClinics.first;
+    _applyActiveClinic(chosen);
   }
 
-  /// Cambia la clínica activa (allClinics): la recuerda y recarga el logo.
-  /// Quien llama debe recargar la pantalla para ver los datos nuevos.
+  // Fija la clínica activa y, si es una membresía, el rol de ESA clínica
+  // (el menú cambia según el rol). Con allClinics el rol es siempre el del
+  // perfil.
+  static void _applyActiveClinic(Map<String, dynamic> clinic) {
+    _activeClinicId = clinic['id']?.toString();
+    _activeClinicName = clinic['name']?.toString();
+    final clinicRole = clinic['role'];
+    if (!allClinics && clinicRole is String && clinicRole.isNotEmpty) {
+      _role = clinicRole;
+    }
+  }
+
+  /// Cambia la clínica activa: la recuerda, toma el rol de esa clínica y
+  /// recarga el logo. Quien llama debe recargar la pantalla para ver los
+  /// datos nuevos.
   static Future<void> setActiveClinic(String clinicId) async {
     final matches = _selectableClinics.where((clinic) => clinic['id'] == clinicId);
-    if (!allClinics || matches.isEmpty) return;
-    _activeClinicId = clinicId;
-    _activeClinicName = matches.first['name']?.toString();
+    if (!hasClinicSelector || matches.isEmpty) return;
+    _applyActiveClinic(matches.first);
     try {
       await (await SharedPreferences.getInstance()).setString(
         _activeClinicPrefKey,
@@ -215,7 +265,8 @@ class ApiService {
   static Map<String, String> _headers({Map<String, String>? extra}) {
     return {
       if (_accessToken != null) 'Authorization': 'Bearer $_accessToken',
-      if (allClinics && _activeClinicId != null) 'X-Clinic-Id': _activeClinicId!,
+      if (hasClinicSelector && _activeClinicId != null)
+        'X-Clinic-Id': _activeClinicId!,
       ...?extra,
     };
   }
@@ -1828,7 +1879,14 @@ class ApiService {
       throw const ApiException('El backend no entregó a la persona invitada.');
     }
 
-    return Map<String, dynamic>.from(staff);
+    // `message`: aviso del backend cuando el correo ya tenía cuenta en
+    // Imagenda y solo se le dio acceso a la clínica (no se envía invitación).
+    final message = decodedBody['message'];
+    return {
+      ...Map<String, dynamic>.from(staff),
+      if (message is String && message.trim().isNotEmpty)
+        'message': message.trim(),
+    };
   }
 
   static Future<Map<String, dynamic>> updateStaffRole({
@@ -2099,12 +2157,12 @@ class ApiService {
 
   /// Carga el logo de la clínica de quien está conectado en [clinicLogo]
   /// (null si no tiene, si falla o si es la cuenta de administración de
-  /// plataforma, que no muestra logo de clínica). Con allClinics es el de la
-  /// clínica activa (X-Clinic-Id). Nunca lanza.
+  /// plataforma, que no muestra logo de clínica). Con selector de clínica es
+  /// el de la clínica activa (X-Clinic-Id). Nunca lanza.
   static Future<void> loadMyClinicLogo() async {
     final token = _accessToken;
     final clinicAtStart = _activeClinicId;
-    if (token == null || (isPlatformAdmin && !allClinics)) {
+    if (token == null || (isPlatformAdmin && !hasClinicSelector)) {
       clinicLogo.value = null;
       return;
     }

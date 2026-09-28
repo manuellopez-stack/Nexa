@@ -500,13 +500,14 @@ class _CountBubble extends StatelessWidget {
 /// Credencial de la clínica de quien está conectado: logo, nombre de la
 /// clínica y correo. Para la cuenta de administración de plataforma muestra
 /// el ícono de administración y 'Administración Imagenda' ('Imagenda' si no
-/// tiene clínica). Con acceso a todas las clínicas, el nombre es un selector
-/// de la clínica activa.
+/// tiene clínica). Con acceso a todas las clínicas o a más de una clínica, el
+/// nombre es un selector de la clínica activa (solo con sus clínicas).
 class _ClinicBadge extends StatelessWidget {
   const _ClinicBadge();
 
-  /// Cambia la clínica activa (allClinics) y vuelve al Centro de Control,
-  /// que se construye de nuevo con los datos de esa clínica.
+  /// Cambia la clínica activa (con el rol de esa clínica, así el menú cambia)
+  /// y vuelve al Centro de Control, que se construye de nuevo con los datos
+  /// de esa clínica.
   static Future<void> _switchClinic(BuildContext context, String id) async {
     if (id == ApiService.clinicId) return;
     await ApiService.setActiveClinic(id);
@@ -519,13 +520,14 @@ class _ClinicBadge extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // Con acceso a todas las clínicas se muestra el logo y el selector de la
-    // clínica activa, no la credencial de administración.
+    // Con selector de clínica (todas las clínicas o más de una membresía) se
+    // muestra el logo y el selector de la clínica activa, no la credencial
+    // de administración.
     final isPlatformAdmin =
-        ApiService.isPlatformAdmin && !ApiService.allClinics;
+        ApiService.isPlatformAdmin && !ApiService.hasClinicSelector;
     final clinics = ApiService.selectableClinics;
     final showSelector =
-        ApiService.allClinics &&
+        ApiService.hasClinicSelector &&
         clinics.isNotEmpty &&
         ApiService.clinicId != null;
     // "Solo Imagenda" (equipo sin clínica): simplemente "Imagenda".

@@ -14,6 +14,13 @@ class ApiException implements Exception {
   String toString() => message;
 }
 
+/// El médico no tiene completos sus datos de firma (nombre, RUT y
+/// especialidad): POST .../report/sign responde 400 con
+/// code "signature_incomplete".
+class SignatureIncompleteException extends ApiException {
+  const SignatureIncompleteException(super.message);
+}
+
 class ApiService {
   ApiService._();
 
@@ -1300,6 +1307,184 @@ class ApiService {
         .whereType<Map>()
         .map((order) => Map<String, dynamic>.from(order))
         .toList();
+  }
+
+  // ============================================
+  // INFORME RADIOLÓGICO (escrito y firmado en Imagenda)
+  // ============================================
+
+  static String _reportUrl(int patientId, String orderId, [String suffix = '']) =>
+      '$_baseUrl/patients/$patientId/imaging-orders/$orderId/report$suffix';
+
+  /// Informe vigente (borrador o firmado), versiones anteriores, plantilla si
+  /// no hay informe, permisos y los datos de firma de quien está conectado.
+  static Future<Map<String, dynamic>> getImagingReport({
+    required int patientId,
+    required String orderId,
+  }) async {
+    final http.Response response;
+    try {
+      response = await http
+          .get(Uri.parse(_reportUrl(patientId, orderId)), headers: _headers())
+          .timeout(const Duration(seconds: 30));
+    } catch (_) {
+      throw const ApiException('No fue posible cargar el informe.');
+    }
+    return _decodeMap(response);
+  }
+
+  /// Guarda el borrador ([fields]: clinicalHistory, technique, findings,
+  /// impression). Lo crea si no existe.
+  static Future<Map<String, dynamic>> saveImagingReportDraft({
+    required int patientId,
+    required String orderId,
+    required Map<String, String> fields,
+  }) async {
+    final http.Response response;
+    try {
+      response = await http
+          .put(
+            Uri.parse(_reportUrl(patientId, orderId)),
+            headers: _headers(extra: const {'Content-Type': 'application/json'}),
+            body: jsonEncode(fields),
+          )
+          .timeout(const Duration(seconds: 30));
+    } catch (_) {
+      throw const ApiException('No fue posible guardar el borrador.');
+    }
+    return _decodeMap(response);
+  }
+
+  /// Firma el informe (guarda antes [fields]). Lanza
+  /// [SignatureIncompleteException] si faltan los datos de firma.
+  static Future<Map<String, dynamic>> signImagingReport({
+    required int patientId,
+    required String orderId,
+    required Map<String, String> fields,
+  }) async {
+    final http.Response response;
+    try {
+      response = await http
+          .post(
+            Uri.parse(_reportUrl(patientId, orderId, '/sign')),
+            headers: _headers(extra: const {'Content-Type': 'application/json'}),
+            body: jsonEncode(fields),
+          )
+          .timeout(const Duration(seconds: 60));
+    } catch (_) {
+      throw const ApiException('No fue posible firmar el informe.');
+    }
+    if (response.statusCode == 400) {
+      try {
+        final body = jsonDecode(response.body);
+        if (body is Map && body['code'] == 'signature_incomplete') {
+          throw SignatureIncompleteException(
+            body['error']?.toString() ?? 'Completa tus datos de firma.',
+          );
+        }
+      } on FormatException {
+        // Sigue como un error normal.
+      }
+    }
+    return _decodeMap(response);
+  }
+
+  static Future<Map<String, dynamic>> createImagingReportVersion({
+    required int patientId,
+    required String orderId,
+  }) async {
+    final http.Response response;
+    try {
+      response = await http
+          .post(
+            Uri.parse(_reportUrl(patientId, orderId, '/new-version')),
+            headers: _headers(extra: const {'Accept': 'application/json'}),
+          )
+          .timeout(const Duration(seconds: 30));
+    } catch (_) {
+      throw const ApiException('No fue posible crear la nueva versión.');
+    }
+    return _decodeMap(response);
+  }
+
+  /// PDF de vista previa del borrador guardado (marca de agua "BORRADOR").
+  static Future<Uint8List> getImagingReportPreview({
+    required int patientId,
+    required String orderId,
+  }) async {
+    final http.Response response;
+    try {
+      response = await http
+          .get(
+            Uri.parse(_reportUrl(patientId, orderId, '/preview')),
+            headers: _headers(),
+          )
+          .timeout(const Duration(seconds: 60));
+    } catch (_) {
+      throw const ApiException('No fue posible generar la vista previa.');
+    }
+    if (response.statusCode == 200) return response.bodyBytes;
+    await _decodeMap(response);
+    throw const ApiException('No fue posible generar la vista previa.');
+  }
+
+  /// Datos de firma de quien está conectado (los tres obligatorios).
+  static Future<Map<String, dynamic>> updateMySignature({
+    required String fullName,
+    required String rut,
+    required String specialty,
+  }) async {
+    final http.Response response;
+    try {
+      response = await http
+          .patch(
+            Uri.parse('$_baseUrl/me/signature'),
+            headers: _headers(extra: const {'Content-Type': 'application/json'}),
+            body: jsonEncode({
+              'fullName': fullName,
+              'rut': rut,
+              'specialty': specialty,
+            }),
+          )
+          .timeout(const Duration(seconds: 30));
+    } catch (_) {
+      throw const ApiException('No fue posible guardar tus datos de firma.');
+    }
+    final body = await _decodeMap(response);
+    final signature = body['signature'];
+    if (signature is! Map) {
+      throw const ApiException('El backend no entregó tus datos de firma.');
+    }
+    // El nombre también es el de la credencial.
+    _fullName = signature['fullName']?.toString() ?? _fullName;
+    return Map<String, dynamic>.from(signature);
+  }
+
+  /// RUT y especialidad de una persona del equipo (gestión de personal).
+  /// "" deja el campo vacío.
+  static Future<Map<String, dynamic>> updateStaffSignature({
+    required String staffId,
+    required String rut,
+    required String specialty,
+  }) async {
+    final http.Response response;
+    try {
+      response = await http
+          .patch(
+            Uri.parse('$_baseUrl/staff/$staffId/signature'),
+            headers: _headers(extra: const {'Content-Type': 'application/json'}),
+            body: jsonEncode({'rut': rut, 'specialty': specialty}),
+          )
+          .timeout(const Duration(seconds: 30));
+    } catch (_) {
+      throw const ApiException('No fue posible guardar el RUT y la especialidad.');
+    }
+    final body = await _decodeMap(response);
+    final staff = body['staff'];
+    if (staff is! Map) {
+      throw const ApiException('El backend no entregó la persona actualizada.');
+    }
+    return Map<String, dynamic>.from(staff);
   }
 
   static Future<Map<String, dynamic>> getImagingOrderDetail({

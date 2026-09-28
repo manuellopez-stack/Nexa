@@ -9,6 +9,7 @@ import 'correction_widgets.dart';
 import 'dicom_viewer.dart';
 import 'document_pdf.dart';
 import 'dvd_download.dart';
+import 'imaging_report_actions.dart';
 import 'ohif_viewer_button.dart';
 
 class ImagingOrdersSection extends StatefulWidget {
@@ -900,6 +901,12 @@ class _ImagingOrderDetailDialogState extends State<_ImagingOrderDetailDialog> {
                       style: TextStyle(fontWeight: FontWeight.w800),
                     ),
                     const SizedBox(height: 8),
+                    // Informe escrito y firmado en Imagenda (médico).
+                    ImagingReportActions(
+                      patientId: widget.patientId,
+                      orderId: widget.orderId,
+                      onChanged: _reload,
+                    ),
                     if (documents.isEmpty)
                       const Text(
                         'Todavía no se ha subido un informe para esta orden.',

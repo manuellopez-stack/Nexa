@@ -176,6 +176,65 @@ const BILLING_STAFF = ["administrador", "recepcion"];
 // es quien agenda, recibe y reprograma pacientes en el mesón.
 const AGENDA_STAFF = ["administrador", "medico", "tecnico", "recepcion"];
 
+// ---- Membresías: una cuenta, varias clínicas (sql/multiples_clinicas.sql) --
+// Cada fila de staff_clinic_memberships da acceso a una clínica con un rol
+// propio. staff_profiles.clinic_id/role siguen siendo la clínica y el rol
+// PRINCIPAL: la principal cuenta siempre como membresía aunque su fila falte
+// (cuentas anteriores al backfill, o la tabla todavía no creada), así nadie
+// pierde el acceso que ya tenía.
+const MEMBERSHIPS_TABLE = "staff_clinic_memberships";
+
+// [{ clinicId, clinicName, role }] de la persona, la principal primero.
+async function loadStaffMemberships(profileRow) {
+  const { data, error } = await supabase
+    .from(MEMBERSHIPS_TABLE)
+    .select("clinic_id, role, created_at, clinic:clinics(name)")
+    .eq("staff_id", profileRow.id)
+    .order("created_at", { ascending: true });
+  if (error) {
+    // Sin la tabla (SQL todavía no aplicado) se sigue como antes: solo la
+    // clínica principal.
+    console.warn("No fue posible leer las membresías de clínica:", error.message);
+  }
+
+  const memberships = (error ? [] : data ?? []).map((row) => ({
+    clinicId: row.clinic_id,
+    clinicName: row.clinic?.name ?? null,
+    role: row.role,
+  }));
+
+  if (profileRow.clinic_id) {
+    const principalIndex = memberships.findIndex((m) => m.clinicId === profileRow.clinic_id);
+    let principal;
+    if (principalIndex >= 0) {
+      [principal] = memberships.splice(principalIndex, 1);
+    } else {
+      const { data: clinicRow } = await supabase
+        .from("clinics")
+        .select("name")
+        .eq("id", profileRow.clinic_id)
+        .maybeSingle();
+      principal = { clinicId: profileRow.clinic_id, clinicName: clinicRow?.name ?? null, role: profileRow.role };
+    }
+    memberships.unshift(principal);
+  }
+  return memberships;
+}
+
+// True si la persona pertenece a esa clínica (principal o membresía).
+async function isStaffMemberOfClinic(staffRow, clinicId) {
+  if (!clinicId) return false;
+  if (staffRow.clinic_id === clinicId) return true;
+  const { data, error } = await supabase
+    .from(MEMBERSHIPS_TABLE)
+    .select("id")
+    .eq("staff_id", staffRow.id)
+    .eq("clinic_id", clinicId)
+    .maybeSingle();
+  if (error) throw error;
+  return Boolean(data);
+}
+
 // V13: exige una sesión válida (token entregado por /auth/login).
 // Ahora además exige que la cuenta tenga un rol asignado en staff_profiles;
 // si no lo tiene, la cuenta no puede usar Imagenda (aunque el login sea válido).
@@ -216,14 +275,32 @@ async function requireAuth(request, response, next) {
     return response.status(403).json({ error: "Tu acceso a Imagenda fue desactivado." });
   }
 
-  // Equipo Imagenda con acceso a todas las clínicas: el header X-Clinic-Id
-  // elige la clínica con la que trabaja en esta petición. Se aplica sobre una
-  // COPIA del perfil (la base no cambia), así todos los filtros por
-  // staffProfile.clinic_id quedan en esa clínica. Para cualquier otra cuenta
-  // el header se ignora por completo.
-  let staffProfile = profileRow;
+  let memberships;
+  try {
+    memberships = await loadStaffMemberships(profileRow);
+  } catch (membershipError) {
+    console.error("Error al obtener las clínicas del usuario:", membershipError);
+    return response.status(500).json({ error: "No fue posible verificar tu perfil de usuario." });
+  }
+
+  // El header X-Clinic-Id elige la clínica con la que se trabaja en esta
+  // petición. Se aplica sobre una COPIA del perfil (la base no cambia), así
+  // todos los filtros por staffProfile.clinic_id quedan en esa clínica.
+  //   - Equipo Imagenda con acceso a todas las clínicas: cualquier clínica
+  //     existente, con su rol de siempre.
+  //   - Cualquier otra cuenta: solo una clínica donde tenga membresía, con el
+  //     rol de ESA membresía. Si no es miembro, el header se ignora y se usa
+  //     la clínica principal (nunca ve otra clínica).
+  const principalMembership = memberships.find((m) => m.clinicId === profileRow.clinic_id);
+  let staffProfile = principalMembership
+    ? { ...profileRow, role: principalMembership.role }
+    : profileRow;
+  let staffRole = staffProfile.role;
   let clinicOverride = false;
   const headerClinicId = (request.get("x-clinic-id") ?? "").trim();
+  const headerMembership = headerClinicId
+    ? memberships.find((m) => m.clinicId === headerClinicId)
+    : null;
   if (profileRow.is_platform_admin === true && profileRow.all_clinics === true && headerClinicId) {
     const { data: clinicRow, error: clinicError } = await supabase
       .from("clinics")
@@ -239,12 +316,18 @@ async function requireAuth(request, response, next) {
       return response.status(400).json({ error: "La clínica elegida no existe." });
     }
     staffProfile = { ...profileRow, clinic_id: clinicRow.id };
+    staffRole = profileRow.role;
+    clinicOverride = true;
+  } else if (headerMembership) {
+    staffProfile = { ...profileRow, clinic_id: headerMembership.clinicId, role: headerMembership.role };
+    staffRole = headerMembership.role;
     clinicOverride = true;
   }
 
   request.user = data.user;
-  request.staffRole = profileRow.role;
+  request.staffRole = staffRole;
   request.staffProfile = staffProfile;
+  request.staffMemberships = memberships;
   request.clinicOverride = clinicOverride;
   request.isPlatformAdmin = profileRow.is_platform_admin === true;
   // Tipo de acceso dentro del equipo Imagenda: "admin" (Administrador total)
@@ -1291,40 +1374,41 @@ app.post("/auth/login", async (request, response) => {
       return response.status(403).json({ error: "Tu acceso a Imagenda fue desactivado." });
     }
 
-    // Nombre de la clínica para la credencial de la barra superior.
-    let clinicName = null;
-    if (profileRow?.clinic_id) {
-      const { data: clinicRow } = await supabase
-        .from("clinics")
-        .select("name")
-        .eq("id", profileRow.clinic_id)
-        .maybeSingle();
-      clinicName = clinicRow?.name ?? null;
-    }
+    const memberships = profileRow ? await loadStaffMemberships(profileRow) : [];
 
     return response.json({
       accessToken: data.session.access_token,
-      user: {
-        id: data.user.id,
-        email: data.user.email,
-        role: profileRow?.role ?? null,
-        fullName: profileRow?.full_name ?? null,
-        clinicId: profileRow?.clinic_id ?? null,
-        clinicName,
-        isPlatformAdmin: profileRow?.is_platform_admin === true,
-        platformRole:
-          profileRow?.is_platform_admin === true ? (profileRow.platform_role ?? "admin") : null,
-        // Selector de clínica: solo el equipo Imagenda activo con all_clinics.
-        allClinics: profileRow?.is_platform_admin === true && profileRow.all_clinics === true,
-        // Fase 3: botón "Ver en OHIF" (OHIF_VIEWER_ENABLED, apagado por defecto).
-        ohifViewerEnabled: isOhifViewerEnabled(),
-      },
+      user: shapeSessionUser(data.user, profileRow, memberships),
     });
   } catch (error) {
     console.error("Error al iniciar sesión:", error);
     return response.status(500).json({ error: "No fue posible iniciar sesión. Intenta de nuevo." });
   }
 });
+
+// Datos de la sesión que usa la app (login y GET /me). role/clinicId/
+// clinicName son los de la clínica PRINCIPAL; `clinics` trae todas las
+// clínicas de la persona con el rol de cada una (selector de clínica).
+function shapeSessionUser(authUser, profileRow, memberships) {
+  const principal = memberships.find((m) => m.clinicId === profileRow?.clinic_id) ?? null;
+  return {
+    id: authUser.id,
+    email: authUser.email,
+    role: principal?.role ?? profileRow?.role ?? null,
+    fullName: profileRow?.full_name ?? null,
+    clinicId: profileRow?.clinic_id ?? null,
+    // Nombre de la clínica para la credencial de la barra superior.
+    clinicName: principal?.clinicName ?? null,
+    clinics: memberships.map(({ clinicId, clinicName, role }) => ({ clinicId, clinicName, role })),
+    isPlatformAdmin: profileRow?.is_platform_admin === true,
+    platformRole:
+      profileRow?.is_platform_admin === true ? (profileRow.platform_role ?? "admin") : null,
+    // Selector de todas las clínicas: solo el equipo Imagenda activo con all_clinics.
+    allClinics: profileRow?.is_platform_admin === true && profileRow.all_clinics === true,
+    // Fase 3: botón "Ver en OHIF" (OHIF_VIEWER_ENABLED, apagado por defecto).
+    ohifViewerEnabled: isOhifViewerEnabled(),
+  };
+}
 
 // Envía el correo de "recuperar contraseña". Pública (quien la usa no tiene
 // sesión). Sin redirectTo: Supabase usa el Site URL, igual que la invitación,
@@ -6854,37 +6938,93 @@ app.patch(
 // ============================================
 
 // Un admin de plataforma gestiona personal de cualquier clínica; un admin de
-// clínica, solo el de la suya, y nunca a un admin de plataforma (aunque
-// comparta clínica con él). A un miembro del equipo Imagenda solo lo gestiona
-// un Administrador total (no Soporte).
-function canManageStaffMember(request, targetRow) {
+// clínica, solo a quien tenga membresía en SU clínica (la de la petición, ver
+// requireAuth), y nunca a un admin de plataforma (aunque comparta clínica con
+// él). A un miembro del equipo Imagenda solo lo gestiona un Administrador
+// total (no Soporte).
+async function canManageStaffMember(request, targetRow) {
   if (targetRow.is_platform_admin === true) return request.platformRole === "admin";
   if (request.isPlatformAdmin) return true;
-  const requesterClinicId = request.staffProfile?.clinic_id ?? null;
-  if (!requesterClinicId) return false;
-  return targetRow.clinic_id === requesterClinicId && targetRow.is_platform_admin !== true;
+  return isStaffMemberOfClinic(targetRow, request.staffProfile?.clinic_id ?? null);
+}
+
+// Clínica sobre la que actúa una gestión de personal: la del administrador de
+// clínica; para el equipo Imagenda, la elegida en el selector si la persona
+// es miembro de ella, si no su clínica principal (comportamiento de siempre).
+async function staffScopeClinicId(request, targetRow) {
+  if (!request.isPlatformAdmin) return request.staffProfile?.clinic_id ?? null;
+  if (request.clinicOverride && (await isStaffMemberOfClinic(targetRow, request.staffProfile.clinic_id))) {
+    return request.staffProfile.clinic_id;
+  }
+  return targetRow.clinic_id ?? null;
+}
+
+// Rol de la persona en esa clínica (membresía o, si es su principal, el rol
+// del perfil). null si no pertenece.
+async function staffRoleInClinic(staffRow, clinicId) {
+  if (!clinicId) return null;
+  const { data, error } = await supabase
+    .from(MEMBERSHIPS_TABLE)
+    .select("role")
+    .eq("staff_id", staffRow.id)
+    .eq("clinic_id", clinicId)
+    .maybeSingle();
+  if (error) throw error;
+  if (data) return data.role;
+  return staffRow.clinic_id === clinicId ? staffRow.role : null;
+}
+
+// Fila de personal vista desde una clínica: clinic_id y role son los de ESA
+// clínica (no se expone la clínica principal si es otra).
+function staffRowInClinic(row, clinicId, role) {
+  return { ...row, clinic_id: clinicId, role };
 }
 
 app.get("/staff", async (request, response) => {
   try {
-    let query = supabase
-      .from("staff_profiles")
-      .select("*")
-      .order("created_at", { ascending: true });
-
     // Un admin de plataforma ve el personal de todas las clínicas (el
-    // frontend lo agrupa por clínica); un admin de clínica, solo el suyo.
-    if (!request.isPlatformAdmin) {
-      if (!request.staffProfile?.clinic_id) {
-        return response.status(403).json({ error: "Tu cuenta no tiene una clínica asignada." });
-      }
-      query = query.eq("clinic_id", request.staffProfile.clinic_id);
+    // frontend lo agrupa por clínica principal).
+    if (request.isPlatformAdmin) {
+      const { data, error } = await supabase
+        .from("staff_profiles")
+        .select("*")
+        .order("created_at", { ascending: true });
+      if (error) throw error;
+      return response.json({ staff: (data ?? []).map(shapeStaffRow) });
     }
 
-    const { data, error } = await query;
-    if (error) throw error;
+    // Un admin de clínica ve a todas las personas con membresía en su
+    // clínica (o que la tienen como principal), con el rol de ESTA clínica.
+    const clinicId = request.staffProfile?.clinic_id;
+    if (!clinicId) {
+      return response.status(403).json({ error: "Tu cuenta no tiene una clínica asignada." });
+    }
 
-    return response.json({ staff: (data ?? []).map(shapeStaffRow) });
+    const [principalResult, membershipsResult] = await Promise.all([
+      supabase.from("staff_profiles").select("*").eq("clinic_id", clinicId),
+      supabase.from(MEMBERSHIPS_TABLE).select("staff_id, role").eq("clinic_id", clinicId),
+    ]);
+    if (principalResult.error) throw principalResult.error;
+    if (membershipsResult.error) {
+      console.warn("No fue posible leer las membresías de la clínica:", membershipsResult.error.message);
+    }
+    const roleByStaff = new Map(
+      (membershipsResult.error ? [] : membershipsResult.data ?? []).map((row) => [row.staff_id, row.role]),
+    );
+
+    const rowsById = new Map((principalResult.data ?? []).map((row) => [row.id, row]));
+    const missingIds = [...roleByStaff.keys()].filter((id) => !rowsById.has(id));
+    if (missingIds.length > 0) {
+      const { data, error } = await supabase.from("staff_profiles").select("*").in("id", missingIds);
+      if (error) throw error;
+      for (const row of data ?? []) rowsById.set(row.id, row);
+    }
+
+    const staff = [...rowsById.values()]
+      .sort((a, b) => String(a.created_at ?? "").localeCompare(String(b.created_at ?? "")))
+      .map((row) => shapeStaffRow(staffRowInClinic(row, clinicId, roleByStaff.get(row.id) ?? row.role)));
+
+    return response.json({ staff });
   } catch (error) {
     console.error("Error al obtener el equipo:", error);
     return response.status(500).json({ error: "No fue posible obtener el equipo." });
@@ -6936,6 +7076,55 @@ app.post("/staff/invite", async (request, response) => {
       return response.status(400).json({ error: "La clínica elegida no existe." });
     }
 
+    // ¿El correo ya tiene cuenta en Imagenda? Entonces no se invita de nuevo
+    // en Auth: se le da acceso a esta clínica y entra con su misma contraseña.
+    const { data: existingRows, error: existingError } = await supabase
+      .from("staff_profiles")
+      .select("*")
+      .ilike("email", email.replace(/[\\%_]/g, (char) => `\\${char}`));
+    if (existingError) throw existingError;
+    const existingRow = (existingRows ?? []).find(
+      (row) => (row.email ?? "").toLowerCase() === email.toLowerCase(),
+    );
+    if (existingRow) {
+      if (await isStaffMemberOfClinic(existingRow, targetClinicId)) {
+        return response.status(400).json({ error: "Esta persona ya pertenece a esta clínica." });
+      }
+      if (existingRow.disabled_at) {
+        return response.status(400).json({ error: "El acceso a Imagenda de esta persona está desactivado." });
+      }
+      if (existingRow.is_platform_admin === true && request.platformRole !== "admin") {
+        return response
+          .status(403)
+          .json({ error: "Solo un Administrador total de Imagenda puede dar acceso a un miembro del equipo Imagenda." });
+      }
+
+      const { error: membershipError } = await supabase
+        .from(MEMBERSHIPS_TABLE)
+        .insert({ staff_id: existingRow.id, clinic_id: targetClinicId, role });
+      if (membershipError) throw membershipError;
+
+      // Sin clínica principal (caso raro): esta pasa a serlo.
+      let staffRow = existingRow;
+      if (!existingRow.clinic_id && existingRow.is_platform_admin !== true) {
+        const { data: updatedRow, error: updateError } = await supabase
+          .from("staff_profiles")
+          .update({ clinic_id: targetClinicId, role })
+          .eq("id", existingRow.id)
+          .select()
+          .single();
+        if (updateError) throw updateError;
+        staffRow = updatedRow;
+      }
+
+      return response.json({
+        staff: shapeStaffRow(staffRowInClinic(staffRow, targetClinicId, role)),
+        existingAccount: true,
+        message:
+          "Esta persona ya tenía cuenta en Imagenda: se le dio acceso a esta clínica. Entrará con su misma contraseña.",
+      });
+    }
+
     const { data: inviteData, error: inviteError } = await supabase.auth.admin.inviteUserByEmail(email);
     if (inviteError) throw inviteError;
 
@@ -6956,6 +7145,15 @@ app.post("/staff/invite", async (request, response) => {
       .select()
       .single();
     if (profileError) throw profileError;
+
+    // Membresía de su clínica principal. Si falla (p. ej. la tabla todavía no
+    // existe), la persona igual entra: la principal cuenta como membresía.
+    const { error: membershipError } = await supabase
+      .from(MEMBERSHIPS_TABLE)
+      .insert({ staff_id: newUserId, clinic_id: targetClinicId, role });
+    if (membershipError) {
+      console.warn("No fue posible registrar la membresía de la persona invitada:", membershipError.message);
+    }
 
     return response.json({ staff: shapeStaffRow(profileRow) });
   } catch (error) {
@@ -6980,7 +7178,7 @@ app.patch("/staff/:id/role", async (request, response) => {
     // aplicar el cambio, mismo criterio que el resto de rutas.
     const { data: targetRow, error: targetError } = await supabase
       .from("staff_profiles")
-      .select("id, clinic_id, is_platform_admin")
+      .select("*")
       .eq("id", staffId)
       .maybeSingle();
     if (targetError) throw targetError;
@@ -6990,20 +7188,50 @@ app.patch("/staff/:id/role", async (request, response) => {
         .status(403)
         .json({ error: "No puedes cambiar tu propio rol ni eliminar tu propia cuenta." });
     }
-    if (!canManageStaffMember(request, targetRow)) {
+    if (!(await canManageStaffMember(request, targetRow))) {
       return response.status(404).json({ error: "Persona no encontrada." });
     }
 
-    const { data: updatedRow, error } = await supabase
-      .from("staff_profiles")
-      .update({ role })
-      .eq("id", staffId)
-      .select()
-      .maybeSingle();
-    if (error) throw error;
-    if (!updatedRow) return response.status(404).json({ error: "Persona no encontrada." });
+    // El rol cambia en la membresía de la clínica del administrador; el rol
+    // principal (staff_profiles.role) solo si esa es su clínica principal.
+    const clinicId = await staffScopeClinicId(request, targetRow);
+    const isPrincipal = Boolean(clinicId) && clinicId === targetRow.clinic_id;
 
-    return response.json({ staff: shapeStaffRow(updatedRow) });
+    if (clinicId) {
+      const { data: updatedMemberships, error: membershipError } = await supabase
+        .from(MEMBERSHIPS_TABLE)
+        .update({ role })
+        .eq("staff_id", staffId)
+        .eq("clinic_id", clinicId)
+        .select("id");
+      if (membershipError && !isPrincipal) throw membershipError;
+      if (membershipError) {
+        console.warn("No fue posible actualizar la membresía:", membershipError.message);
+      } else if ((updatedMemberships ?? []).length === 0 && isPrincipal) {
+        // Principal sin fila de membresía (anterior al backfill): se crea.
+        const { error: insertError } = await supabase
+          .from(MEMBERSHIPS_TABLE)
+          .insert({ staff_id: staffId, clinic_id: clinicId, role });
+        if (insertError) console.warn("No fue posible registrar la membresía:", insertError.message);
+      }
+    }
+
+    let updatedRow = targetRow;
+    if (isPrincipal || !clinicId) {
+      const { data, error } = await supabase
+        .from("staff_profiles")
+        .update({ role })
+        .eq("id", staffId)
+        .select()
+        .maybeSingle();
+      if (error) throw error;
+      if (!data) return response.status(404).json({ error: "Persona no encontrada." });
+      updatedRow = data;
+    }
+
+    return response.json({
+      staff: shapeStaffRow(clinicId ? staffRowInClinic(updatedRow, clinicId, role) : updatedRow),
+    });
   } catch (error) {
     console.error("Error al actualizar rol:", error);
     return response.status(500).json({ error: "No fue posible actualizar el rol." });
@@ -7023,7 +7251,7 @@ app.delete("/staff/:id", async (request, response) => {
     // el staff objetivo y se compara su clínica antes de borrar nada.
     const { data: targetRow, error: targetError } = await supabase
       .from("staff_profiles")
-      .select("id, clinic_id, is_platform_admin")
+      .select("*")
       .eq("id", staffId)
       .maybeSingle();
     if (targetError) throw targetError;
@@ -7033,8 +7261,35 @@ app.delete("/staff/:id", async (request, response) => {
         .status(403)
         .json({ error: "No puedes cambiar tu propio rol ni eliminar tu propia cuenta." });
     }
-    if (!canManageStaffMember(request, targetRow)) {
+    if (!(await canManageStaffMember(request, targetRow))) {
       return response.status(404).json({ error: "Persona no encontrada." });
+    }
+
+    // Un administrador de clínica quita a la persona SOLO de su clínica. Si
+    // tiene otras clínicas, sigue entrando a esas (si se quitó la principal,
+    // la principal pasa a ser otra de sus membresías). El equipo Imagenda la
+    // quita de Imagenda por completo, como siempre.
+    if (!request.isPlatformAdmin) {
+      const clinicId = request.staffProfile.clinic_id;
+      const others = (await loadStaffMemberships(targetRow)).filter((m) => m.clinicId !== clinicId);
+      if (others.length > 0) {
+        const { error: membershipError } = await supabase
+          .from(MEMBERSHIPS_TABLE)
+          .delete()
+          .eq("staff_id", staffId)
+          .eq("clinic_id", clinicId);
+        if (membershipError) throw membershipError;
+
+        if (targetRow.clinic_id === clinicId) {
+          const [nextPrincipal] = others;
+          const { error: principalError } = await supabase
+            .from("staff_profiles")
+            .update({ clinic_id: nextPrincipal.clinicId, role: nextPrincipal.role })
+            .eq("id", staffId);
+          if (principalError) throw principalError;
+        }
+        return response.json({ ok: true, removedFromClinicOnly: true });
+      }
     }
 
     const { error } = await supabase.from("staff_profiles").delete().eq("id", staffId);
@@ -7438,7 +7693,7 @@ app.patch("/staff/:id/signature", async (request, response) => {
       .maybeSingle();
     if (targetError) throw targetError;
     const isSelf = targetRow?.id === request.user?.id;
-    if (!targetRow || (!isSelf && !canManageStaffMember(request, targetRow))) {
+    if (!targetRow || (!isSelf && !(await canManageStaffMember(request, targetRow)))) {
       return response.status(404).json({ error: "Persona no encontrada." });
     }
 
@@ -7461,6 +7716,20 @@ app.patch("/staff/:id/signature", async (request, response) => {
     console.error("Error al actualizar los datos de firma:", error);
     return response.status(500).json({ error: "No fue posible actualizar los datos de firma." });
   }
+});
+
+// Perfil de la sesión actual, con la misma forma que `user` de /auth/login
+// (incluye `clinics`: todas las clínicas de la persona y su rol en cada una).
+app.get("/me", async (request, response) => {
+  const { data: profileRow, error } = await supabase
+    .from("staff_profiles")
+    .select("*")
+    .eq("id", request.user.id)
+    .maybeSingle();
+  if (error || !profileRow) {
+    return response.status(500).json({ error: "No fue posible obtener tu perfil." });
+  }
+  return response.json({ user: shapeSessionUser(request.user, profileRow, request.staffMemberships) });
 });
 
 // El médico completa sus propios datos de firma (los tres obligatorios).

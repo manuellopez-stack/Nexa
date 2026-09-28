@@ -1,7 +1,7 @@
 // Reemplazo en memoria de @supabase/supabase-js, SOLO para tests (lo carga
 // test/support/mock-loader.mjs). Implementa la parte del query builder que
 // usa server.mjs: select con embebidos (alias:tabla!inner(cols)), filtros
-// eq/neq/in/not/is/gte/gt/lt/lte (también sobre columnas embebidas, como
+// eq/neq/ilike/in/not/is/gte/gt/lt/lte (también sobre columnas embebidas, como
 // "patient.clinic_id"), order, limit, count/head, single/maybeSingle,
 // insert/update/delete/upsert (onConflict de una columna). No toca ninguna base real.
 
@@ -178,6 +178,13 @@ class QueryBuilder {
 
   neq(column, value) {
     this.filters.push((row) => valueAt(row, column) !== value);
+    return this;
+  }
+
+  // Sin comodines (% _): igualdad sin distinguir mayúsculas.
+  ilike(column, pattern) {
+    const target = String(pattern).replace(/\\(.)/g, "$1").toLowerCase();
+    this.filters.push((row) => String(valueAt(row, column) ?? "").toLowerCase() === target);
     return this;
   }
 

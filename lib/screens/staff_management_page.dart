@@ -388,7 +388,7 @@ class _StaffTile extends StatelessWidget {
                 if (!isSelf) ...[
                   const SizedBox(width: 6),
                   IconButton(
-                    tooltip: 'Cambiar rol',
+                    tooltip: 'Editar rol y datos de firma',
                     onPressed: onEditRole,
                     icon: const Icon(Icons.edit_outlined, size: 19),
                   ),
@@ -614,6 +614,13 @@ class _EditRoleDialog extends StatefulWidget {
 
 class _EditRoleDialogState extends State<_EditRoleDialog> {
   late String _role;
+  // Datos de firma del informe radiológico (se usan al firmar un informe).
+  late final TextEditingController _rutController = TextEditingController(
+    text: widget.member['rut']?.toString() ?? '',
+  );
+  late final TextEditingController _specialtyController = TextEditingController(
+    text: widget.member['specialty']?.toString() ?? '',
+  );
   bool _isSubmitting = false;
   String? _error;
 
@@ -624,6 +631,13 @@ class _EditRoleDialogState extends State<_EditRoleDialog> {
     _role = _kStaffRoles.contains(currentRole)
         ? currentRole!
         : _kStaffRoles.first;
+  }
+
+  @override
+  void dispose() {
+    _rutController.dispose();
+    _specialtyController.dispose();
+    super.dispose();
   }
 
   Future<void> _submit() async {
@@ -638,7 +652,19 @@ class _EditRoleDialogState extends State<_EditRoleDialog> {
     });
 
     try {
-      await ApiService.updateStaffRole(staffId: id, role: _role);
+      if (_role != widget.member['role']?.toString()) {
+        await ApiService.updateStaffRole(staffId: id, role: _role);
+      }
+      final rut = _rutController.text.trim();
+      final specialty = _specialtyController.text.trim();
+      if (rut != (widget.member['rut']?.toString() ?? '') ||
+          specialty != (widget.member['specialty']?.toString() ?? '')) {
+        await ApiService.updateStaffSignature(
+          staffId: id,
+          rut: rut,
+          specialty: specialty,
+        );
+      }
       if (mounted) Navigator.pop(context, true);
     } on ApiException catch (error) {
       if (mounted) setState(() => _error = error.message);
@@ -657,7 +683,7 @@ class _EditRoleDialogState extends State<_EditRoleDialog> {
     final email = widget.member['email']?.toString() ?? '';
 
     return AlertDialog(
-      title: const Text('Cambiar rol'),
+      title: const Text('Editar persona'),
       content: SizedBox(
         width: 380,
         child: Column(
@@ -696,6 +722,30 @@ class _EditRoleDialogState extends State<_EditRoleDialog> {
               onChanged: (value) {
                 if (value != null) setState(() => _role = value);
               },
+            ),
+            const SizedBox(height: 16),
+            TextField(
+              controller: _rutController,
+              decoration: const InputDecoration(
+                labelText: 'RUT',
+                hintText: 'Ej. 12.345.678-5',
+                border: OutlineInputBorder(),
+              ),
+            ),
+            const SizedBox(height: 14),
+            TextField(
+              controller: _specialtyController,
+              decoration: const InputDecoration(
+                labelText: 'Especialidad',
+                hintText: 'Ej. Radiología',
+                border: OutlineInputBorder(),
+              ),
+            ),
+            const SizedBox(height: 6),
+            const Text(
+              'El RUT y la especialidad aparecen en la firma de los informes '
+              'radiológicos.',
+              style: TextStyle(fontSize: 12, color: NexaColors.textSecondary),
             ),
             if (_error != null) ...[
               const SizedBox(height: 12),

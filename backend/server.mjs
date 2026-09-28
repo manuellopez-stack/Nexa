@@ -17,6 +17,9 @@ import { buildLeame, dvdFilename, openOrderMedia, reportPdfName, writeDvdZip } f
 import { getWeasisViewer } from "./weasisPortable.mjs";
 import { sendMail } from "./mailer.mjs";
 import { bookingCancellationEmail, bookingConfirmationEmail } from "./bookingEmails.mjs";
+import sharp from "sharp";
+import { buildReportPdf } from "./reportPdf.mjs";
+import { templateForExams } from "./reportTemplates.mjs";
 dotenv.config({ quiet: true });
 
 const app = express();
@@ -530,6 +533,8 @@ function shapeDocumentRecord(row) {
     doctor: row.doctor,
     validationStatus: row.validation_status,
     validatedAt: row.validated_at,
+    validatedBy: row.validated_by ?? null,
+    validationNote: row.validation_note ?? null,
     incorporatedAt: row.incorporated_at,
     // Solo si hay PDF guardado; la ruta en Storage no sale del backend.
     hasPdf: Boolean(row.pdf_path),
@@ -762,6 +767,9 @@ function shapeStaffRow(row) {
     role: row.role,
     clinicId: row.clinic_id ?? null,
     isPlatformAdmin: row.is_platform_admin === true,
+    // Datos de firma del informe radiológico.
+    rut: row.rut ?? null,
+    specialty: row.specialty ?? null,
     createdAt: row.created_at,
   };
 }
@@ -1393,6 +1401,7 @@ app.use("/billing", requireAuth, requireClinic);
 app.use("/staff", requireAuth, requireRole(ADMIN_ONLY));
 app.use("/clinics", requireAuth, requireRole(ADMIN_ONLY));
 app.use("/my-clinic", requireAuth);
+app.use("/me", requireAuth);
 app.use("/platform-team", requireAuth, requirePlatformAdmin);
 
 // Agenda del día leída desde la tabla appointments. Devuelve filas con la MISMA
@@ -3392,6 +3401,58 @@ app.get("/patients/:id/documents/:filename/pdf", requireRole(DOCUMENT_PDF_ROLES)
   }
 });
 
+// Aplica una validación humana a un documento y, si es el informe de una
+// orden de imagenología, mueve la orden igual que siempre. La comparten la
+// validación manual (PATCH .../documents/:filename/validate) y la firma del
+// informe radiológico (POST .../report/sign), para que un informe firmado
+// quede exactamente igual que uno subido y aprobado por un médico.
+async function applyDocumentValidation(documentId, status, { request, correctionReason = null }) {
+  const validatedAt = status === "pendiente" ? null : new Date().toISOString();
+
+  const { data: updatedDoc, error: updateError } = await supabase
+    .from("documents")
+    .update({
+      validation_status: status,
+      validated_at: validatedAt,
+      validated_by: status === "pendiente" ? null : request.user?.email ?? null,
+      validation_note: null,
+      // Pedir corrección guarda motivo/quién/cuándo; aprobar o volver a
+      // 'pendiente' deja el documento sin corrección pendiente.
+      ...(status === "rechazado"
+        ? correctionFields(correctionReason, request)
+        : CLEARED_CORRECTION_FIELDS),
+    })
+    .eq("id", documentId)
+    .select()
+    .single();
+  if (updateError) throw updateError;
+
+  if (updatedDoc.imaging_order_id) {
+    if (status === "aprobado") {
+      await supabase
+        .from("imaging_orders")
+        .update({ status: "validado", validated_at: new Date().toISOString() })
+        .eq("id", updatedDoc.imaging_order_id);
+    } else if (status === "rechazado") {
+      // Informe devuelto: la orden vuelve a 'realizado' para que el
+      // tecnólogo vincule un informe corregido (y sale de Por validar).
+      await supabase
+        .from("imaging_orders")
+        .update({ status: "realizado", informed_at: null, validated_at: null })
+        .eq("id", updatedDoc.imaging_order_id)
+        .in("status", ["informado", "validado"]);
+    } else {
+      await supabase
+        .from("imaging_orders")
+        .update({ status: "informado", validated_at: null })
+        .eq("id", updatedDoc.imaging_order_id)
+        .eq("status", "validado");
+    }
+  }
+
+  return updatedDoc;
+}
+
 // V11: validación humana por documento.
 app.patch("/patients/:id/documents/:filename/validate", requireRole(VALIDATORS), async (request, response) => {
   try {
@@ -3439,46 +3500,7 @@ app.patch("/patients/:id/documents/:filename/validate", requireRole(VALIDATORS),
       return response.status(404).json({ error: "Este documento no tiene información detallada guardada todavía." });
     }
 
-    const validatedAt = status === "pendiente" ? null : new Date().toISOString();
-
-    const { data: updatedDoc, error: updateError } = await supabase
-      .from("documents")
-      .update({
-        validation_status: status,
-        validated_at: validatedAt,
-        // Pedir corrección guarda motivo/quién/cuándo; aprobar o volver a
-        // 'pendiente' deja el documento sin corrección pendiente.
-        ...(status === "rechazado"
-          ? correctionFields(correctionReason, request)
-          : CLEARED_CORRECTION_FIELDS),
-      })
-      .eq("id", match.id)
-      .select()
-      .single();
-    if (updateError) throw updateError;
-
-    if (updatedDoc.imaging_order_id) {
-      if (status === "aprobado") {
-        await supabase
-          .from("imaging_orders")
-          .update({ status: "validado", validated_at: new Date().toISOString() })
-          .eq("id", updatedDoc.imaging_order_id);
-      } else if (status === "rechazado") {
-        // Informe devuelto: la orden vuelve a 'realizado' para que el
-        // tecnólogo vincule un informe corregido (y sale de Por validar).
-        await supabase
-          .from("imaging_orders")
-          .update({ status: "realizado", informed_at: null, validated_at: null })
-          .eq("id", updatedDoc.imaging_order_id)
-          .in("status", ["informado", "validado"]);
-      } else {
-        await supabase
-          .from("imaging_orders")
-          .update({ status: "informado", validated_at: null })
-          .eq("id", updatedDoc.imaging_order_id)
-          .eq("status", "validado");
-      }
-    }
+    const updatedDoc = await applyDocumentValidation(match.id, status, { request, correctionReason });
 
     const refreshedPatient = await getPatientFull(patientId);
 
@@ -4892,6 +4914,574 @@ app.patch(
     }
   },
 );
+// ============================================
+// IMAGENOLOGÍA — INFORME RADIOLÓGICO (escrito y firmado en Imagenda)
+// ============================================
+// El médico escribe el informe (borrador en imaging_reports) y lo firma. Al
+// firmar se genera el PDF (reportPdf.mjs) y se guarda como documento de la
+// orden por el mismo camino que un informe subido (saveDocumentRecord +
+// storeDocumentPdf) y luego se aprueba con applyDocumentValidation: la orden
+// y el documento quedan EXACTAMENTE como un informe subido y aprobado por un
+// médico, y no pasa por Por validar. Una versión firmada no se edita: se
+// corrige con una versión nueva, que al firmarse reemplaza a la anterior.
+
+// Escriben/guardan borradores; firmar es solo del médico.
+const REPORT_WRITERS = ["medico", "administrador"];
+const REPORT_SIGNERS = ["medico"];
+// Ven el informe firmado (los borradores solo REPORT_WRITERS).
+const REPORT_READERS = [...CLINICAL_STAFF, "recepcion"];
+const REPORT_FIELDS = {
+  clinicalHistory: "clinical_history",
+  technique: "technique",
+  findings: "findings",
+  impression: "impression",
+};
+const REPORT_FIELD_MAX_LENGTH = 20000;
+const REPORT_DRAFT_STATUSES = ["realizado", "informado"];
+const REPLACED_BY_NEW_VERSION_NOTE = "Reemplazado por versión corregida";
+const REPLACED_BY_SIGNED_REPORT_NOTE = "Reemplazado por informe firmado en Imagenda";
+
+const CHILE_TIME_ZONE = "America/Santiago";
+
+function formatChileDate(value) {
+  if (!value) return null;
+  return new Date(value).toLocaleDateString("es-CL", {
+    timeZone: CHILE_TIME_ZONE,
+    day: "numeric",
+    month: "long",
+    year: "numeric",
+  });
+}
+
+// "27 de septiembre de 2026 a las 15:04" (hora de Chile).
+function formatChileDateTime(value) {
+  const date = new Date(value);
+  const time = date.toLocaleTimeString("es-CL", {
+    timeZone: CHILE_TIME_ZONE,
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  });
+  return `${formatChileDate(date)} a las ${time}`;
+}
+
+function signatureOf(profile) {
+  const fullName = profile?.full_name?.trim() || null;
+  const rut = profile?.rut?.trim() || null;
+  const specialty = profile?.specialty?.trim() || null;
+  return { fullName, rut, specialty, complete: Boolean(fullName && rut && specialty) };
+}
+
+// Datos de firma que manda la app (PATCH /me/signature y /staff/:id/signature).
+// requireAll: los tres obligatorios (firma propia). Si no, solo se revisan los
+// campos presentes y "" o null los deja vacíos. Devuelve { fields } o { error }.
+function parseSignatureFields(body, { requireAll }) {
+  const fields = {};
+  const present = (key) => requireAll || body?.[key] !== undefined;
+  const text = (key) => {
+    const value = body?.[key];
+    return typeof value === "string" ? value.trim() : value == null ? "" : null;
+  };
+
+  for (const [key, column, label] of [
+    ["fullName", "full_name", "el nombre"],
+    ["specialty", "specialty", "la especialidad"],
+  ]) {
+    if (!present(key)) continue;
+    const value = text(key);
+    if (value === null) return { error: `No se pudo leer ${label}.` };
+    if (!value && requireAll) return { error: `Debes indicar ${label}.` };
+    if (value.length > 120) return { error: `Revisa ${label}: es demasiado largo.` };
+    fields[column] = value || null;
+  }
+
+  if (present("rut")) {
+    const value = text("rut");
+    if (value === null) return { error: "No se pudo leer el RUT." };
+    if (!value) {
+      if (requireAll) return { error: "Debes indicar tu RUT." };
+      fields.rut = null;
+    } else if (!isValidRut(value)) {
+      return { error: "El RUT no es válido. Revisa el dígito verificador." };
+    } else {
+      fields.rut = formatRutCanonical(value);
+    }
+  }
+  return { fields };
+}
+
+function shapeImagingReport(row, documentsById = new Map()) {
+  return {
+    id: row.id,
+    version: row.version,
+    status: row.status,
+    clinicalHistory: row.clinical_history ?? "",
+    technique: row.technique ?? "",
+    findings: row.findings ?? "",
+    impression: row.impression ?? "",
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    signedAt: row.signed_at ?? null,
+    signerName: row.signer_name ?? null,
+    signerRut: row.signer_rut ?? null,
+    signerSpecialty: row.signer_specialty ?? null,
+    // Nombre del PDF para GET /patients/:id/documents/:filename/pdf.
+    documentFilename: documentsById.get(row.document_id)?.filename ?? null,
+  };
+}
+
+// Orden + paciente + tipos de examen, si la orden es del paciente y de la
+// clínica activa (incluido el selector X-Clinic-Id del equipo Imagenda).
+// null = el caller responde 404 (no revela órdenes de otra clínica).
+async function loadReportContext(request) {
+  const patientId = Number(request.params.id);
+  const orderId = request.params.orderId;
+  if (!(await patientBelongsToRequesterClinic(patientId, request))) return null;
+
+  const { data: order, error: orderError } = await supabase
+    .from("imaging_orders")
+    .select("*")
+    .eq("id", orderId)
+    .eq("patient_id", patientId)
+    .eq("clinic_id", request.staffProfile.clinic_id)
+    .maybeSingle();
+  if (orderError) throw orderError;
+  if (!order) return null;
+
+  const [{ data: typeRows, error: typesError }, { data: patient, error: patientError }] = await Promise.all([
+    supabase
+      .from("imaging_order_types")
+      .select("imaging_type_id, imaging_types(name, category, fonasa_code)")
+      .eq("order_id", orderId),
+    supabase.from("patients").select("id, name, rut, age").eq("id", patientId).maybeSingle(),
+  ]);
+  if (typesError) throw typesError;
+  if (patientError) throw patientError;
+  if (!patient) return null;
+
+  const types = (typeRows ?? []).map((row) => ({
+    name: row.imaging_types?.name ?? null,
+    category: row.imaging_types?.category ?? null,
+    fonasaCode: row.imaging_types?.fonasa_code ?? null,
+  }));
+  const examTitle = types.map((type) => type.name).filter(Boolean).join(" + ") || "imagenología";
+  return { patientId, orderId, order, patient, types, examTitle };
+}
+
+// Todas las versiones del informe de la orden, de la más nueva a la más vieja.
+async function loadImagingReports(orderId) {
+  const { data, error } = await supabase
+    .from("imaging_reports")
+    .select("*")
+    .eq("imaging_order_id", orderId)
+    .order("version", { ascending: false });
+  if (error) throw error;
+  return data ?? [];
+}
+
+async function reportDocumentsById(reports) {
+  const ids = reports.map((row) => row.document_id).filter((id) => id != null);
+  if (ids.length === 0) return new Map();
+  const { data, error } = await supabase.from("documents").select("id, filename").in("id", ids);
+  if (error) throw error;
+  return new Map((data ?? []).map((row) => [row.id, row]));
+}
+
+// Respuesta común de GET .../report y de las escrituras.
+async function buildReportPayload(context, request) {
+  const reports = await loadImagingReports(context.orderId);
+  const canWrite = REPORT_WRITERS.includes(request.staffRole);
+  const canSign = REPORT_SIGNERS.includes(request.staffRole);
+  // Quien no escribe informes solo ve versiones firmadas.
+  const visible = canWrite ? reports : reports.filter((row) => row.status !== "borrador");
+  const draft = visible.find((row) => row.status === "borrador") ?? null;
+  const signed = visible.find((row) => row.status === "firmado") ?? null;
+  const current = draft ?? signed;
+  const documentsById = await reportDocumentsById(visible);
+
+  return {
+    order: shapeImagingOrderRow(context.order),
+    patient: {
+      id: context.patient.id,
+      name: context.patient.name,
+      rut: context.patient.rut,
+      age: context.patient.age ?? null,
+    },
+    exam: {
+      title: context.examTitle,
+      types: context.types,
+    },
+    report: current ? shapeImagingReport(current, documentsById) : null,
+    versions: visible.filter((row) => row !== current).map((row) => shapeImagingReport(row, documentsById)),
+    // Sin informe todavía: plantilla según la modalidad (reportTemplates.mjs).
+    template: !current && canWrite ? templateForExams(context.types) : null,
+    permissions: {
+      canWrite,
+      canSign,
+      // Se puede empezar/seguir un borrador sin versión nueva.
+      canDraft: canWrite && (Boolean(draft) || (!signed && REPORT_DRAFT_STATUSES.includes(context.order.status))),
+      canCreateNewVersion: canWrite && Boolean(signed) && !draft,
+    },
+    mySignature: signatureOf(request.staffProfile),
+  };
+}
+
+// Campos del informe que vienen en el body (solo los presentes).
+function parseReportFields(body) {
+  const fields = {};
+  for (const [key, column] of Object.entries(REPORT_FIELDS)) {
+    if (body?.[key] === undefined) continue;
+    const value = body[key] === null ? "" : body[key];
+    if (typeof value !== "string") return { error: "Los textos del informe no son válidos." };
+    if (value.length > REPORT_FIELD_MAX_LENGTH) {
+      return { error: "Uno de los textos del informe es demasiado largo." };
+    }
+    fields[column] = value;
+  }
+  return { fields };
+}
+
+// Crea o actualiza el borrador de la orden. Devuelve { draft } o
+// { status, error }.
+async function saveReportDraft(context, fields, request) {
+  const reports = await loadImagingReports(context.orderId);
+  const draft = reports.find((row) => row.status === "borrador");
+  const now = new Date().toISOString();
+
+  if (draft) {
+    if (Object.keys(fields).length === 0) return { draft };
+    const { data, error } = await supabase
+      .from("imaging_reports")
+      .update({ ...fields, updated_at: now })
+      .eq("id", draft.id)
+      .eq("status", "borrador")
+      .select()
+      .maybeSingle();
+    if (error) throw error;
+    if (!data) return { status: 409, error: "El informe cambió mientras lo guardabas. Recarga e intenta de nuevo." };
+    return { draft: data };
+  }
+
+  if (reports.some((row) => row.status === "firmado")) {
+    return { status: 409, error: "El informe ya está firmado. Crea una nueva versión para corregirlo." };
+  }
+  if (!REPORT_DRAFT_STATUSES.includes(context.order.status)) {
+    return { status: 400, error: "El estudio debe estar realizado para escribir su informe." };
+  }
+
+  const { data, error } = await supabase
+    .from("imaging_reports")
+    .insert({
+      clinic_id: context.order.clinic_id,
+      imaging_order_id: context.orderId,
+      patient_id: context.patientId,
+      clinical_history: "",
+      technique: "",
+      findings: "",
+      impression: "",
+      ...fields,
+      status: "borrador",
+      version: 1 + Math.max(0, ...reports.map((row) => row.version ?? 0)),
+      created_by: request.user.id,
+      created_at: now,
+      updated_at: now,
+    })
+    .select()
+    .single();
+  if (error) throw error;
+  return { draft: data };
+}
+
+// Logo de la clínica en PNG/JPEG (pdfkit no lee WEBP), o null.
+async function loadClinicForReport(clinicId) {
+  const { data: clinic, error } = await supabase.from("clinics").select("*").eq("id", clinicId).maybeSingle();
+  if (error) throw error;
+  let logo = null;
+  if (clinic?.logo_path) {
+    try {
+      const { data: file } = await supabase.storage.from(CLINIC_LOGO_BUCKET).download(clinic.logo_path);
+      if (file) {
+        const buffer = Buffer.from(await file.arrayBuffer());
+        const type = detectLogoType(buffer);
+        logo = type === "image/png" || type === "image/jpeg" ? buffer : await sharp(buffer).png().toBuffer();
+      }
+    } catch (logoError) {
+      console.error("No fue posible cargar el logo para el informe:", logoError?.message ?? logoError);
+      logo = null;
+    }
+  }
+  return { name: clinic?.name ?? "", logo };
+}
+
+async function renderReportPdf(context, report, { signature = null, draft = false }) {
+  const clinic = await loadClinicForReport(context.order.clinic_id);
+  return buildReportPdf({
+    clinicName: clinic.name,
+    logo: clinic.logo,
+    examTitle: context.examTitle,
+    patient: context.patient,
+    accessionNumber: context.order.accession_number ?? null,
+    examDate: formatChileDate(context.order.performed_at ?? context.order.requested_at),
+    fonasaCodes: context.types.map((type) => type.fonasaCode).filter(Boolean),
+    sections: {
+      clinicalHistory: report.clinical_history,
+      technique: report.technique,
+      findings: report.findings,
+      impression: report.impression,
+    },
+    signature,
+    draft,
+  });
+}
+
+// Rechaza documentos de la orden sin pedir corrección (no cuentan como
+// devueltos ni vuelven a Por validar) y deja la nota del motivo. No mueve la
+// orden: la firma la deja aprobada a continuación.
+async function supersedeOrderDocuments(documentIds, note, request) {
+  if (documentIds.length === 0) return;
+  const { error } = await supabase
+    .from("documents")
+    .update({
+      validation_status: "rechazado",
+      validated_at: new Date().toISOString(),
+      validated_by: request.user?.email ?? null,
+      validation_note: note,
+      ...CLEARED_CORRECTION_FIELDS,
+    })
+    .in("id", documentIds);
+  if (error) throw error;
+}
+
+app.get(
+  "/patients/:id/imaging-orders/:orderId/report",
+  requireRole(REPORT_READERS),
+  async (request, response) => {
+    try {
+      const context = await loadReportContext(request);
+      if (!context) return response.status(404).json({ error: "Orden de imagenología no encontrada." });
+      return response.json(await buildReportPayload(context, request));
+    } catch (error) {
+      console.error("Error al obtener el informe radiológico:", error);
+      return response.status(500).json({ error: "No fue posible obtener el informe." });
+    }
+  },
+);
+
+app.put(
+  "/patients/:id/imaging-orders/:orderId/report",
+  requireRole(REPORT_WRITERS),
+  async (request, response) => {
+    try {
+      const context = await loadReportContext(request);
+      if (!context) return response.status(404).json({ error: "Orden de imagenología no encontrada." });
+
+      const parsed = parseReportFields(request.body);
+      if (parsed.error) return response.status(400).json({ error: parsed.error });
+
+      const saved = await saveReportDraft(context, parsed.fields, request);
+      if (saved.error) return response.status(saved.status).json({ error: saved.error });
+
+      return response.json(await buildReportPayload(context, request));
+    } catch (error) {
+      console.error("Error al guardar el borrador del informe:", error);
+      return response.status(500).json({ error: "No fue posible guardar el borrador del informe." });
+    }
+  },
+);
+
+app.post(
+  "/patients/:id/imaging-orders/:orderId/report/sign",
+  requireRole(REPORT_SIGNERS),
+  async (request, response) => {
+    try {
+      const context = await loadReportContext(request);
+      if (!context) return response.status(404).json({ error: "Orden de imagenología no encontrada." });
+
+      const signer = signatureOf(request.staffProfile);
+      if (!signer.complete) {
+        return response.status(400).json({
+          error: "Completa tus datos de firma (nombre, RUT y especialidad) antes de firmar.",
+          code: "signature_incomplete",
+          mySignature: signer,
+        });
+      }
+
+      // Lo que venga en el body se guarda primero (lo último que escribió).
+      const parsed = parseReportFields(request.body);
+      if (parsed.error) return response.status(400).json({ error: parsed.error });
+      const saved = await saveReportDraft(context, parsed.fields, request);
+      if (saved.error) return response.status(saved.status).json({ error: saved.error });
+      const draft = saved.draft;
+
+      if (!draft.findings?.trim() || !draft.impression?.trim()) {
+        return response
+          .status(400)
+          .json({ error: "Completa Hallazgos e Impresión diagnóstica antes de firmar." });
+      }
+
+      const signedAt = new Date();
+      const signature = {
+        name: signer.fullName,
+        rut: signer.rut,
+        specialty: signer.specialty,
+        signedAtText: formatChileDateTime(signedAt),
+      };
+      const pdf = await renderReportPdf(context, draft, { signature });
+
+      const accession = context.order.accession_number ?? String(context.orderId).slice(0, 8);
+      const filename = `Informe ${accession} v${draft.version}.pdf`;
+      const documentId = await saveDocumentRecord({
+        targetPatientId: context.patientId,
+        filename,
+        imagingOrderId: context.orderId,
+        documentData: {
+          documentType: "Informe radiológico",
+          exam: context.examTitle,
+          patientName: context.patient.name,
+          patientRut: context.patient.rut,
+          patientAge: context.patient.age,
+          reason: draft.clinical_history,
+          date: formatChileDate(context.order.performed_at ?? context.order.requested_at),
+          summary: draft.impression,
+          doctor: signer.fullName,
+        },
+      });
+      await storeDocumentPdf({
+        documentId,
+        patientId: context.patientId,
+        clinicId: context.order.clinic_id,
+        buffer: pdf,
+      });
+
+      // Lo que este informe reemplaza: la versión firmada anterior y
+      // cualquier informe subido de la orden que siguiera pendiente.
+      const reports = await loadImagingReports(context.orderId);
+      const previousSigned = reports.filter((row) => row.status === "firmado");
+      await supersedeOrderDocuments(
+        previousSigned.map((row) => row.document_id).filter((id) => id != null && id !== documentId),
+        REPLACED_BY_NEW_VERSION_NOTE,
+        request,
+      );
+      const { data: pendingUploads, error: pendingError } = await supabase
+        .from("documents")
+        .select("id")
+        .eq("imaging_order_id", context.orderId)
+        .eq("validation_status", "pendiente")
+        .neq("id", documentId);
+      if (pendingError) throw pendingError;
+      await supersedeOrderDocuments(
+        (pendingUploads ?? []).map((row) => row.id),
+        REPLACED_BY_SIGNED_REPORT_NOTE,
+        request,
+      );
+
+      // Igual que un médico aprobando el informe subido.
+      await applyDocumentValidation(documentId, "aprobado", { request });
+
+      if (previousSigned.length > 0) {
+        const { error: replaceError } = await supabase
+          .from("imaging_reports")
+          .update({ status: "reemplazado", updated_at: signedAt.toISOString() })
+          .in(
+            "id",
+            previousSigned.map((row) => row.id),
+          );
+        if (replaceError) throw replaceError;
+      }
+
+      const { error: signError } = await supabase
+        .from("imaging_reports")
+        .update({
+          status: "firmado",
+          signed_by: request.user.id,
+          signed_at: signedAt.toISOString(),
+          signer_name: signer.fullName,
+          signer_rut: signer.rut,
+          signer_specialty: signer.specialty,
+          document_id: documentId,
+          updated_at: signedAt.toISOString(),
+        })
+        .eq("id", draft.id)
+        .eq("status", "borrador");
+      if (signError) throw signError;
+
+      // La orden cambió de estado: se relee para la respuesta.
+      const refreshed = await loadReportContext(request);
+      return response.json(await buildReportPayload(refreshed ?? context, request));
+    } catch (error) {
+      console.error("Error al firmar el informe:", error);
+      return response.status(500).json({ error: "No fue posible firmar el informe." });
+    }
+  },
+);
+
+app.post(
+  "/patients/:id/imaging-orders/:orderId/report/new-version",
+  requireRole(REPORT_WRITERS),
+  async (request, response) => {
+    try {
+      const context = await loadReportContext(request);
+      if (!context) return response.status(404).json({ error: "Orden de imagenología no encontrada." });
+
+      const reports = await loadImagingReports(context.orderId);
+      if (reports.some((row) => row.status === "borrador")) {
+        return response.status(409).json({ error: "Ya hay un borrador en curso para este informe." });
+      }
+      const signed = reports.find((row) => row.status === "firmado");
+      if (!signed) {
+        return response.status(400).json({ error: "No hay un informe firmado para corregir." });
+      }
+
+      const now = new Date().toISOString();
+      const { error } = await supabase.from("imaging_reports").insert({
+        clinic_id: context.order.clinic_id,
+        imaging_order_id: context.orderId,
+        patient_id: context.patientId,
+        clinical_history: signed.clinical_history,
+        technique: signed.technique,
+        findings: signed.findings,
+        impression: signed.impression,
+        status: "borrador",
+        version: 1 + Math.max(...reports.map((row) => row.version ?? 0)),
+        created_by: request.user.id,
+        created_at: now,
+        updated_at: now,
+      });
+      if (error) throw error;
+
+      return response.json(await buildReportPayload(context, request));
+    } catch (error) {
+      console.error("Error al crear una nueva versión del informe:", error);
+      return response.status(500).json({ error: "No fue posible crear una nueva versión del informe." });
+    }
+  },
+);
+
+// Vista previa del borrador con marca de agua "BORRADOR". No se guarda.
+app.get(
+  "/patients/:id/imaging-orders/:orderId/report/preview",
+  requireRole(REPORT_WRITERS),
+  async (request, response) => {
+    try {
+      const context = await loadReportContext(request);
+      if (!context) return response.status(404).json({ error: "Orden de imagenología no encontrada." });
+
+      const draft = (await loadImagingReports(context.orderId)).find((row) => row.status === "borrador");
+      if (!draft) return response.status(404).json({ error: "No hay un borrador para previsualizar." });
+
+      const pdf = await renderReportPdf(context, draft, { draft: true });
+      response.set("Content-Type", "application/pdf");
+      response.set("Content-Disposition", 'inline; filename="borrador-informe.pdf"');
+      response.set("Cache-Control", "private, no-store");
+      response.set("X-Content-Type-Options", "nosniff");
+      return response.send(pdf);
+    } catch (error) {
+      console.error("Error al generar la vista previa del informe:", error);
+      return response.status(500).json({ error: "No fue posible generar la vista previa." });
+    }
+  },
+);
+
 // ============================================
 // IMAGENOLOGÍA — ETAPA B: imágenes DICOM
 // ============================================
@@ -6834,6 +7424,65 @@ app.post("/platform-team/:id/restore", serializePlatformTeam(async (request, res
     return response.status(500).json({ error: "No fue posible reactivar el acceso a esta persona." });
   }
 }));
+
+// Datos de firma (nombre, RUT, especialidad) de una persona del equipo, desde
+// la gestión de personal. Mismo alcance que cambiar su rol; la propia cuenta
+// también (es lo mismo que PATCH /me/signature, sin exigir los tres).
+app.patch("/staff/:id/signature", async (request, response) => {
+  try {
+    const staffId = request.params.id;
+    const { data: targetRow, error: targetError } = await supabase
+      .from("staff_profiles")
+      .select("id, clinic_id, is_platform_admin")
+      .eq("id", staffId)
+      .maybeSingle();
+    if (targetError) throw targetError;
+    const isSelf = targetRow?.id === request.user?.id;
+    if (!targetRow || (!isSelf && !canManageStaffMember(request, targetRow))) {
+      return response.status(404).json({ error: "Persona no encontrada." });
+    }
+
+    const parsed = parseSignatureFields(request.body, { requireAll: false });
+    if (parsed.error) return response.status(400).json({ error: parsed.error });
+    if (Object.keys(parsed.fields).length === 0) {
+      return response.status(400).json({ error: "No hay datos para actualizar." });
+    }
+
+    const { data: updatedRow, error } = await supabase
+      .from("staff_profiles")
+      .update(parsed.fields)
+      .eq("id", staffId)
+      .select()
+      .single();
+    if (error) throw error;
+
+    return response.json({ staff: shapeStaffRow(updatedRow) });
+  } catch (error) {
+    console.error("Error al actualizar los datos de firma:", error);
+    return response.status(500).json({ error: "No fue posible actualizar los datos de firma." });
+  }
+});
+
+// El médico completa sus propios datos de firma (los tres obligatorios).
+app.patch("/me/signature", async (request, response) => {
+  try {
+    const parsed = parseSignatureFields(request.body, { requireAll: true });
+    if (parsed.error) return response.status(400).json({ error: parsed.error });
+
+    const { data: updatedRow, error } = await supabase
+      .from("staff_profiles")
+      .update(parsed.fields)
+      .eq("id", request.user.id)
+      .select()
+      .single();
+    if (error) throw error;
+
+    return response.json({ signature: signatureOf(updatedRow) });
+  } catch (error) {
+    console.error("Error al guardar tus datos de firma:", error);
+    return response.status(500).json({ error: "No fue posible guardar tus datos de firma." });
+  }
+});
 
 // ============================================
 // GESTIÓN DE CLÍNICAS (solo Administrador)

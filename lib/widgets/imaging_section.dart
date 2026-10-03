@@ -11,6 +11,7 @@ import 'document_pdf.dart';
 import 'dvd_download.dart';
 import 'imaging_report_actions.dart';
 import 'ohif_viewer_button.dart';
+import 'patient_share_link.dart';
 
 class ImagingOrdersSection extends StatefulWidget {
   const ImagingOrdersSection({
@@ -405,6 +406,9 @@ class _ImagingOrderDetailDialog extends StatefulWidget {
 class _ImagingOrderDetailDialogState extends State<_ImagingOrderDetailDialog> {
   late Future<Map<String, dynamic>> _detailFuture;
   late Future<List<Map<String, dynamic>>> _imagesFuture;
+  // Cambia en cada recarga: el bloque del enlace del paciente se vuelve a pedir
+  // (p. ej. después de firmar el informe).
+  int _shareLinkVersion = 0;
   bool _isMarkingPerformed = false;
   bool _isAnalyzing = false;
   bool _isIncorporating = false;
@@ -444,6 +448,7 @@ class _ImagingOrderDetailDialogState extends State<_ImagingOrderDetailDialog> {
     setState(() {
       _detailFuture = _load();
       _imagesFuture = _loadImages();
+      _shareLinkVersion++;
       _analysis = null;
       _documentData = null;
       _documentFilename = null;
@@ -906,6 +911,12 @@ class _ImagingOrderDetailDialogState extends State<_ImagingOrderDetailDialog> {
                       patientId: widget.patientId,
                       orderId: widget.orderId,
                       onChanged: _reload,
+                    ),
+                    // QR del informe firmado (médico y administrador).
+                    PatientShareLinkCard(
+                      key: ValueKey('share-link-$_shareLinkVersion'),
+                      patientId: widget.patientId,
+                      orderId: widget.orderId,
                     ),
                     if (documents.isEmpty)
                       const Text(

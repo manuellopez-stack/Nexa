@@ -19,6 +19,20 @@ import { sendMail } from "./mailer.mjs";
 import { bookingCancellationEmail, bookingConfirmationEmail } from "./bookingEmails.mjs";
 import sharp from "sharp";
 import { buildReportPdf } from "./reportPdf.mjs";
+import {
+  SHARE_LINK_TTL_MS,
+  SHARE_LOCK_MS,
+  SHARE_MAX_FAILED_ATTEMPTS,
+  createShareToken,
+  hashShareToken,
+  isShareLinkLocked,
+  isShareTokenFormat,
+  pinMatchesRut,
+  shareLinkStatus,
+  shareLinkUrl,
+  signShareSession,
+  verifyShareSession,
+} from "./shareLinks.mjs";
 import { templateForExams } from "./reportTemplates.mjs";
 dotenv.config({ quiet: true });
 
@@ -5297,7 +5311,7 @@ async function loadClinicForReport(clinicId) {
   return { name: clinic?.name ?? "", logo };
 }
 
-async function renderReportPdf(context, report, { signature = null, draft = false }) {
+async function renderReportPdf(context, report, { signature = null, draft = false, viewerUrl = null }) {
   const clinic = await loadClinicForReport(context.order.clinic_id);
   return buildReportPdf({
     clinicName: clinic.name,
@@ -5315,6 +5329,7 @@ async function renderReportPdf(context, report, { signature = null, draft = fals
     },
     signature,
     draft,
+    viewerUrl,
   });
 }
 
@@ -5410,84 +5425,104 @@ app.post(
         specialty: signer.specialty,
         signedAtText: formatChileDateTime(signedAt),
       };
-      const pdf = await renderReportPdf(context, draft, { signature });
+      // Enlace del QR para el paciente (ver "VISOR DEL PACIENTE" más abajo).
+      // Si no se puede crear (p. ej. falta sql/qr_visor_paciente.sql) el
+      // informe se firma igual, sin QR.
+      const shareLink = await tryCreateShareLink(context, draft, request);
+      try {
+        const pdf = await renderReportPdf(context, draft, { signature, viewerUrl: shareLink?.url ?? null });
 
-      const accession = context.order.accession_number ?? String(context.orderId).slice(0, 8);
-      const filename = `Informe ${accession} v${draft.version}.pdf`;
-      const documentId = await saveDocumentRecord({
-        targetPatientId: context.patientId,
-        filename,
-        imagingOrderId: context.orderId,
-        documentData: {
-          documentType: "Informe radiológico",
-          exam: context.examTitle,
-          patientName: context.patient.name,
-          patientRut: context.patient.rut,
-          patientAge: context.patient.age,
-          reason: draft.clinical_history,
-          date: formatChileDate(context.order.performed_at ?? context.order.requested_at),
-          summary: draft.impression,
-          doctor: signer.fullName,
-        },
-      });
-      await storeDocumentPdf({
-        documentId,
-        patientId: context.patientId,
-        clinicId: context.order.clinic_id,
-        buffer: pdf,
-      });
+        const accession = context.order.accession_number ?? String(context.orderId).slice(0, 8);
+        const filename = `Informe ${accession} v${draft.version}.pdf`;
+        const documentId = await saveDocumentRecord({
+          targetPatientId: context.patientId,
+          filename,
+          imagingOrderId: context.orderId,
+          documentData: {
+            documentType: "Informe radiológico",
+            exam: context.examTitle,
+            patientName: context.patient.name,
+            patientRut: context.patient.rut,
+            patientAge: context.patient.age,
+            reason: draft.clinical_history,
+            date: formatChileDate(context.order.performed_at ?? context.order.requested_at),
+            summary: draft.impression,
+            doctor: signer.fullName,
+          },
+        });
+        await storeDocumentPdf({
+          documentId,
+          patientId: context.patientId,
+          clinicId: context.order.clinic_id,
+          buffer: pdf,
+        });
 
-      // Lo que este informe reemplaza: la versión firmada anterior y
-      // cualquier informe subido de la orden que siguiera pendiente.
-      const reports = await loadImagingReports(context.orderId);
-      const previousSigned = reports.filter((row) => row.status === "firmado");
-      await supersedeOrderDocuments(
-        previousSigned.map((row) => row.document_id).filter((id) => id != null && id !== documentId),
-        REPLACED_BY_NEW_VERSION_NOTE,
-        request,
-      );
-      const { data: pendingUploads, error: pendingError } = await supabase
-        .from("documents")
-        .select("id")
-        .eq("imaging_order_id", context.orderId)
-        .eq("validation_status", "pendiente")
-        .neq("id", documentId);
-      if (pendingError) throw pendingError;
-      await supersedeOrderDocuments(
-        (pendingUploads ?? []).map((row) => row.id),
-        REPLACED_BY_SIGNED_REPORT_NOTE,
-        request,
-      );
+        // Lo que este informe reemplaza: la versión firmada anterior y
+        // cualquier informe subido de la orden que siguiera pendiente.
+        const reports = await loadImagingReports(context.orderId);
+        const previousSigned = reports.filter((row) => row.status === "firmado");
+        await supersedeOrderDocuments(
+          previousSigned.map((row) => row.document_id).filter((id) => id != null && id !== documentId),
+          REPLACED_BY_NEW_VERSION_NOTE,
+          request,
+        );
+        const { data: pendingUploads, error: pendingError } = await supabase
+          .from("documents")
+          .select("id")
+          .eq("imaging_order_id", context.orderId)
+          .eq("validation_status", "pendiente")
+          .neq("id", documentId);
+        if (pendingError) throw pendingError;
+        await supersedeOrderDocuments(
+          (pendingUploads ?? []).map((row) => row.id),
+          REPLACED_BY_SIGNED_REPORT_NOTE,
+          request,
+        );
 
-      // Igual que un médico aprobando el informe subido.
-      await applyDocumentValidation(documentId, "aprobado", { request });
+        // Igual que un médico aprobando el informe subido.
+        await applyDocumentValidation(documentId, "aprobado", { request });
 
-      if (previousSigned.length > 0) {
-        const { error: replaceError } = await supabase
+        if (previousSigned.length > 0) {
+          const { error: replaceError } = await supabase
+            .from("imaging_reports")
+            .update({ status: "reemplazado", updated_at: signedAt.toISOString() })
+            .in(
+              "id",
+              previousSigned.map((row) => row.id),
+            );
+          if (replaceError) throw replaceError;
+        }
+
+        const { error: signError } = await supabase
           .from("imaging_reports")
-          .update({ status: "reemplazado", updated_at: signedAt.toISOString() })
-          .in(
-            "id",
-            previousSigned.map((row) => row.id),
-          );
-        if (replaceError) throw replaceError;
+          .update({
+            status: "firmado",
+            signed_by: request.user.id,
+            signed_at: signedAt.toISOString(),
+            signer_name: signer.fullName,
+            signer_rut: signer.rut,
+            signer_specialty: signer.specialty,
+            document_id: documentId,
+            updated_at: signedAt.toISOString(),
+          })
+          .eq("id", draft.id)
+          .eq("status", "borrador");
+        if (signError) throw signError;
+      } catch (flowError) {
+        // El enlace nuevo no sirve si la firma no terminó.
+        await discardShareLink(shareLink);
+        throw flowError;
       }
 
-      const { error: signError } = await supabase
-        .from("imaging_reports")
-        .update({
-          status: "firmado",
-          signed_by: request.user.id,
-          signed_at: signedAt.toISOString(),
-          signer_name: signer.fullName,
-          signer_rut: signer.rut,
-          signer_specialty: signer.specialty,
-          document_id: documentId,
-          updated_at: signedAt.toISOString(),
-        })
-        .eq("id", draft.id)
-        .eq("status", "borrador");
-      if (signError) throw signError;
+      // El QR de la versión anterior deja de funcionar. El informe ya quedó
+      // firmado: si esto falla se deja en el log y la firma responde OK.
+      if (shareLink) {
+        try {
+          await revokeOrderShareLinks(context.orderId, request, { exceptId: shareLink.id });
+        } catch (revokeError) {
+          console.error("No fue posible revocar los enlaces anteriores del paciente:", revokeError?.message ?? revokeError);
+        }
+      }
 
       // La orden cambió de estado: se relee para la respuesta.
       const refreshed = await loadReportContext(request);
@@ -5612,8 +5647,8 @@ function publicBackendOrigin(request) {
   return `${proto}://${host}`;
 }
 
-function signedImageUrl(request, fileId, kind) {
-  const token = signImageToken({ fileId, kind });
+function signedImageUrl(request, fileId, kind, tokenOptions) {
+  const token = signImageToken({ fileId, kind }, tokenOptions);
   return `${publicBackendOrigin(request)}/imaging-files/${encodeURIComponent(fileId)}/${kind}?t=${encodeURIComponent(token)}`;
 }
 
@@ -5840,6 +5875,31 @@ function pacsPublicOrigin() {
   return configured || new URL(process.env.ORTHANC_URL).origin;
 }
 
+// StudyInstanceUID de los estudios de Orthanc vinculados a la orden.
+async function orderStudyInstanceUids(orderId) {
+  const { data: linkedStudies, error: linkedError } = await supabase
+    .from("orthanc_studies")
+    .select("orthanc_study_id")
+    .eq("linked_order_id", orderId)
+    .eq("status", "linked");
+  if (linkedError) throw linkedError;
+
+  const studyUids = [];
+  for (const { orthanc_study_id: orthancStudyId } of linkedStudies ?? []) {
+    const study = await orthancGetJson(`/studies/${orthancStudyId}`);
+    const uid = study?.MainDicomTags?.StudyInstanceUID;
+    if (uid) studyUids.push(uid);
+  }
+  return studyUids;
+}
+
+function ohifViewerUrl(studyUids, token) {
+  return (
+    `${pacsPublicOrigin()}/ohif/viewer?StudyInstanceUIDs=${studyUids.map(encodeURIComponent).join(",")}` +
+    `&token=${encodeURIComponent(token)}`
+  );
+}
+
 app.get("/viewer-tokens/public-key", (_request, response) => {
   try {
     response.setHeader("Cache-Control", "public, max-age=300");
@@ -5873,19 +5933,7 @@ app.post(
         return response.status(404).json({ error: "Orden de imagenología no encontrada." });
       }
 
-      const { data: linkedStudies, error: linkedError } = await supabase
-        .from("orthanc_studies")
-        .select("orthanc_study_id")
-        .eq("linked_order_id", orderId)
-        .eq("status", "linked");
-      if (linkedError) throw linkedError;
-
-      const studyUids = [];
-      for (const { orthanc_study_id: orthancStudyId } of linkedStudies ?? []) {
-        const study = await orthancGetJson(`/studies/${orthancStudyId}`);
-        const uid = study?.MainDicomTags?.StudyInstanceUID;
-        if (uid) studyUids.push(uid);
-      }
+      const studyUids = await orderStudyInstanceUids(orderId);
       if (studyUids.length === 0) {
         return response.status(409).json({ error: "Esta orden no tiene estudios en el PACS para abrir en OHIF." });
       }
@@ -5896,10 +5944,7 @@ app.post(
         clinic: clinicId,
         order: orderId,
       });
-      const url =
-        `${pacsPublicOrigin()}/ohif/viewer?StudyInstanceUIDs=${studyUids.map(encodeURIComponent).join(",")}` +
-        `&token=${encodeURIComponent(token)}`;
-      return response.json({ url, expiresAt, studies: studyUids.length });
+      return response.json({ url: ohifViewerUrl(studyUids, token), expiresAt, studies: studyUids.length });
     } catch (error) {
       console.error("Error al preparar el enlace del visor OHIF:", error);
       return response.status(500).json({ error: "No fue posible preparar el visor OHIF." });
@@ -5962,6 +6007,464 @@ app.get("/imaging-files/:fileId/:kind", async (request, response, next) => {
     response.destroy();
   }
 });
+
+// ============================================
+// IMAGENOLOGÍA — VISOR DEL PACIENTE (QR del informe firmado)
+// ============================================
+// Al firmar un informe (POST .../report/sign) se crea un enlace
+// <PATIENT_VIEWER_URL>/ver/<token> que va como QR en el PDF (shareLinks.mjs,
+// sql/qr_visor_paciente.sql). Vence a los 365 días; firmar una versión nueva
+// revoca los anteriores. El paciente abre public/ver.html, ingresa los 4
+// primeros dígitos de su RUT (POST .../unlock) y con la sesión de 2 h que
+// recibe pide las imágenes de ESA orden (GET .../data) y el PDF firmado.
+// Rutas públicas, fuera de /patients y sin requireAuth: la autorización es el
+// token + la clave. Token inexistente, revocado o vencido: el mismo 404.
+
+const SHARE_LINK_MANAGERS = ["medico", "administrador"];
+const SHARE_LINK_NOT_FOUND = "Este enlace no es válido o ya venció. Pide uno nuevo en tu centro médico.";
+const SHARE_RATE_WINDOW_MS = 10 * 60 * 1000;
+
+// Base del enlace del QR: PATIENT_VIEWER_URL, o el origen público del backend.
+function patientViewerBase(request) {
+  const configured = (process.env.PATIENT_VIEWER_URL || "").trim().replace(/\/+$/, "");
+  return configured || publicBackendOrigin(request);
+}
+
+// Crea el enlace de la firma en curso: { id, url } o null si no se pudo (el
+// informe se firma igual, sin QR).
+async function tryCreateShareLink(context, report, request) {
+  try {
+    const { token, tokenHash } = createShareToken();
+    const { data, error } = await supabase
+      .from("study_share_links")
+      .insert({
+        clinic_id: context.order.clinic_id,
+        imaging_order_id: context.orderId,
+        imaging_report_id: report.id,
+        token_hash: tokenHash,
+        expires_at: new Date(Date.now() + SHARE_LINK_TTL_MS).toISOString(),
+        created_by: request.user.id,
+      })
+      .select("id")
+      .single();
+    if (error) throw error;
+    return { id: data.id, url: shareLinkUrl(patientViewerBase(request), token) };
+  } catch (error) {
+    console.error("No fue posible crear el enlace del paciente; el informe se firma sin QR:", error?.message ?? error);
+    return null;
+  }
+}
+
+async function discardShareLink(link) {
+  if (!link) return;
+  const { error } = await supabase.from("study_share_links").delete().eq("id", link.id);
+  if (error) console.error("No fue posible borrar el enlace del paciente sin usar:", error.message ?? error);
+}
+
+async function revokeOrderShareLinks(orderId, request, { exceptId = null } = {}) {
+  let query = supabase
+    .from("study_share_links")
+    .update({ revoked_at: new Date().toISOString(), revoked_by: request.user.id })
+    .eq("imaging_order_id", orderId)
+    .is("revoked_at", null);
+  if (exceptId) query = query.neq("id", exceptId);
+  const { error } = await query;
+  if (error) throw error;
+}
+
+function shapeShareLink(link) {
+  return {
+    status: shareLinkStatus(link),
+    createdAt: link.created_at,
+    expiresAt: link.expires_at,
+    revokedAt: link.revoked_at ?? null,
+    accessCount: link.access_count ?? 0,
+    lastAccessAt: link.last_access_at ?? null,
+    locked: isShareLinkLocked(link),
+  };
+}
+
+// El enlace vigente de la orden; si no hay, el más reciente.
+async function currentShareLink(orderId) {
+  const { data, error } = await supabase
+    .from("study_share_links")
+    .select("*")
+    .eq("imaging_order_id", orderId)
+    .order("created_at", { ascending: false });
+  if (error) throw error;
+  const links = data ?? [];
+  return links.find((link) => shareLinkStatus(link) === "activo") ?? links[0] ?? null;
+}
+
+// Fila de study_share_links si el token existe, no está revocado y no venció.
+async function findActiveShareLink(token) {
+  if (!isShareTokenFormat(token)) return null;
+  const { data, error } = await supabase
+    .from("study_share_links")
+    .select("*")
+    .eq("token_hash", hashShareToken(token))
+    .maybeSingle();
+  if (error) throw error;
+  return data && shareLinkStatus(data) === "activo" ? data : null;
+}
+
+async function logShareAccess(link, request, action, ok) {
+  const { error } = await supabase
+    .from("study_share_access_log")
+    .insert({ link_id: link.id, ip: request.ip ?? null, ok, action });
+  if (error) console.error("No fue posible registrar el acceso al enlace del paciente:", error.message ?? error);
+}
+
+function rejectIfShareRateLimited(request, response, bucket, max) {
+  if (!isRateLimited(`ver-${bucket}:${request.ip}`, { max, windowMs: SHARE_RATE_WINDOW_MS })) return false;
+  response.status(429).json({ error: "Demasiados intentos. Espera unos minutos e intenta de nuevo." });
+  return true;
+}
+
+// Enlace activo + sesión válida para él. Si no, responde (404/401) y null.
+async function loadShareAccess(request, response, { allowQuerySession = false } = {}) {
+  const link = await findActiveShareLink(request.params.token);
+  if (!link) {
+    response.status(404).json({ error: SHARE_LINK_NOT_FOUND });
+    return null;
+  }
+  const session = request.get("X-Viewer-Session") || (allowQuerySession ? request.query.s : null);
+  const payload = verifyShareSession(session, link.id);
+  if (!payload) {
+    response.status(401).json({ error: "Ingresa tu clave para ver las imágenes.", code: "session_required" });
+    return null;
+  }
+  return { link, session, payload };
+}
+
+// Orden del enlace (siempre de la clínica del enlace), o null.
+async function loadShareOrder(link) {
+  const { data, error } = await supabase
+    .from("imaging_orders")
+    .select("*")
+    .eq("id", link.imaging_order_id)
+    .eq("clinic_id", link.clinic_id)
+    .maybeSingle();
+  if (error) throw error;
+  return data ?? null;
+}
+
+// Documento del informe firmado vigente de la orden (con su PDF), o null.
+async function signedReportDocument(orderId) {
+  const { data: reports, error } = await supabase
+    .from("imaging_reports")
+    .select("id, version, document_id")
+    .eq("imaging_order_id", orderId)
+    .eq("status", "firmado")
+    .order("version", { ascending: false })
+    .limit(1);
+  if (error) throw error;
+  const documentId = reports?.[0]?.document_id;
+  if (documentId == null) return null;
+  const { data: document, error: documentError } = await supabase
+    .from("documents")
+    .select("*")
+    .eq("id", documentId)
+    .maybeSingle();
+  if (documentError) throw documentError;
+  return document?.pdf_path && document.validation_status === "aprobado" ? document : null;
+}
+
+// Imágenes de la orden por serie, en el mismo orden que GET .../images
+// (Orthanc por serie e instancia, después las filas antiguas de Storage). Cada
+// imagen trae su vista previa y su DICOM firmados por ttlMs (lo que le queda a
+// la sesión): la página las carga de a poco, no todas de golpe.
+async function patientStudySeries(request, orderId, ttlMs) {
+  const { data: fileRows, error } = await supabase
+    .from("imaging_files")
+    .select("*")
+    .eq("order_id", orderId)
+    .order("uploaded_at", { ascending: false });
+  if (error) throw error;
+
+  const series = [];
+  const byKey = new Map();
+  for (const row of (fileRows ?? []).filter(isOrthancImagingFile).sort(compareOrthancFiles)) {
+    const key = row.orthanc_series_id ?? `instancia:${row.orthanc_instance_id}`;
+    let entry = byKey.get(key);
+    if (!entry) {
+      entry = { number: row.orthanc_series_number ?? null, images: [] };
+      byKey.set(key, entry);
+      series.push(entry);
+    }
+    entry.images.push({
+      preview: signedImageUrl(request, row.id, "preview", { ttlMs }),
+      dicom: signedImageUrl(request, row.id, "dicom", { ttlMs }),
+    });
+  }
+
+  const storageRows = (fileRows ?? []).filter((row) => !isOrthancImagingFile(row));
+  if (storageRows.length > 0) {
+    const seconds = Math.max(60, Math.floor(ttlMs / 1000));
+    const signedUrl = async (filePath) => {
+      if (!filePath) return null;
+      const { data } = await supabase.storage.from("imaging").createSignedUrl(filePath, seconds);
+      return data?.signedUrl ?? null;
+    };
+    const images = await Promise.all(
+      storageRows.map(async (row) => ({ preview: await signedUrl(row.png_path), dicom: await signedUrl(row.dicom_path) })),
+    );
+    series.push({ number: null, images });
+  }
+
+  return series.map((entry, index) => ({
+    title: entry.number != null ? `Serie ${entry.number}` : `Serie ${index + 1}`,
+    count: entry.images.length,
+    images: entry.images,
+  }));
+}
+
+// Enlace OHIF del paciente (si está habilitado y la orden tiene estudios en el
+// PACS), atado a este enlace. Si Orthanc no responde, sin botón.
+async function patientOhifUrl(link) {
+  if (!isOhifViewerEnabled()) return null;
+  try {
+    const studyUids = await orderStudyInstanceUids(link.imaging_order_id);
+    if (studyUids.length === 0) return null;
+    const { token } = signViewerToken({
+      studies: studyUids,
+      sub: `share:${link.id}`,
+      clinic: link.clinic_id,
+      order: link.imaging_order_id,
+    });
+    return ohifViewerUrl(studyUids, token);
+  } catch (error) {
+    console.error("No fue posible preparar OHIF para el enlace del paciente:", error?.message ?? error);
+    return null;
+  }
+}
+
+// Nada de estas rutas se guarda en cachés, se indexa ni filtra el token
+// por Referer.
+app.use(["/ver", "/public/study"], (_request, response, next) => {
+  response.set("Cache-Control", "no-store");
+  response.set("Referrer-Policy", "no-referrer");
+  response.set("X-Robots-Tag", "noindex, nofollow");
+  next();
+});
+
+// GET /ver/:token -> la página (no entrega datos; los pide con la clave).
+app.get("/ver/:token", (request, response) => {
+  if (rejectIfShareRateLimited(request, response, "read", 120)) return;
+  response.sendFile(path.join(__dirname, "public", "ver.html"));
+});
+
+// POST /public/study/:token/unlock { pin } -> { session, expiresAt }
+app.post("/public/study/:token/unlock", async (request, response) => {
+  try {
+    if (rejectIfShareRateLimited(request, response, "unlock", 30)) return;
+
+    const link = await findActiveShareLink(request.params.token);
+    if (!link) return response.status(404).json({ error: SHARE_LINK_NOT_FOUND });
+
+    const now = Date.now();
+    if (isShareLinkLocked(link, { now })) {
+      return response.status(423).json({
+        error: "Por seguridad, el enlace está bloqueado por unos minutos. Intenta de nuevo más tarde.",
+        code: "locked",
+        lockedUntil: link.locked_until,
+      });
+    }
+
+    const pin = typeof request.body?.pin === "string" ? request.body.pin.trim() : "";
+    if (!/^\d{4}$/.test(pin)) {
+      return response.status(400).json({ error: "Ingresa los 4 primeros dígitos de tu RUT." });
+    }
+
+    const order = await loadShareOrder(link);
+    if (!order) return response.status(404).json({ error: SHARE_LINK_NOT_FOUND });
+    const { data: patient, error: patientError } = await supabase
+      .from("patients")
+      .select("rut")
+      .eq("id", order.patient_id)
+      .maybeSingle();
+    if (patientError) throw patientError;
+
+    if (!pinMatchesRut(pin, patient?.rut)) {
+      const failed = (link.failed_attempts ?? 0) + 1;
+      const locked = failed >= SHARE_MAX_FAILED_ATTEMPTS;
+      const lockedUntil = locked ? new Date(now + SHARE_LOCK_MS).toISOString() : null;
+      // Al bloquear se reinicia la cuenta: después del bloqueo hay otros 5.
+      const { error: updateError } = await supabase
+        .from("study_share_links")
+        .update({ failed_attempts: locked ? 0 : failed, locked_until: lockedUntil })
+        .eq("id", link.id);
+      if (updateError) throw updateError;
+      await logShareAccess(link, request, "unlock_fail", false);
+
+      if (locked) {
+        return response.status(423).json({
+          error: "Ingresaste una clave incorrecta 5 veces. Por seguridad, el enlace quedó bloqueado 15 minutos.",
+          code: "locked",
+          lockedUntil,
+        });
+      }
+      return response.status(401).json({
+        error: "La clave no es correcta. Son los 4 primeros dígitos de tu RUT, sin puntos.",
+        code: "wrong_pin",
+        remainingAttempts: SHARE_MAX_FAILED_ATTEMPTS - failed,
+      });
+    }
+
+    if (link.failed_attempts || link.locked_until) {
+      const { error: resetError } = await supabase
+        .from("study_share_links")
+        .update({ failed_attempts: 0, locked_until: null })
+        .eq("id", link.id);
+      if (resetError) throw resetError;
+    }
+    await logShareAccess(link, request, "unlock_ok", true);
+    return response.json(signShareSession(link.id, { now }));
+  } catch (error) {
+    console.error("Error al validar la clave del enlace del paciente:", error);
+    return response.status(500).json({ error: "No fue posible validar la clave. Intenta de nuevo." });
+  }
+});
+
+// GET /public/study/:token/data (X-Viewer-Session) -> lo que muestra la
+// página: centro, examen, fecha, series con sus imágenes, OHIF e informe.
+// Nada más de la ficha del paciente.
+app.get("/public/study/:token/data", async (request, response) => {
+  try {
+    if (rejectIfShareRateLimited(request, response, "read", 120)) return;
+    const access = await loadShareAccess(request, response);
+    if (!access) return;
+    const { link, session, payload } = access;
+
+    const order = await loadShareOrder(link);
+    if (!order) return response.status(404).json({ error: SHARE_LINK_NOT_FOUND });
+
+    const [{ data: clinic, error: clinicError }, { data: typeRows, error: typesError }] = await Promise.all([
+      supabase.from("clinics").select("id, name, logo_path").eq("id", link.clinic_id).maybeSingle(),
+      supabase.from("imaging_order_types").select("imaging_types(name)").eq("order_id", order.id),
+    ]);
+    if (clinicError) throw clinicError;
+    if (typesError) throw typesError;
+
+    const ttlMs = Math.max(60 * 1000, payload.exp - Date.now());
+    const [series, ohifUrl, reportDocument] = await Promise.all([
+      patientStudySeries(request, order.id, ttlMs),
+      patientOhifUrl(link),
+      signedReportDocument(order.id),
+    ]);
+
+    const now = new Date().toISOString();
+    const { error: statsError } = await supabase
+      .from("study_share_links")
+      .update({ last_access_at: now, access_count: (link.access_count ?? 0) + 1 })
+      .eq("id", link.id);
+    if (statsError) console.error("No fue posible actualizar los accesos del enlace del paciente:", statsError.message);
+    await logShareAccess(link, request, "view", true);
+
+    const studyUrl = `${publicBackendOrigin(request)}/public/study/${encodeURIComponent(request.params.token)}`;
+    const sessionQuery = `?s=${encodeURIComponent(session)}`;
+    return response.json({
+      clinic: {
+        name: clinic?.name ?? "",
+        logoUrl: clinic?.logo_path ? `${studyUrl}/logo${sessionQuery}` : null,
+      },
+      exam: {
+        title: (typeRows ?? []).map((row) => row.imaging_types?.name).filter(Boolean).join(" + ") || "Imagenología",
+        date: formatChileDate(order.performed_at ?? order.requested_at),
+      },
+      series,
+      totalImages: series.reduce((sum, entry) => sum + entry.count, 0),
+      ohifUrl,
+      reportUrl: reportDocument ? `${studyUrl}/report.pdf${sessionQuery}` : null,
+      sessionExpiresAt: new Date(payload.exp).toISOString(),
+    });
+  } catch (error) {
+    console.error("Error al cargar el estudio del enlace del paciente:", error);
+    return response.status(500).json({ error: "No fue posible cargar tus imágenes. Intenta de nuevo." });
+  }
+});
+
+// GET /public/study/:token/report.pdf (X-Viewer-Session o ?s=) -> el PDF
+// firmado vigente de la orden.
+app.get("/public/study/:token/report.pdf", async (request, response) => {
+  try {
+    if (rejectIfShareRateLimited(request, response, "read", 120)) return;
+    const access = await loadShareAccess(request, response, { allowQuerySession: true });
+    if (!access) return;
+
+    const order = await loadShareOrder(access.link);
+    const document = order ? await signedReportDocument(order.id) : null;
+    if (!document) return response.status(404).json({ error: "El informe no está disponible." });
+
+    const { data: file, error } = await supabase.storage.from(CLINICAL_DOCS_BUCKET).download(document.pdf_path);
+    if (error || !file) {
+      console.error(`No fue posible leer el PDF del documento ${document.id}:`, error?.message);
+      return response.status(404).json({ error: "El informe no está disponible." });
+    }
+    const name = `Informe ${order.accession_number ?? "Imagenda"}.pdf`.replace(/[^\w .-]/g, "_");
+    response.set("Content-Type", "application/pdf");
+    response.set("Content-Disposition", `attachment; filename="${name}"`);
+    response.set("X-Content-Type-Options", "nosniff");
+    return response.send(Buffer.from(await file.arrayBuffer()));
+  } catch (error) {
+    console.error("Error al entregar el informe del enlace del paciente:", error);
+    return response.status(500).json({ error: "No fue posible descargar el informe." });
+  }
+});
+
+// GET /public/study/:token/logo?s= -> logo de la clínica (para <img>).
+app.get("/public/study/:token/logo", async (request, response) => {
+  try {
+    if (rejectIfShareRateLimited(request, response, "read", 120)) return;
+    const access = await loadShareAccess(request, response, { allowQuerySession: true });
+    if (!access) return;
+    const { data: clinic, error } = await supabase
+      .from("clinics")
+      .select("logo_path")
+      .eq("id", access.link.clinic_id)
+      .maybeSingle();
+    if (error) throw error;
+    if (!clinic?.logo_path) return response.status(404).json({ error: "La clínica no tiene logo." });
+    return await sendClinicLogo(response, clinic.logo_path);
+  } catch (error) {
+    console.error("Error al entregar el logo del enlace del paciente:", error);
+    return response.status(500).json({ error: "No fue posible obtener el logo." });
+  }
+});
+
+// Estado del enlace de la orden (app, detalle de la orden).
+app.get(
+  "/patients/:id/imaging-orders/:orderId/share-link",
+  requireRole(SHARE_LINK_MANAGERS),
+  async (request, response) => {
+    try {
+      const context = await loadReportContext(request);
+      if (!context) return response.status(404).json({ error: "Orden de imagenología no encontrada." });
+      const link = await currentShareLink(context.orderId);
+      return response.json({ link: link ? shapeShareLink(link) : null });
+    } catch (error) {
+      console.error("Error al obtener el enlace del paciente:", error);
+      return response.status(500).json({ error: "No fue posible obtener el enlace del paciente." });
+    }
+  },
+);
+
+app.post(
+  "/patients/:id/imaging-orders/:orderId/share-link/revoke",
+  requireRole(SHARE_LINK_MANAGERS),
+  async (request, response) => {
+    try {
+      const context = await loadReportContext(request);
+      if (!context) return response.status(404).json({ error: "Orden de imagenología no encontrada." });
+      await revokeOrderShareLinks(context.orderId, request);
+      const link = await currentShareLink(context.orderId);
+      return response.json({ link: link ? shapeShareLink(link) : null });
+    } catch (error) {
+      console.error("Error al revocar el enlace del paciente:", error);
+      return response.status(500).json({ error: "No fue posible revocar el enlace." });
+    }
+  },
+);
 
 // ============================================
 // IMAGENOLOGÍA — DESCARGAR PARA DVD

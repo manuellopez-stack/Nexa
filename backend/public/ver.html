@@ -1,0 +1,659 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<meta name="robots" content="noindex, nofollow" />
+<meta name="referrer" content="no-referrer" />
+<title>Tus imágenes — Imagenda</title>
+<link rel="icon" href="data:," />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link href="https://fonts.googleapis.com/css2?family=Sora:wght@600&display=swap" rel="stylesheet" />
+<!--
+  Visor del paciente (QR del informe firmado). La página no trae datos: con
+  la clave (4 primeros dígitos del RUT) pide una sesión de 2 horas a
+  POST /public/study/<token>/unlock y con ella las imágenes de ESE examen a
+  GET /public/study/<token>/data. La sesión vive solo en memoria: al recargar
+  se vuelve a pedir la clave.
+-->
+<style>
+  :root {
+    --primary: #0F6D63;
+    --primary-dark: #0B4F48;
+    --secondary: #E3A23C;
+    --background: #F5F3EE;
+    --surface: #ffffff;
+    --text-primary: #142420;
+    --text-secondary: #52625C;
+    --border: #E4E0D6;
+    --error: #B42318;
+    --error-bg: #FEF3F2;
+    --warn-bg: #FDF4E3;
+  }
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    background: var(--background);
+    color: var(--text-primary);
+    -webkit-font-smoothing: antialiased;
+  }
+  h1, h2, .brand-name { font-family: "Sora", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; font-weight: 600; }
+  .page {
+    max-width: 560px;
+    margin: 0 auto;
+    min-height: 100vh;
+    background: var(--surface);
+    box-shadow: 0 0 24px rgba(20, 36, 32, 0.06);
+    display: flex;
+    flex-direction: column;
+  }
+  main { padding: 20px; flex: 1; }
+  .brand { display: flex; align-items: center; gap: 10px; }
+  .dot {
+    width: 12px; height: 12px; border-radius: 999px;
+    background: linear-gradient(135deg, var(--primary), var(--secondary));
+  }
+  .brand-name { font-size: 20px; letter-spacing: -0.01em; }
+  footer.powered {
+    display: flex; align-items: center; justify-content: center; gap: 6px;
+    padding: 18px 20px 28px; font-size: 12px; color: var(--text-secondary);
+  }
+  footer.powered .dot { width: 7px; height: 7px; }
+  footer.powered strong { color: var(--text-primary); font-weight: 600; }
+
+  /* Paso 1: clave */
+  .unlock { padding-top: 28px; }
+  .unlock h1 { font-size: 22px; margin: 28px 0 8px; line-height: 1.25; }
+  .unlock p.lead { margin: 0 0 22px; color: var(--text-secondary); font-size: 15px; line-height: 1.45; }
+  .pin {
+    width: 100%;
+    padding: 14px 16px;
+    font-size: 28px;
+    letter-spacing: 0.5em;
+    text-align: center;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    color: var(--text-primary);
+    background: var(--surface);
+    font-variant-numeric: tabular-nums;
+  }
+  .pin:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 3px rgba(15, 109, 99, 0.14); }
+  .hint { font-size: 13px; color: var(--text-secondary); margin: 8px 0 18px; }
+  .btn {
+    display: flex; align-items: center; justify-content: center; gap: 8px;
+    width: 100%;
+    padding: 14px;
+    border: none;
+    border-radius: 12px;
+    font-size: 16px;
+    font-weight: 600;
+    cursor: pointer;
+    text-decoration: none;
+    background: var(--primary);
+    color: #fff;
+  }
+  .btn:active { background: var(--primary-dark); }
+  .btn:disabled { opacity: 0.55; cursor: default; }
+  .btn.outline { background: var(--surface); color: var(--primary); border: 1.5px solid var(--primary); }
+  .btn.amber { background: var(--secondary); color: #2B1D05; }
+  .msg {
+    border-radius: 10px;
+    padding: 12px 14px;
+    font-size: 14px;
+    line-height: 1.4;
+    margin-bottom: 16px;
+    background: var(--error-bg);
+    color: var(--error);
+  }
+  .msg.warn { background: var(--warn-bg); color: #8A5A0B; }
+  .spinner {
+    width: 18px; height: 18px; border-radius: 999px;
+    border: 2.5px solid rgba(255, 255, 255, 0.45); border-top-color: #fff;
+    animation: spin 0.8s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* Paso 2: estudio */
+  .study-head { display: flex; align-items: center; gap: 12px; margin-bottom: 14px; }
+  .clinic-logo { max-width: 120px; max-height: 48px; object-fit: contain; }
+  .clinic-name { font-weight: 600; font-size: 15px; }
+  .study h1 { font-size: 20px; margin: 4px 0 4px; line-height: 1.25; }
+  .study .date { color: var(--text-secondary); font-size: 14px; margin: 0 0 18px; }
+  .actions { display: grid; gap: 10px; margin-bottom: 22px; }
+  .series-title { font-size: 13px; font-weight: 600; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.04em; margin: 0 0 10px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 10px; }
+  .card {
+    position: relative;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    overflow: hidden;
+    background: #0b0f0e;
+    padding: 0;
+    cursor: pointer;
+    aspect-ratio: 1 / 1;
+    width: 100%;
+  }
+  .card img { width: 100%; height: 100%; object-fit: contain; display: block; }
+  .card .label {
+    position: absolute; left: 0; right: 0; bottom: 0;
+    padding: 18px 10px 8px;
+    background: linear-gradient(transparent, rgba(0, 0, 0, 0.75));
+    color: #fff; font-size: 13px; text-align: left;
+  }
+  .card .label strong { display: block; font-size: 14px; }
+  .empty { color: var(--text-secondary); font-size: 14px; padding: 16px 0; }
+
+  /* Visor a pantalla completa */
+  .viewer {
+    position: fixed; inset: 0; z-index: 10;
+    background: #000;
+    display: flex; flex-direction: column;
+    color: #fff;
+  }
+  .viewer .bar {
+    display: flex; align-items: center; justify-content: space-between; gap: 8px;
+    padding: calc(10px + env(safe-area-inset-top)) 12px 10px;
+    background: rgba(0, 0, 0, 0.6);
+    font-size: 15px;
+  }
+  .viewer .counter { font-variant-numeric: tabular-nums; font-weight: 600; }
+  .viewer .series-name { color: rgba(255, 255, 255, 0.7); font-size: 13px; }
+  .icon-btn {
+    width: 44px; height: 44px; border-radius: 999px; border: none;
+    background: rgba(255, 255, 255, 0.12); color: #fff; font-size: 22px; line-height: 1;
+    display: inline-flex; align-items: center; justify-content: center; cursor: pointer;
+  }
+  .icon-btn:disabled { opacity: 0.3; }
+  .stage {
+    position: relative; flex: 1; overflow: hidden;
+    touch-action: none; user-select: none; -webkit-user-select: none;
+  }
+  .stage img {
+    position: absolute; inset: 0; width: 100%; height: 100%;
+    object-fit: contain;
+    transform-origin: 0 0;
+    will-change: transform;
+    -webkit-user-drag: none;
+  }
+  .stage .loading {
+    position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
+  }
+  .stage .loading .spinner { width: 34px; height: 34px; border-width: 3px; }
+  .stage .img-error {
+    position: absolute; left: 20px; right: 20px; top: 50%; transform: translateY(-50%);
+    text-align: center; color: rgba(255, 255, 255, 0.8); font-size: 14px;
+  }
+  .nav { position: absolute; top: 50%; transform: translateY(-50%); }
+  .nav.prev { left: 8px; }
+  .nav.next { right: 8px; }
+  .viewer .bottom {
+    padding: 10px 16px calc(14px + env(safe-area-inset-bottom));
+    background: rgba(0, 0, 0, 0.6);
+  }
+  .viewer input[type=range] { width: 100%; accent-color: var(--secondary); }
+  .viewer .tip { text-align: center; font-size: 12px; color: rgba(255, 255, 255, 0.6); margin-top: 4px; }
+</style>
+</head>
+<body>
+<div class="page">
+  <main>
+    <!-- Paso 1 -->
+    <section id="step-unlock" class="unlock">
+      <div class="brand"><span class="dot"></span><span class="brand-name">Imagenda</span></div>
+      <h1>Ingresa los 4 primeros dígitos de tu RUT</h1>
+      <p class="lead">Para proteger tus datos, confirma que eres tú antes de ver las imágenes de tu examen.</p>
+      <div id="unlock-msg" class="msg" role="alert" hidden></div>
+      <form id="unlock-form" novalidate>
+        <label for="pin" class="hint" style="display:block;margin:0 0 8px">Clave</label>
+        <input id="pin" class="pin" type="tel" inputmode="numeric" pattern="[0-9]*" maxlength="4"
+               autocomplete="off" autocorrect="off" spellcheck="false" aria-describedby="pin-hint" />
+        <p id="pin-hint" class="hint">Ejemplo: si tu RUT es 12.345.678-5, la clave es 1234.</p>
+        <button id="unlock-btn" class="btn" type="submit">Ver imágenes</button>
+      </form>
+    </section>
+
+    <!-- Paso 2 -->
+    <section id="step-study" class="study" hidden>
+      <div class="study-head">
+        <img id="clinic-logo" class="clinic-logo" alt="" hidden />
+        <div id="clinic-name" class="clinic-name"></div>
+      </div>
+      <h1 id="exam-title"></h1>
+      <p id="exam-date" class="date"></p>
+      <div id="study-msg" class="msg warn" role="status" hidden></div>
+      <div class="actions">
+        <a id="report-btn" class="btn" href="#" hidden>Descargar informe (PDF)</a>
+        <a id="ohif-btn" class="btn outline" href="#" target="_blank" rel="noopener noreferrer" hidden>Visor profesional</a>
+      </div>
+      <p class="series-title" id="series-title">Imágenes</p>
+      <div id="series-grid" class="grid"></div>
+      <p id="series-empty" class="empty" hidden>Las imágenes de este examen todavía no están disponibles.</p>
+    </section>
+  </main>
+  <footer class="powered"><span class="dot"></span>Con tecnología de <strong>Imagenda</strong></footer>
+</div>
+
+<!-- Visor a pantalla completa -->
+<div id="viewer" class="viewer" hidden role="dialog" aria-modal="true" aria-label="Visor de imágenes">
+  <div class="bar">
+    <div>
+      <div id="viewer-counter" class="counter">1 / 1</div>
+      <div id="viewer-series" class="series-name"></div>
+    </div>
+    <button id="viewer-close" class="icon-btn" type="button" aria-label="Cerrar">✕</button>
+  </div>
+  <div id="stage" class="stage">
+    <img id="viewer-img" alt="" draggable="false" />
+    <div id="viewer-loading" class="loading" hidden><div class="spinner"></div></div>
+    <div id="viewer-error" class="img-error" hidden>No se pudo cargar esta imagen.</div>
+    <button id="viewer-prev" class="icon-btn nav prev" type="button" aria-label="Imagen anterior">‹</button>
+    <button id="viewer-next" class="icon-btn nav next" type="button" aria-label="Imagen siguiente">›</button>
+  </div>
+  <div class="bottom">
+    <input id="viewer-range" type="range" min="1" max="1" value="1" aria-label="Ir a la imagen" />
+    <div class="tip">Desliza para cambiar de imagen · pellizca para hacer zoom</div>
+  </div>
+</div>
+
+<script>
+(() => {
+  "use strict";
+
+  const token = decodeURIComponent((location.pathname.match(/\/ver\/([^/?#]+)/) || [])[1] || "");
+  const api = (suffix) => `/public/study/${encodeURIComponent(token)}${suffix}`;
+  const $ = (id) => document.getElementById(id);
+
+  // Solo en memoria: al recargar la página se vuelve a pedir la clave.
+  let session = null;
+  let study = null;
+
+  // ---------------------------------------------------------------- Paso 1
+  const form = $("unlock-form");
+  const pinInput = $("pin");
+  const unlockBtn = $("unlock-btn");
+  const unlockMsg = $("unlock-msg");
+
+  function showUnlockMessage(text, kind = "error") {
+    unlockMsg.textContent = text;
+    unlockMsg.className = kind === "warn" ? "msg warn" : "msg";
+    unlockMsg.hidden = !text;
+  }
+
+  function setBusy(busy) {
+    unlockBtn.disabled = busy;
+    unlockBtn.innerHTML = busy ? '<span class="spinner"></span>' : "Ver imágenes";
+  }
+
+  function untilText(iso) {
+    const minutes = Math.max(1, Math.ceil((new Date(iso).getTime() - Date.now()) / 60000));
+    return minutes === 1 ? "1 minuto" : `${minutes} minutos`;
+  }
+
+  function invalidLink() {
+    showUnlockMessage("Este enlace no es válido o ya venció. Pide uno nuevo en tu centro médico.");
+    form.hidden = true;
+  }
+
+  pinInput.addEventListener("input", () => {
+    pinInput.value = pinInput.value.replace(/\D/g, "").slice(0, 4);
+  });
+
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const pin = pinInput.value.trim();
+    if (!/^\d{4}$/.test(pin)) {
+      showUnlockMessage("Ingresa los 4 primeros dígitos de tu RUT.");
+      pinInput.focus();
+      return;
+    }
+    showUnlockMessage("");
+    setBusy(true);
+    try {
+      const response = await fetch(api("/unlock"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pin }),
+        cache: "no-store",
+        referrerPolicy: "no-referrer",
+      });
+      const body = await response.json().catch(() => ({}));
+      if (response.ok && body.session) {
+        session = body.session;
+        pinInput.value = "";
+        await loadStudy();
+        return;
+      }
+      if (response.status === 404) return invalidLink();
+      if (response.status === 423) {
+        return showUnlockMessage(
+          `${body.error || "El enlace está bloqueado."} Podrás intentarlo de nuevo en ${untilText(body.lockedUntil)}.`,
+          "warn",
+        );
+      }
+      if (response.status === 401 && typeof body.remainingAttempts === "number") {
+        const left = body.remainingAttempts;
+        return showUnlockMessage(
+          `${body.error} Te ${left === 1 ? "queda 1 intento" : `quedan ${left} intentos`}.`,
+        );
+      }
+      showUnlockMessage(body.error || "No pudimos validar la clave. Intenta de nuevo.");
+    } catch {
+      showUnlockMessage("No hay conexión. Revisa tu internet e intenta de nuevo.");
+    } finally {
+      setBusy(false);
+    }
+  });
+
+  // ---------------------------------------------------------------- Paso 2
+  async function loadStudy() {
+    const response = await fetch(api("/data"), {
+      headers: { "X-Viewer-Session": session },
+      cache: "no-store",
+      referrerPolicy: "no-referrer",
+    });
+    const body = await response.json().catch(() => ({}));
+    if (response.status === 404) return invalidLink();
+    if (response.status === 401) return backToUnlock();
+    if (!response.ok) {
+      showUnlockMessage(body.error || "No pudimos cargar tus imágenes. Intenta de nuevo.");
+      return;
+    }
+    study = body;
+    renderStudy();
+  }
+
+  function backToUnlock() {
+    session = null;
+    study = null;
+    closeViewer();
+    $("step-study").hidden = true;
+    $("step-unlock").hidden = false;
+    form.hidden = false;
+    showUnlockMessage("Tu sesión terminó. Ingresa tu clave otra vez para seguir viendo las imágenes.", "warn");
+  }
+
+  function renderStudy() {
+    $("step-unlock").hidden = true;
+    $("step-study").hidden = false;
+
+    $("clinic-name").textContent = study.clinic?.name || "";
+    const logo = $("clinic-logo");
+    if (study.clinic?.logoUrl) {
+      logo.src = study.clinic.logoUrl;
+      logo.alt = study.clinic.name || "";
+      logo.hidden = false;
+      logo.onerror = () => { logo.hidden = true; };
+    }
+    $("exam-title").textContent = study.exam?.title || "Examen de imagenología";
+    $("exam-date").textContent = study.exam?.date ? `Fecha del examen: ${study.exam.date}` : "";
+
+    const reportBtn = $("report-btn");
+    reportBtn.hidden = !study.reportUrl;
+    if (study.reportUrl) reportBtn.href = study.reportUrl;
+    const ohifBtn = $("ohif-btn");
+    ohifBtn.hidden = !study.ohifUrl;
+    if (study.ohifUrl) ohifBtn.href = study.ohifUrl;
+
+    const grid = $("series-grid");
+    grid.textContent = "";
+    const series = (study.series || []).filter((entry) => entry.images && entry.images.length);
+    $("series-empty").hidden = series.length > 0;
+    $("series-title").hidden = series.length === 0;
+    $("series-title").textContent = `Imágenes (${study.totalImages || 0})`;
+
+    series.forEach((entry) => {
+      const card = document.createElement("button");
+      card.type = "button";
+      card.className = "card";
+      // Miniatura: la imagen del medio de la serie, que suele ser la más
+      // representativa en un TAC o RM. Solo esa se descarga.
+      const cover = entry.images[Math.floor(entry.images.length / 2)] || entry.images[0];
+      if (cover.preview) {
+        const img = document.createElement("img");
+        img.loading = "lazy";
+        img.decoding = "async";
+        img.alt = entry.title;
+        img.referrerPolicy = "no-referrer";
+        img.src = cover.preview;
+        card.appendChild(img);
+      }
+      const label = document.createElement("span");
+      label.className = "label";
+      const strong = document.createElement("strong");
+      strong.textContent = entry.title;
+      label.appendChild(strong);
+      label.appendChild(document.createTextNode(entry.count === 1 ? "1 imagen" : `${entry.count} imágenes`));
+      card.appendChild(label);
+      card.addEventListener("click", () => openViewer(entry));
+      grid.appendChild(card);
+    });
+
+    // Aviso antes de que venza la sesión (las URLs de las imágenes vencen con ella).
+    const remaining = new Date(study.sessionExpiresAt).getTime() - Date.now();
+    clearTimeout(renderStudy.timer);
+    if (remaining > 0) renderStudy.timer = setTimeout(backToUnlock, remaining);
+  }
+
+  // ---------------------------------------------------------------- Visor
+  const viewer = $("viewer");
+  const stage = $("stage");
+  const img = $("viewer-img");
+  const range = $("viewer-range");
+  const loading = $("viewer-loading");
+  const imgError = $("viewer-error");
+  let current = null; // { entry, index }
+  let rangeTimer = null;
+  const preloaded = new Map(); // url -> Image (solo vecinas)
+
+  // Zoom y desplazamiento.
+  let scale = 1, tx = 0, ty = 0;
+  const MAX_SCALE = 6;
+
+  function applyTransform() {
+    img.style.transform = `translate(${tx}px, ${ty}px) scale(${scale})`;
+  }
+  function resetZoom() {
+    scale = 1; tx = 0; ty = 0;
+    applyTransform();
+  }
+  function clampPan() {
+    const w = stage.clientWidth, h = stage.clientHeight;
+    tx = Math.min(0, Math.max(w - w * scale, tx));
+    ty = Math.min(0, Math.max(h - h * scale, ty));
+  }
+  function zoomAt(newScale, cx, cy) {
+    newScale = Math.min(MAX_SCALE, Math.max(1, newScale));
+    // Mantiene fijo el punto (cx, cy) de la pantalla.
+    tx = cx - ((cx - tx) * newScale) / scale;
+    ty = cy - ((cy - ty) * newScale) / scale;
+    scale = newScale;
+    if (scale === 1) { tx = 0; ty = 0; }
+    clampPan();
+    applyTransform();
+  }
+
+  function openViewer(entry) {
+    current = { entry, index: 0 };
+    range.max = String(entry.images.length);
+    range.hidden = entry.images.length < 2;
+    $("viewer-series").textContent = entry.title;
+    viewer.hidden = false;
+    document.body.style.overflow = "hidden";
+    show(0);
+  }
+
+  function closeViewer() {
+    viewer.hidden = true;
+    document.body.style.overflow = "";
+    img.removeAttribute("src");
+    preloaded.clear();
+    current = null;
+  }
+
+  function show(index) {
+    if (!current) return;
+    const images = current.entry.images;
+    index = Math.max(0, Math.min(images.length - 1, index));
+    current.index = index;
+    resetZoom();
+    $("viewer-counter").textContent = `${index + 1} / ${images.length}`;
+    range.value = String(index + 1);
+    $("viewer-prev").disabled = index === 0;
+    $("viewer-next").disabled = index === images.length - 1;
+
+    const url = images[index].preview;
+    imgError.hidden = true;
+    if (!url) {
+      img.removeAttribute("src");
+      imgError.hidden = false;
+      return;
+    }
+    loading.hidden = false;
+    img.src = url;
+    preloadAround(index);
+  }
+
+  // Carga diferida: solo la imagen visible y sus 2 vecinas de cada lado.
+  function preloadAround(index) {
+    const images = current.entry.images;
+    const wanted = new Set();
+    for (let i = index - 2; i <= index + 2; i++) {
+      if (i !== index && images[i] && images[i].preview) wanted.add(images[i].preview);
+    }
+    for (const url of [...preloaded.keys()]) if (!wanted.has(url)) preloaded.delete(url);
+    for (const url of wanted) {
+      if (preloaded.has(url)) continue;
+      const pre = new Image();
+      pre.referrerPolicy = "no-referrer";
+      pre.src = url;
+      preloaded.set(url, pre);
+    }
+  }
+
+  img.addEventListener("load", () => { loading.hidden = true; });
+  img.addEventListener("error", () => {
+    if (!img.getAttribute("src")) return;
+    loading.hidden = true;
+    imgError.hidden = false;
+    if (study && new Date(study.sessionExpiresAt).getTime() <= Date.now()) backToUnlock();
+  });
+
+  $("viewer-close").addEventListener("click", closeViewer);
+  $("viewer-prev").addEventListener("click", () => current && show(current.index - 1));
+  $("viewer-next").addEventListener("click", () => current && show(current.index + 1));
+  range.addEventListener("input", () => {
+    // Al arrastrar se actualiza el contador al instante y la imagen al soltar
+    // o a los 120 ms, para no pedir cada imagen intermedia de un TAC.
+    const index = Number(range.value) - 1;
+    $("viewer-counter").textContent = `${index + 1} / ${current.entry.images.length}`;
+    clearTimeout(rangeTimer);
+    rangeTimer = setTimeout(() => show(index), 120);
+  });
+  document.addEventListener("keydown", (event) => {
+    if (viewer.hidden || !current) return;
+    if (event.key === "ArrowLeft") show(current.index - 1);
+    else if (event.key === "ArrowRight") show(current.index + 1);
+    else if (event.key === "Escape") closeViewer();
+  });
+
+  // Gestos: un dedo desliza (o mueve si hay zoom), dos dedos pellizcan,
+  // doble toque acerca/aleja.
+  let gesture = null;
+  let lastTap = 0;
+  const point = (touch) => {
+    const rect = stage.getBoundingClientRect();
+    return { x: touch.clientX - rect.left, y: touch.clientY - rect.top };
+  };
+  const distance = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+  const midpoint = (a, b) => ({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 });
+
+  stage.addEventListener("touchstart", (event) => {
+    if (event.target.closest(".nav")) return;
+    event.preventDefault();
+    if (event.touches.length === 2) {
+      const a = point(event.touches[0]), b = point(event.touches[1]);
+      gesture = { type: "pinch", startDist: distance(a, b), startScale: scale, last: midpoint(a, b) };
+    } else if (event.touches.length === 1) {
+      const p = point(event.touches[0]);
+      gesture = { type: "pan", start: p, last: p, moved: false, time: Date.now() };
+    }
+  }, { passive: false });
+
+  stage.addEventListener("touchmove", (event) => {
+    if (!gesture) return;
+    event.preventDefault();
+    if (gesture.type === "pinch" && event.touches.length === 2) {
+      const a = point(event.touches[0]), b = point(event.touches[1]);
+      const mid = midpoint(a, b);
+      // Mover mientras se pellizca.
+      tx += mid.x - gesture.last.x;
+      ty += mid.y - gesture.last.y;
+      gesture.last = mid;
+      zoomAt(gesture.startScale * (distance(a, b) / gesture.startDist), mid.x, mid.y);
+    } else if (gesture.type === "pan" && event.touches.length === 1) {
+      const p = point(event.touches[0]);
+      if (Math.abs(p.x - gesture.start.x) > 8 || Math.abs(p.y - gesture.start.y) > 8) gesture.moved = true;
+      if (scale > 1) {
+        tx += p.x - gesture.last.x;
+        ty += p.y - gesture.last.y;
+        clampPan();
+      } else {
+        // Sin zoom: la imagen sigue al dedo en horizontal.
+        tx = p.x - gesture.start.x;
+      }
+      gesture.last = p;
+      applyTransform();
+    }
+  }, { passive: false });
+
+  stage.addEventListener("touchend", (event) => {
+    if (!gesture) return;
+    if (event.touches.length > 0) {
+      // Queda un dedo después de pellizcar: sigue como desplazamiento.
+      if (event.touches.length === 1) {
+        const p = point(event.touches[0]);
+        gesture = { type: "pan", start: p, last: p, moved: true, time: Date.now() };
+      }
+      return;
+    }
+    const ended = gesture;
+    gesture = null;
+    if (ended.type !== "pan") return;
+
+    if (!ended.moved) {
+      const now = Date.now();
+      if (now - lastTap < 300) {
+        lastTap = 0;
+        zoomAt(scale > 1 ? 1 : 2.5, ended.start.x, ended.start.y);
+      } else {
+        lastTap = now;
+      }
+      return;
+    }
+    if (scale === 1) {
+      const dx = ended.last.x - ended.start.x;
+      const threshold = Math.min(80, stage.clientWidth * 0.18);
+      if (dx <= -threshold && current.index < current.entry.images.length - 1) show(current.index + 1);
+      else if (dx >= threshold && current.index > 0) show(current.index - 1);
+      else resetZoom();
+    }
+  });
+
+  // Rueda del mouse (computador): acerca/aleja.
+  stage.addEventListener("wheel", (event) => {
+    event.preventDefault();
+    const rect = stage.getBoundingClientRect();
+    zoomAt(scale * (event.deltaY < 0 ? 1.15 : 1 / 1.15), event.clientX - rect.left, event.clientY - rect.top);
+  }, { passive: false });
+
+  window.addEventListener("resize", () => { if (current) resetZoom(); });
+
+  if (!/^[A-Za-z0-9_-]{43}$/.test(token)) invalidLink();
+  else pinInput.focus();
+})();
+</script>
+</body>
+</html>

@@ -1458,6 +1458,54 @@ class ApiService {
     return _decodeMap(response);
   }
 
+  /// Enlace del QR para el paciente (se crea al firmar el informe): `null` si
+  /// la orden no tiene, o un mapa con status ('activo', 'vencido',
+  /// 'revocado'), expiresAt, accessCount, lastAccessAt, revokedAt y locked.
+  static Future<Map<String, dynamic>?> getPatientShareLink({
+    required int patientId,
+    required String orderId,
+  }) async {
+    final http.Response response;
+    try {
+      response = await http
+          .get(
+            Uri.parse(
+              '$_baseUrl/patients/$patientId/imaging-orders/$orderId/share-link',
+            ),
+            headers: _headers(),
+          )
+          .timeout(const Duration(seconds: 30));
+    } catch (_) {
+      throw const ApiException('No fue posible cargar el enlace del paciente.');
+    }
+    final body = await _decodeMap(response);
+    final link = body['link'];
+    return link is Map ? Map<String, dynamic>.from(link) : null;
+  }
+
+  /// Revoca el enlace del paciente: el QR del informe deja de funcionar.
+  static Future<Map<String, dynamic>?> revokePatientShareLink({
+    required int patientId,
+    required String orderId,
+  }) async {
+    final http.Response response;
+    try {
+      response = await http
+          .post(
+            Uri.parse(
+              '$_baseUrl/patients/$patientId/imaging-orders/$orderId/share-link/revoke',
+            ),
+            headers: _headers(),
+          )
+          .timeout(const Duration(seconds: 30));
+    } catch (_) {
+      throw const ApiException('No fue posible revocar el enlace.');
+    }
+    final body = await _decodeMap(response);
+    final link = body['link'];
+    return link is Map ? Map<String, dynamic>.from(link) : null;
+  }
+
   /// PDF de vista previa del borrador guardado (marca de agua "BORRADOR").
   static Future<Uint8List> getImagingReportPreview({
     required int patientId,

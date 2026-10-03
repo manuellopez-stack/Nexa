@@ -5,9 +5,14 @@
 // Las fuentes estándar de PDF (Helvetica) cubren tildes, ñ, ¿ y ¡.
 
 import PDFDocument from "pdfkit";
+import QRCode from "qrcode";
 
 const MARGIN = 56;
 const COLORS = { text: "#0F172A", muted: "#475569", line: "#CBD5E1", accent: "#0F766E" };
+// QR del visor del paciente: esquina superior derecha del encabezado.
+const QR_SIZE = 76;
+const QR_CAPTION_WIDTH = 140;
+const QR_CAPTION = ["Escanea para ver tus imágenes", "Clave: 4 primeros dígitos de tu RUT"];
 
 const SECTIONS = [
   ["clinicalHistory", "Antecedentes clínicos"],
@@ -45,9 +50,16 @@ function label(doc, text) {
  * @param {{clinicalHistory?: string, technique?: string, findings?: string, impression?: string}} data.sections
  * @param {{name: string, rut: string, specialty: string, signedAtText: string}|null} data.signature
  * @param {boolean} [data.draft]  marca de agua "BORRADOR" y sin firma
+ * @param {string|null} [data.viewerUrl]  enlace del visor del paciente: se
+ *   dibuja como QR en el encabezado (nunca en el borrador)
  * @returns {Promise<Buffer>}
  */
-export function buildReportPdf(data) {
+export async function buildReportPdf(data) {
+  const qr =
+    data.viewerUrl && !data.draft
+      ? await QRCode.toBuffer(data.viewerUrl, { type: "png", errorCorrectionLevel: "M", margin: 1, width: 320 })
+      : null;
+
   return new Promise((resolve, reject) => {
     const doc = new PDFDocument({
       size: "LETTER",
@@ -67,8 +79,21 @@ export function buildReportPdf(data) {
     try {
       const contentWidth = doc.page.width - MARGIN * 2;
 
-      // Encabezado: logo + nombre de la clínica.
+      // Encabezado: logo + nombre de la clínica, y el QR a la derecha.
       const headerTop = doc.y;
+      const qrReserve = qr ? QR_CAPTION_WIDTH + 8 : 0;
+      if (qr) {
+        const right = MARGIN + contentWidth;
+        doc.image(qr, right - QR_SIZE, headerTop, { width: QR_SIZE, height: QR_SIZE });
+        doc.font("Helvetica").fontSize(6.5).fillColor(COLORS.muted);
+        QR_CAPTION.forEach((line, index) => {
+          doc.text(line, right - QR_CAPTION_WIDTH, headerTop + QR_SIZE + 2 + index * 8.5, {
+            width: QR_CAPTION_WIDTH,
+            align: "right",
+            lineBreak: false,
+          });
+        });
+      }
       let textLeft = MARGIN;
       if (data.logo) {
         try {
@@ -82,8 +107,8 @@ export function buildReportPdf(data) {
         .font("Helvetica-Bold")
         .fontSize(14)
         .fillColor(COLORS.text)
-        .text(data.clinicName || "", textLeft, headerTop + 14, { width: contentWidth - (textLeft - MARGIN) });
-      doc.y = Math.max(doc.y, headerTop + 52);
+        .text(data.clinicName || "", textLeft, headerTop + 14, { width: contentWidth - (textLeft - MARGIN) - qrReserve });
+      doc.y = Math.max(doc.y, headerTop + (qr ? QR_SIZE + 22 : 52));
       doc.moveTo(MARGIN, doc.y).lineTo(MARGIN + contentWidth, doc.y).strokeColor(COLORS.line).lineWidth(1).stroke();
       doc.moveDown(0.8);
 

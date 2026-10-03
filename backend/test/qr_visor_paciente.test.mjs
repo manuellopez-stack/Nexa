@@ -9,10 +9,13 @@ import assert from "node:assert/strict";
 import http from "node:http";
 import { after, before, beforeEach, test } from "node:test";
 
-import { db, resetDb, users } from "./support/supabase-mock.mjs";
+import { db, resetDb, storageFiles, users } from "./support/supabase-mock.mjs";
+import { readQrFromPdf } from "./support/pdf-qr.mjs";
 import { buildReportPdf } from "../reportPdf.mjs";
 import {
   createShareToken,
+  hashShareToken,
+  patientViewerBase,
   pinMatchesRut,
   rutPin,
   signShareSession,
@@ -182,7 +185,6 @@ before(async () => {
   process.env.ORTHANC_USER = "orthanc";
   process.env.ORTHANC_PASSWORD = "secreto";
   process.env.PACS_PUBLIC_URL = "https://pacs.test";
-  process.env.PATIENT_VIEWER_URL = "https://ver.test/";
   delete process.env.OHIF_VIEWER_ENABLED;
   seed();
   await import("../server.mjs");
@@ -200,6 +202,8 @@ before(async () => {
 beforeEach(() => {
   seed();
   delete process.env.OHIF_VIEWER_ENABLED;
+  delete process.env.PATIENT_VIEWER_URL;
+  delete process.env.PUBLIC_BACKEND_URL;
 });
 
 after(() => {
@@ -250,6 +254,52 @@ test("PDF: el firmado lleva el QR y el borrador no", async () => {
   assert.ok(countImages(withQr) > 0);
   assert.equal(countImages(draft), 0);
   assert.equal(countImages(plain), 0);
+});
+
+test("base del enlace: PATIENT_VIEWER_URL, luego PUBLIC_BACKEND_URL, luego el origen de la petición", () => {
+  const origin = "http://localhost:3000";
+  assert.equal(patientViewerBase({}, origin), origin);
+  assert.equal(patientViewerBase({ PATIENT_VIEWER_URL: "  ", PUBLIC_BACKEND_URL: "" }, origin), origin);
+  assert.equal(patientViewerBase({ PUBLIC_BACKEND_URL: "https://api.test/" }, origin), "https://api.test");
+  assert.equal(
+    patientViewerBase({ PATIENT_VIEWER_URL: "https://ver.test/", PUBLIC_BACKEND_URL: "https://api.test" }, origin),
+    "https://ver.test",
+  );
+});
+
+test("el QR del PDF firmado apunta al origen del backend si no hay PATIENT_VIEWER_URL", async () => {
+  // QR que quedó en el PDF guardado del informe firmado vigente de io-a.
+  const qrOfSignedPdf = () => {
+    const report = db.imaging_reports.find((row) => row.imaging_order_id === "io-a" && row.status === "firmado");
+    const document = db.documents.find((row) => row.id === report.document_id);
+    return readQrFromPdf(storageFiles[`clinical-documents/${document.pdf_path}`]);
+  };
+  const activeLink = () => db.study_share_links.find((row) => !row.revoked_at);
+  const newVersion = async () => {
+    const path = "/patients/1/imaging-orders/io-a/report";
+    assert.equal((await api("POST", `${path}/new-version`, { as: "medico" })).status, 200);
+    assert.equal((await api("POST", `${path}/sign`, { as: "medico" })).status, 200);
+  };
+
+  // Sin ninguna variable: el origen por el que llegó la firma.
+  await sign();
+  const url = qrOfSignedPdf();
+  const match = url?.match(/^http:\/\/localhost:3000\/ver\/([A-Za-z0-9_-]{43})$/);
+  assert.ok(match, `QR inesperado: ${url}`);
+  assert.equal(hashShareToken(match[1]), activeLink().token_hash);
+  assert.ok(!url.includes("imagenda.cl"));
+
+  // Con PUBLIC_BACKEND_URL.
+  process.env.PUBLIC_BACKEND_URL = "https://api.test/";
+  await newVersion();
+  assert.match(qrOfSignedPdf(), /^https:\/\/api\.test\/ver\/[A-Za-z0-9_-]{43}$/);
+
+  // PATIENT_VIEWER_URL manda sobre PUBLIC_BACKEND_URL.
+  process.env.PATIENT_VIEWER_URL = "https://ver.test";
+  await newVersion();
+  const last = qrOfSignedPdf();
+  assert.match(last, /^https:\/\/ver\.test\/ver\/[A-Za-z0-9_-]{43}$/);
+  assert.equal(hashShareToken(last.split("/ver/")[1]), activeLink().token_hash);
 });
 
 test("firmar crea un enlace de 365 días; solo se guarda el hash del token", async () => {

@@ -27,6 +27,7 @@ import {
   hashShareToken,
   isShareLinkLocked,
   isShareTokenFormat,
+  patientViewerBase,
   pinMatchesRut,
   shareLinkStatus,
   shareLinkUrl,
@@ -6024,12 +6025,6 @@ const SHARE_LINK_MANAGERS = ["medico", "administrador"];
 const SHARE_LINK_NOT_FOUND = "Este enlace no es válido o ya venció. Pide uno nuevo en tu centro médico.";
 const SHARE_RATE_WINDOW_MS = 10 * 60 * 1000;
 
-// Base del enlace del QR: PATIENT_VIEWER_URL, o el origen público del backend.
-function patientViewerBase(request) {
-  const configured = (process.env.PATIENT_VIEWER_URL || "").trim().replace(/\/+$/, "");
-  return configured || publicBackendOrigin(request);
-}
-
 // Crea el enlace de la firma en curso: { id, url } o null si no se pudo (el
 // informe se firma igual, sin QR).
 async function tryCreateShareLink(context, report, request) {
@@ -6048,7 +6043,8 @@ async function tryCreateShareLink(context, report, request) {
       .select("id")
       .single();
     if (error) throw error;
-    return { id: data.id, url: shareLinkUrl(patientViewerBase(request), token) };
+    const base = patientViewerBase(process.env, publicBackendOrigin(request));
+    return { id: data.id, url: shareLinkUrl(base, token) };
   } catch (error) {
     console.error("No fue posible crear el enlace del paciente; el informe se firma sin QR:", error?.message ?? error);
     return null;

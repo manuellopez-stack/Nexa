@@ -49,6 +49,17 @@ export function isShareTokenFormat(token) {
   return typeof token === "string" && TOKEN_RE.test(token);
 }
 
+// Base del enlace del QR, en este orden: PATIENT_VIEWER_URL, PUBLIC_BACKEND_URL
+// y, si no hay ninguna, el origen del backend por el que llegó la petición
+// (requestOrigin). Sin dominio fijo: el visor vive donde viva el backend.
+export function patientViewerBase(env, requestOrigin) {
+  for (const name of ["PATIENT_VIEWER_URL", "PUBLIC_BACKEND_URL"]) {
+    const configured = String(env?.[name] ?? "").trim().replace(/\/+$/, "");
+    if (configured) return configured;
+  }
+  return String(requestOrigin).replace(/\/+$/, "");
+}
+
 export function shareLinkUrl(base, token) {
   return `${String(base).replace(/\/+$/, "")}/ver/${encodeURIComponent(token)}`;
 }
